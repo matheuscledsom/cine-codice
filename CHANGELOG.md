@@ -17,6 +17,10 @@ npm run version:major -- --name="Odin"
 
 ---
 
+## [v1.3.0 · Lumière] — 2026-11
+
+**Resumo:** Cinema Moderno & Motor de Cores OKLCH (Dark, White, Sepia + Harmonização Matemática da Cor de Fundo sem presets antigos), PWA Nativo Instalável para PC e Android com Cache LRU de Pôsteres limitado a 80 MB, Sistema de Backup Criptografado (.ccodex) com GZIP nativo e AES-GCM 256-bit com sincronização no Google Drive, Página da Obra com Paleta Adaptativa atmosférica (--work-accent, --work-glow), Episódios Reais Paginados em blocos de 100 da Jikan com títulos, datas e selos de Filler (*One Piece*), Radar de Franquias de Filmes vs. Universos de Séries/Animes com cálculo exato de progresso (X/Y obras), Provedores de Streaming no Brasil (Streaming BR), Badges Visuais Superiores no Catálogo, Dashboard de Métricas Zero-Scroll em 2 dobras máximas, Tela Início com resumo de catálogo vivo e título do próximo episódio no Hero, e Perfil Editorial estilo Letterboxd/Serializd com avatar quadrado arredondado (rounded-2xl), vitrine Top 4 limpa, grade de Atividade Recente e Histograma de Notas (0–100).
+
 ## [v1.2.0 · Lumière] — 2026-11
 
 **Resumo:** Design Editorial Cinematográfico e Arquitetura Relacional Local: IndexedDB estruturado em 5 stores (`works`, `season_progress`, `episode_reviews`, `sessions_log`, `api_cache`) com snapshot prévio obrigatório, isolamento completo de rascunhos sem vazamento de sinopse, busca automática de temporadas via TMDB/TVmaze/AniList destravando `T1 → T2 → T3+`, Página Completa da Obra (`WorkDetailPage.jsx`) sem formulários abertos no modo leitura, pôsteres `2:3` reais nas sugestões curadas, Home sem duplicação entre Hero e trilho *Continuar Assistindo*, Métricas em Bento Grid focadas em Horas Assistidas/Episódios/Décadas e Perfil Editorial com Vitrine Top 4 Favoritos, Avatar Customizável e remoção física definitiva do código social morto.

@@ -16,23 +16,40 @@ export const VERSIONING_RULES = {
 };
 
 export const CODICE_RELEASE = {
-  version: '1.2.0',
+  version: '1.3.0',
   codename: 'Lumière',
-  label: 'v1.2.0 · Lumière',
+  label: 'v1.3.0 · Lumière',
   releaseType: 'minor',
   date: '2026-11',
   summary:
-    'Cine Códice v1.2.0 Lumière: Design Editorial Cinematográfico, Página Completa da Obra (WorkDetailPage sem formulários abertos no modo leitura), IndexedDB Relacional Estruturado (5 stores com snapshot prévio), isolamento total de rascunhos sem vazamento de sinopse, busca automática de temporadas para séries/animes destravando T1..TN, pôsteres 2:3 reais nas sugestões, Home sem duplicação, Métricas acumuladas em horas/episódios/décadas e Perfil com vitrine Top 4 Favoritos, avatar customizável e remoção física do código social legado.',
+    'Cine Códice v1.3.0 Lumière: Cinema Moderno, Motor Visual OKLCH (Dark, White, Sepia + Harmonização de Cor de Fundo sem presets antigos), PWA Instalável com Cache LRU de 80 MB, Criptografia AES-GCM (.ccodex), Backup Google Drive, Paleta Adaptativa por Obra, Episódios Paginados de Anime Longo (One Piece), Radar de Franquias vs. Universos com Progresso Determinístico, Streaming no Brasil, Métricas Zero-Scroll e Perfil Editorial Letterboxd/Serializd com Histograma de Notas.',
 };
 
 export const RELEASE_HISTORY = [
+  {
+    version: '1.3.0',
+    codename: 'Lumière',
+    label: 'v1.3.0 · Lumière',
+    releaseType: 'minor',
+    date: '2026-11',
+    summary: CODICE_RELEASE.summary,
+    highlights: [
+      'Motor de Temas OKLCH ("Cinema Moderno") com 3 modos base (Dark, White, Sepia) e harmonização matemática da cor de fundo (bgTintColor) gerando 5 variáveis derivadas (--bg-canvas 10%, --bg-surface 14%, --bg-elevated 18%, --border-hairline 14% e acento com contraste WCAG 2.2 AA >= 4.5:1), eliminando os 21 presets antigos e padronizando o vocabulário para "Catálogo".',
+      'PWA Nativo Instalável para PC e Android (manifest standalone, atalhos rápidos e ícones maskable) com cache de pôsteres limitado a 80 MB (LRU com descarte automático de excessos) e banner não-intrusivo de instalação.',
+      'Sistema de Backup Criptografado (.ccodex) com compressão GZIP nativa, criptografia PBKDF2 (150.000 iterações SHA-256) + AES-GCM 256-bit, exclusão de Base64 em pôsteres e integração com Google Drive (drive.appdata), mantendo compatibilidade 100% com backups .json.',
+      'Página da Obra Imersiva com Paleta Adaptativa extraída do pôster/backdrop (--work-accent, --work-glow e fundo atmosférico com blur 32px), episódios reais paginados em blocos de 100 da Jikan com títulos, datas e selos de Filler (One Piece) com salto rápido "Ir para o ep. #", e selos de crítica comparativos (Sintonia Total, Obra-Prima Consensual, Você Amou Mais que o Público, Mais Exigente que a Crítica).',
+      'Franquias de Filmes vs. Universos de Séries/Animes com cálculo exato de progresso (X/Y obras · Z% concluído), provedores de Streaming no Brasil (Netflix, Prime, Max, Disney+, Crunchyroll, etc.) e distinção visual imediata nos cards do catálogo por formato e minutagem.',
+      'Dashboard de Métricas Compactas Zero-Scroll em 2 dobras máximas, Início refinada com resumo de catálogo vivo e título do próximo episódio no Hero, e Perfil Editorial estilo Letterboxd/Serializd com avatar quadrado arredondado (rounded-2xl), vitrine Top 4 limpa, grade de Atividade Recente e Histograma de Notas (0–100).',
+    ],
+  },
   {
     version: '1.2.0',
     codename: 'Lumière',
     label: 'v1.2.0 · Lumière',
     releaseType: 'minor',
     date: '2026-11',
-    summary: CODICE_RELEASE.summary,
+    summary:
+      'Cine Códice v1.2.0 Lumière: Design Editorial Cinematográfico, Página Completa da Obra (WorkDetailPage sem formulários abertos no modo leitura), IndexedDB Relacional Estruturado (5 stores com snapshot prévio), isolamento total de rascunhos sem vazamento de sinopse, busca automática de temporadas para séries/animes destravando T1..TN, pôsteres 2:3 reais nas sugestões, Home sem duplicação, Métricas acumuladas em horas/episódios/décadas e Perfil com vitrine Top 4 Favoritos, avatar customizável e remoção física do código social legado.',
     highlights: [
       'Banco relacional local em IndexedDB (cine_codice_relational_v2) com 5 stores estruturadas (works, season_progress, episode_reviews, sessions_log, api_cache) e migração idempotente com snapshot prévio obrigatório.',
       'Isolamento completo entre rascunhos de catalogação (fim do vazamento de sinopse), busca automática de temporadas via TMDB/TVmaze/AniList destravando T1→T2→T3+ e auto-mapeamento de gêneros para Atmosfera & Tags.',

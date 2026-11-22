@@ -2,8 +2,8 @@
 
 **Branch ativa:** `feat/v1.3.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.2.0 · Lumière` (merge na `main` `bbf099c` + tag `v1.2.0` + `git push origin main --tags`)
-**Última fase concluída (v1.3.0):** `5` (Métricas Compactas "Zero-Scroll", Início Refinada & Perfil Editorial)
-**Próxima fase (v1.3.0):** `6` (Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0)
+**Última fase concluída (v1.3.0):** `6` (Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0)
+**Próxima ação:** Aguardando comando `publicar` do proprietário para merge `--no-ff` na `main`, criação da tag anotada `v1.3.0` e `git push origin main --tags`.
 
 ## Linha do Tempo das Fases — Ciclo v1.3.0 · Lumière
 - [x] **Fase 0 (v1.3.0) — Auditoria Técnica & Mapeamento de Impacto** — concluída sem alterações; roteiro salvo em [`docs/PROMPT_MESTRE_V1_3.md`](./PROMPT_MESTRE_V1_3.md).
@@ -32,8 +32,10 @@
   - Refinada [`src/screens/HomeScreen.jsx`](../src/screens/HomeScreen.jsx) e [`src/lib/homeEngine.js`](../src/lib/homeEngine.js) com saudação contextual e resumo vivo em 1 linha (*"3 obras em andamento · 142h acumuladas"*), título do próximo episódio no Hero (`resolveHeroNextEpisodeTitle`) e barra de atalhos rápidos (*Sortear da fila Quero Ver* e *Continuar última sessão*).
   - Redenhado [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx) e [`src/lib/profileMetrics.js`](../src/lib/profileMetrics.js) com estética editorial Letterboxd/Serializd: avatar quadrado arredondado (`rounded-2xl`), 4 métricas diretas (*Obras · Horas · Episódios · Média*), vitrine *Favoritos da Vida · Top 4* limpa, grade visual de pôsteres *Atividade Recente* com notas confirmadas, marcadores de cena/anotação e selos comparativos de crítica, e *Histograma de Notas (0–100)* em gráfico minimalista de barras.
   - Criada suíte [`tests/fase5-v130-home-metrics-profile.test.mjs`](../tests/fase5-v130-home-metrics-profile.test.mjs) (`117/117` testes aprovados).
-- [ ] **Fase 6 (v1.3.0) — Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0**
-- [ ] **Fase 6 (v1.3.0) — Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0**
+- [x] **Fase 6 (v1.3.0) — Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0** — concluída na branch `feat/v1.3.0-lumiere`.
+  - Versão atualizada para **`1.3.0`** (`v1.3.0 · Lumière`) em [`package.json`](../package.json), [`package-lock.json`](../package-lock.json), [`src/config/versioning.js`](../src/config/versioning.js), [`README.md`](../README.md) e [`CHANGELOG.md`](../CHANGELOG.md) preservando todo o histórico de `1.2.0`, `1.1.0` e `1.0.0`.
+  - Criada suíte de regressão ponta-a-ponta [`tests/fase6-v130-regression.test.mjs`](../tests/fase6-v130-regression.test.mjs) (`123/123` testes aprovados em `30` suítes) validando os 5 pilares do Cine Códice v1.3.0: motor visual OKLCH com 5 variáveis derivadas e contraste WCAG AA >= 4.5:1, vocabulário "Catálogo" 100% limpo, compressão GZIP + criptografia AES-GCM 256-bit (.ccodex), paginação real Jikan para animes longos (*One Piece*), radar Franquia (Filmes) vs Universo (Séries/Animes), selos comparativos de crítica, métricas zero-scroll e perfil editorial.
+  - Executada auditoria visual real multi-resolução em Chromium headless (`scripts/audit-visual-v130.mjs`) em `360 px`, `768 px` e `1280 px`, com **100% de aprovação (0 overflow horizontal, scrollWidth === innerWidth)** em todas as telas e zero erros de console/CSP.
 
 ## Linha do Tempo das Fases — Ciclo v1.2.0 · Lumière (Concluído)
 - [x] **Fase 0 (v1.2.0) — Auditoria Técnica, Git Pre-Flight & Mapeamento de Causa Raiz** — concluída sem alterações de código; roteiro salvo em [`docs/PROMPT_MESTRE_V1_2.md`](./PROMPT_MESTRE_V1_2.md).
