@@ -40,7 +40,10 @@ import {
 } from '../utils/backlogHelpers';
 import { downloadWorkMarkdown } from '../utils/markdownExport';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
-import { enrichWorkWithExternalRatings } from '../services/cinemaApi';
+import {
+  enrichSeriesAndAnimeSeasons,
+  enrichWorkWithExternalRatings,
+} from '../services/cinemaApi';
 import { BuddyReadPanel } from './BuddyReadPanel';
 import { CollectionCreatorBar } from './CollectionCreatorBar';
 import { CoverArt } from './CoverArt';
@@ -105,6 +108,35 @@ export function ItemDetailSheet({
     enrichAbortRef.current = controller;
 
     if (!workHasAnyExternalIds(targetItem)) {
+      if (isEpisodicWork(targetItem) && Number(targetItem.totalSeasons || 1) <= 1) {
+        enrichSeriesAndAnimeSeasons(targetItem, {
+          tmdbApiKey: tmdbKey,
+          signal: controller.signal,
+        })
+          .then((seasonRes) => {
+            if (!seasonRes || controller.signal.aborted) return;
+            const seasonPatch = {};
+            if (Number(seasonRes.totalSeasons) > Number(targetItem.totalSeasons || 1)) {
+              seasonPatch.totalSeasons = seasonRes.totalSeasons;
+            }
+            if (seasonRes.totalEpisodes && !targetItem.totalEpisodes) {
+              seasonPatch.totalEpisodes = seasonRes.totalEpisodes;
+            }
+            if (
+              Array.isArray(seasonRes.episodesPerSeason) &&
+              seasonRes.episodesPerSeason.length > 0
+            ) {
+              seasonPatch.episodesPerSeason = seasonRes.episodesPerSeason;
+            }
+            if (seasonRes.tvmazeId && !targetItem.tvmazeId) {
+              seasonPatch.tvmazeId = seasonRes.tvmazeId;
+            }
+            if (Object.keys(seasonPatch).length > 0) {
+              onUpdateItem(targetItem.id, seasonPatch);
+            }
+          })
+          .catch(() => {});
+      }
       setRatingsLoading(false);
       setRatingsMeta({
         failedSources: [],
@@ -192,6 +224,29 @@ export function ItemDetailSheet({
           String(targetItem.synopsis || '').length
         ) {
           patch.synopsis = updatedWork.synopsis;
+          patch.overview = updatedWork.synopsis;
+        }
+        if (
+          isEpisodicWork(targetItem) &&
+          Number(updatedWork.totalSeasons) > Number(targetItem.totalSeasons || 1)
+        ) {
+          patch.totalSeasons = updatedWork.totalSeasons;
+        }
+        if (
+          isEpisodicWork(targetItem) &&
+          updatedWork.totalEpisodes &&
+          !targetItem.totalEpisodes
+        ) {
+          patch.totalEpisodes = updatedWork.totalEpisodes;
+        }
+        if (
+          isEpisodicWork(targetItem) &&
+          Array.isArray(updatedWork.episodesPerSeason) &&
+          updatedWork.episodesPerSeason.length > 0 &&
+          (!Array.isArray(targetItem.episodesPerSeason) ||
+            targetItem.episodesPerSeason.length === 0)
+        ) {
+          patch.episodesPerSeason = updatedWork.episodesPerSeason;
         }
         if (Object.keys(patch).length > 0) {
           onUpdateItem(targetItem.id, patch);
@@ -237,16 +292,21 @@ export function ItemDetailSheet({
     if (!current?.id) return undefined;
 
     const badges = getPresentExternalRatingBadges(current.externalRatings);
+    const missingSeasons =
+      isEpisodicWork(current) &&
+      Number(current.totalSeasons || 1) <= 1 &&
+      (!Array.isArray(current.episodesPerSeason) || current.episodesPerSeason.length === 0);
     const hasMissingExpected =
-      current.workType === 'anime'
+      missingSeasons ||
+      (current.workType === 'anime'
         ? !current.externalRatings?.anilist ||
           (Boolean(current.ids?.mal || current.malId) && !current.externalRatings?.mal) ||
           !Array.isArray(current.franchiseRelations) ||
           current.franchiseRelations.length === 0
         : !current.externalRatings?.tmdb ||
-          (Boolean(current.ids?.imdb || current.imdbId) && !current.externalRatings?.imdb);
+          (Boolean(current.ids?.imdb || current.imdbId) && !current.externalRatings?.imdb));
     const needsAutoFetch =
-      workHasAnyExternalIds(current) &&
+      (workHasAnyExternalIds(current) || missingSeasons) &&
       !autoEnrichedIdsRef.current.has(current.id) &&
       (!current.backdropUrl || badges.length === 0 || hasMissingExpected);
 

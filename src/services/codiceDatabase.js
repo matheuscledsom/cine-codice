@@ -314,16 +314,32 @@ export function buildCodiceDatabase({
       backdropUrl: rawItem.backdropUrl || null,
       backdropCheckedAt: Number(rawItem.backdropCheckedAt) || null,
       favoriteScene: String(rawItem.favoriteScene || '').trim().slice(0, 200),
+      favoriteRank:
+        Number.isInteger(Number(rawItem.favoriteRank)) &&
+        Number(rawItem.favoriteRank) >= 1 &&
+        Number(rawItem.favoriteRank) <= 4
+          ? Number(rawItem.favoriteRank)
+          : null,
       externalRatings,
       ratingSource: resolvedRatingSource,
       sourceBadge: String(rawItem.sourceBadge || '').trim(),
       mergedSources: Array.isArray(rawItem.mergedSources) ? rawItem.mergedSources : [],
       openAccessUrl: String(rawItem.openAccessUrl || '').trim(),
-      synopsis: String(rawItem.synopsis || '').trim(),
+      synopsis: String(rawItem.synopsis ?? rawItem.overview ?? '').trim(),
+      overview: String(rawItem.overview ?? rawItem.synopsis ?? '').trim(),
       genres: Array.isArray(rawItem.genres) ? rawItem.genres : [],
       primaryGenre: String(rawItem.primaryGenre || '').trim(),
       subgenres: Array.isArray(rawItem.subgenres) ? rawItem.subgenres : [],
-      atmosphere: Array.isArray(rawItem.atmosphere) ? rawItem.atmosphere : [],
+      atmosphere: Array.isArray(rawItem.atmosphere)
+        ? rawItem.atmosphere
+        : Array.isArray(rawItem.moods)
+          ? rawItem.moods
+          : [],
+      moods: Array.isArray(rawItem.moods)
+        ? rawItem.moods
+        : Array.isArray(rawItem.atmosphere)
+          ? rawItem.atmosphere
+          : [],
       tropes: Array.isArray(rawItem.tropes) ? rawItem.tropes : [],
       progress: calculateWorkProgress({
         ...rawItem,

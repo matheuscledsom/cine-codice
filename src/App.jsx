@@ -1849,6 +1849,7 @@ export function App() {
         <Suspense fallback={null}>
           {Boolean(selectedItem) && (
             <ItemDetailSheet
+              key={selectedItem.id}
               item={selectedItem}
               allItems={items}
               profile={profile}

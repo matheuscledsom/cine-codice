@@ -1,10 +1,25 @@
-# Progresso — Cine Códice v1.1.0 · Lumière
+# Progresso — Cine Códice v1.2.0 · Lumière
 
-**Branch ativa:** `feat/v1.1.0-lumiere`
-**Última fase concluída:** `7` (pronta para publicação mediante comando `publicar`)
-**Próxima fase:** `Publicação na main (tag v1.1.0)`
+**Branch ativa:** `feat/v1.2.0-lumiere`
+**Ciclo anterior concluído e publicado:** `v1.1.0 · Lumière` (merge na `main` `99478e0` + tag `v1.1.0` + `git push origin main --tags`)
+**Última fase concluída (v1.2.0):** `1`
+**Próxima fase (v1.2.0):** `2` (Página Completa da Obra sem formulários abertos)
 
-## Linha do Tempo das Fases
+## Linha do Tempo das Fases — Ciclo v1.2.0 · Lumière
+- [x] **Fase 0 (v1.2.0) — Auditoria Técnica, Git Pre-Flight & Mapeamento de Causa Raiz** — concluída sem alterações de código; roteiro salvo em [`docs/PROMPT_MESTRE_V1_2.md`](./PROMPT_MESTRE_V1_2.md).
+- [x] **Fase 1 (v1.2.0) — Git Setup, IndexedDB Relacional, Correção de Sinopse, Temporadas & Auto-Tagging** — concluída na branch `feat/v1.2.0-lumiere`.
+  - Publicada a `v1.1.0` na `main` (`git merge --no-ff feat/v1.1.0-lumiere`, tag `v1.1.0` e `git push origin main --tags`) e criada a branch `feat/v1.2.0-lumiere`.
+  - Implementado banco relacional local em IndexedDB em [`src/services/relationalDb.js`](../src/services/relationalDb.js) com as 5 stores estruturadas (`works`, `season_progress`, `episode_reviews`, `sessions_log`, `api_cache`) e seus índices, integrado a [`src/hooks/useBacklog.js`](../src/hooks/useBacklog.js), [`src/api/cacheDb.js`](../src/api/cacheDb.js), [`src/services/codiceDatabase.js`](../src/services/codiceDatabase.js) e [`src/services/backupEngine.js`](../src/services/backupEngine.js) com snapshot prévio obrigatório (`cine_codice_backup_pre_v1_2`) e migração idempotente.
+  - Isolado 100% o rascunho de cadastro em [`src/utils/genreMapper.js`](../src/utils/genreMapper.js) (`buildPrefilledCatalogDraft`) e [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx) (reset explícito campo a campo, tokens de requisição assíncrona por abertura, `key` por ID de rascunho e deduplicação protegida contra conflito de IDs/anos em [`src/services/cinemaApi.js`](../src/services/cinemaApi.js)).
+  - Adicionada busca automática de temporadas e episódios reais (`enrichSeriesAndAnimeSeasons` em [`src/services/cinemaApi.js`](../src/services/cinemaApi.js) via TMDB `/tv/{id}`, TVmaze `/shows/{id}/seasons` sem chave e cadeia de sequências AniList/Jikan), destravamento do seletor `T1..TN` + botão `+ Nova Temp` em [`src/utils/backlogHelpers.js`](../src/utils/backlogHelpers.js), [`src/components/TactileStatusFields.jsx`](../src/components/TactileStatusFields.jsx) e [`src/components/EpisodeListTab.jsx`](../src/components/EpisodeListTab.jsx), e auto-mapeamento de gêneros para Atmosfera e Temas (`autoMapAtmosphereAndTags` + chips enxutos em [`src/components/TechnicalAtmosphereSection.jsx`](../src/components/TechnicalAtmosphereSection.jsx)).
+  - Criada suíte [`tests/fase1-v120-data-seasons.test.mjs`](../tests/fase1-v120-data-seasons.test.mjs) (`77/77` testes aprovados).
+- [ ] **Fase 2 (v1.2.0) — Página Completa da Obra (`WorkDetailPage.jsx`)**
+- [ ] **Fase 3 (v1.2.0) — Pôsteres Reais nas Sugestões & Home Sem Duplicação**
+- [ ] **Fase 4 (v1.2.0) — Métricas Acumuladas de Espectador (`StatsScreen.jsx` & `statsEngine.js`)**
+- [ ] **Fase 5 (v1.2.0) — Perfil Top 4 Favoritos, Avatar Customizável & Remoção do Código Social**
+- [ ] **Fase 6 (v1.2.0) — Regressão Completa, Auditoria Visual Multi-Resolução & Preparação v1.2.0**
+
+## Linha do Tempo das Fases — Ciclo v1.1.0 · Lumière (Concluído)
 - [x] **Fase 0 — Auditoria (somente leitura)** — concluída na `main` sem alterações.
 - [x] **Fase 1A — Infraestrutura de API** — concluída na branch `feat/v1.1.0-lumiere`.
   - Criados [`src/api/limits.js`](../src/api/limits.js), [`src/api/cacheDb.js`](../src/api/cacheDb.js), [`src/api/httpClient.js`](../src/api/httpClient.js), [`src/api/anilistBatch.js`](../src/api/anilistBatch.js), [`src/lib/ratings.js`](../src/lib/ratings.js) e [`src/lib/idBridge.js`](../src/lib/idBridge.js).

@@ -985,8 +985,8 @@ export function EpisodeListTab({
       {/* Seletor de Temporada & Ação em massa */}
       <section className="space-y-2.5 rounded-[6px] border border-line bg-app p-3.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex gap-1 overflow-x-auto no-scrollbar">
-            {Array.from({ length: Math.min(totalSeasons, 24) }, (_, idx) => idx + 1).map((sNum) => (
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+            {Array.from({ length: totalSeasons }, (_, idx) => idx + 1).map((sNum) => (
               <button
                 key={sNum}
                 type="button"
@@ -1004,6 +1004,27 @@ export function EpisodeListTab({
                 T{sNum}
               </button>
             ))}
+            <button
+              type="button"
+              onClick={() => {
+                const nextTotal = totalSeasons + 1;
+                const nextArr = Array.isArray(item?.episodesPerSeason)
+                  ? [...item.episodesPerSeason]
+                  : [];
+                while (nextArr.length < totalSeasons) nextArr.push(12);
+                nextArr.push(12);
+                onUpdateItem(item.id, {
+                  totalSeasons: nextTotal,
+                  episodesPerSeason: nextArr,
+                });
+                setSelectedSeason(nextTotal);
+                setListScrollTop(0);
+              }}
+              aria-label="Adicionar nova temporada"
+              className="min-h-[44px] shrink-0 rounded-[4px] border border-dashed border-line bg-card px-2.5 text-xs font-medium text-accent hover:border-accent"
+            >
+              + Nova Temp
+            </button>
           </div>
 
           <button

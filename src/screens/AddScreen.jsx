@@ -25,6 +25,7 @@ import {
 import {
   CINEMA_API_SOURCES,
   CINEMA_SOURCE_PRESETS,
+  enrichSeriesAndAnimeSeasons,
   enrichWorkWithExternalRatings,
   getCachedCinemaSearch,
   getDefaultSourcesForFilter,
@@ -45,7 +46,10 @@ import {
   isEpisodicWork,
 } from '../utils/backlogHelpers';
 import { findDuplicateMatch } from '../utils/catalogImporters';
-import { buildPrefilledCatalogDraft } from '../utils/genreMapper';
+import {
+  autoMapAtmosphereAndTags,
+  buildPrefilledCatalogDraft,
+} from '../utils/genreMapper';
 import { GENRE_OPTIONS } from '../utils/readerPreferences';
 
 const SEARCH_FILTER_STORAGE_KEY = 'cine_codice_add_search_filter_v1';
@@ -164,7 +168,9 @@ export function AddScreen({
   const [enrichingCandidate, setEnrichingCandidate] = useState(false);
 
   const enrichAbortRef = useRef(null);
-  const candidateEnrichedRef = useRef(false);
+  const drawerOpenTokenRef = useRef(0);
+  const enrichedDraftIdsRef = useRef(new Set());
+  const oneShotSourcesRef = useRef(null);
   const [partialFailure, setPartialFailure] = useState(false);
   const [failedSourcesCount, setFailedSourcesCount] = useState(0);
   const [allFailed, setAllFailed] = useState(false);
@@ -348,14 +354,16 @@ export function AddScreen({
   useEffect(() => {
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     const clean = query.trim();
+    const effectiveSources = oneShotSourcesRef.current || activeSources;
+    oneShotSourcesRef.current = null;
 
     if (!clean || clean.length < MIN_SEARCH_QUERY_LENGTH) {
-      executeSearch(clean, searchFilter, activeSources);
+      executeSearch(clean, searchFilter, effectiveSources);
       return undefined;
     }
 
     debounceTimerRef.current = setTimeout(() => {
-      executeSearch(clean, searchFilter, activeSources);
+      executeSearch(clean, searchFilter, effectiveSources);
     }, SEARCH_DEBOUNCE_MS);
 
     return () => {
@@ -363,55 +371,96 @@ export function AddScreen({
     };
   }, [query, searchFilter, activeSources, executeSearch]);
 
-  const applyEnrichedFieldsToWork = (base, enriched) => ({
-    ...base,
-    ids: enriched.ids || base.ids,
-    tmdbId: enriched.tmdbId ?? base.tmdbId ?? null,
-    imdbId: enriched.imdbId ?? base.imdbId ?? '',
-    tvmazeId: enriched.tvmazeId ?? base.tvmazeId ?? null,
-    anilistId: enriched.anilistId ?? base.anilistId ?? null,
-    malId: enriched.malId ?? base.malId ?? null,
-    tmdbMediaType: enriched.tmdbMediaType || base.tmdbMediaType || null,
-    backdropUrl: enriched.backdropUrl || base.backdropUrl || null,
-    externalRatings: enriched.externalRatings || base.externalRatings,
-    belongsToCollection: enriched.belongsToCollection || base.belongsToCollection || null,
-    tmdbStatus: enriched.tmdbStatus || base.tmdbStatus || null,
-    franchiseName: base.franchiseName || enriched.franchiseName || '',
-    franchiseRelations:
-      Array.isArray(enriched.franchiseRelations) && enriched.franchiseRelations.length > 0
-        ? enriched.franchiseRelations
-        : base.franchiseRelations || [],
-    director: base.director || enriched.director || '',
-    author: base.director || enriched.director || '',
-    studio: base.studio || enriched.studio || '',
-    totalSeasons: enriched.totalSeasons || base.totalSeasons,
-    totalEpisodes: enriched.totalEpisodes || base.totalEpisodes,
-    episodesPerSeason: enriched.episodesPerSeason || base.episodesPerSeason,
-    episodeList: enriched.episodeList || base.episodeList,
-    episodeDurationMinutes:
-      enriched.episodeDurationMinutes || base.episodeDurationMinutes,
-    durationMinutes: enriched.durationMinutes || base.durationMinutes,
-    totalSeconds:
-      enriched.durationMinutes && base.workType === 'movie'
-        ? enriched.durationMinutes * 60
-        : base.totalSeconds,
-    synopsis:
-      String(enriched.synopsis || '').length > String(base.synopsis || '').length
-        ? enriched.synopsis
-        : base.synopsis,
-  });
+  const applyEnrichedFieldsToWork = (base, enriched) => {
+    const nextSynopsis =
+      String(enriched.synopsis ?? enriched.overview ?? '').length >
+      String(base.synopsis ?? base.overview ?? '').length
+        ? String(enriched.synopsis ?? enriched.overview ?? '').trim()
+        : String(base.synopsis ?? base.overview ?? '').trim();
+    const nextGenres =
+      Array.isArray(enriched.genres) && enriched.genres.length > 0
+        ? Array.from(new Set([...(base.genres || []), ...enriched.genres])).slice(0, 4)
+        : base.genres || [];
+    const autoMapped = autoMapAtmosphereAndTags({
+      genres: nextGenres,
+      synopsis: nextSynopsis,
+      workType: base.workType,
+    });
+    const nextAtmosphere =
+      Array.isArray(base.atmosphere) && base.atmosphere.length > 0
+        ? base.atmosphere
+        : autoMapped.atmosphere;
+    const nextTropes =
+      Array.isArray(base.tropes) && base.tropes.length > 0
+        ? Array.from(new Set([...base.tropes, ...autoMapped.tropes])).slice(0, 5)
+        : autoMapped.tropes;
+
+    return {
+      ...base,
+      ids: enriched.ids || base.ids,
+      tmdbId: enriched.tmdbId ?? base.tmdbId ?? null,
+      imdbId: enriched.imdbId ?? base.imdbId ?? '',
+      tvmazeId: enriched.tvmazeId ?? base.tvmazeId ?? null,
+      anilistId: enriched.anilistId ?? base.anilistId ?? null,
+      malId: enriched.malId ?? base.malId ?? null,
+      tmdbMediaType: enriched.tmdbMediaType || base.tmdbMediaType || null,
+      backdropUrl: enriched.backdropUrl || base.backdropUrl || null,
+      externalRatings: enriched.externalRatings || base.externalRatings,
+      belongsToCollection: enriched.belongsToCollection || base.belongsToCollection || null,
+      tmdbStatus: enriched.tmdbStatus || base.tmdbStatus || null,
+      showStatus: enriched.showStatus || base.showStatus || null,
+      animeStatus: enriched.animeStatus || base.animeStatus || null,
+      franchiseName: base.franchiseName || enriched.franchiseName || '',
+      franchiseRelations:
+        Array.isArray(enriched.franchiseRelations) && enriched.franchiseRelations.length > 0
+          ? enriched.franchiseRelations
+          : base.franchiseRelations || [],
+      director: base.director || enriched.director || '',
+      author: base.director || enriched.director || '',
+      studio: base.studio || enriched.studio || '',
+      genres: nextGenres,
+      atmosphere: nextAtmosphere,
+      moods: nextAtmosphere,
+      tropes: nextTropes,
+      tags: nextTropes,
+      totalSeasons: Math.max(
+        Number(base.totalSeasons) || 1,
+        Number(enriched.totalSeasons) || 1
+      ),
+      totalEpisodes: enriched.totalEpisodes || base.totalEpisodes,
+      episodesPerSeason:
+        Array.isArray(enriched.episodesPerSeason) && enriched.episodesPerSeason.length > 0
+          ? enriched.episodesPerSeason
+          : base.episodesPerSeason,
+      episodeList: enriched.episodeList || base.episodeList,
+      episodeDurationMinutes:
+        enriched.episodeDurationMinutes || base.episodeDurationMinutes,
+      durationMinutes: enriched.durationMinutes || base.durationMinutes,
+      totalSeconds:
+        enriched.durationMinutes && base.workType === 'movie'
+          ? enriched.durationMinutes * 60
+          : base.totalSeconds,
+      synopsis: nextSynopsis,
+      overview: nextSynopsis,
+    };
+  };
 
   const handleOpenCandidateDrawer = async (candidate) => {
     enrichAbortRef.current?.abort();
+    const openToken = ++drawerOpenTokenRef.current;
     const controller = new AbortController();
     enrichAbortRef.current = controller;
-    candidateEnrichedRef.current = false;
 
-    const draftBase = buildPrefilledCatalogDraft(candidate);
+    // Reseta explicitamente rascunho anterior e constrói cópia limpa 100% isolada (Defeito A)
+    const draftBase = buildPrefilledCatalogDraft(candidate, {
+      defaultFormat: mediaFormats[0],
+      defaultAudioFormat: candidate.workType === 'anime' ? 'Legendado' : audioFormatTags[0],
+    });
+    const draftId = draftBase.id || candidate.id || createUuid();
     const initialDraft = buildDraftWithStatus(
       {
         ...draftBase,
-        id: draftBase.id || candidate.id || createUuid(),
+        id: draftId,
         format: mediaFormats[0],
         audioFormat: candidate.workType === 'anime' ? 'Legendado' : audioFormatTags[0],
       },
@@ -419,25 +468,45 @@ export function AddScreen({
     );
     setDraftItem(initialDraft);
 
-    if (workHasAnyExternalIds(candidate)) {
+    const needsSeasonLookup =
+      initialDraft.workType === 'series' || initialDraft.workType === 'anime';
+
+    if (workHasAnyExternalIds(initialDraft) || needsSeasonLookup) {
       setEnrichingCandidate(true);
       try {
-        const res = await enrichWorkWithExternalRatings(candidate, {
-          tmdbApiKey: tmdbKey,
-          omdbApiKey: omdbKey,
-          signal: controller.signal,
-          maxConcurrency: 2,
-        });
-        if (controller.signal.aborted) return;
-        candidateEnrichedRef.current = true;
+        const [enrichRes, seasonRes] = await Promise.all([
+          workHasAnyExternalIds(initialDraft)
+            ? enrichWorkWithExternalRatings(initialDraft, {
+                tmdbApiKey: tmdbKey,
+                omdbApiKey: omdbKey,
+                signal: controller.signal,
+                maxConcurrency: 2,
+              }).catch(() => null)
+            : Promise.resolve(null),
+          needsSeasonLookup && Number(initialDraft.totalSeasons || 1) <= 1
+            ? enrichSeriesAndAnimeSeasons(initialDraft, {
+                tmdbApiKey: tmdbKey,
+                signal: controller.signal,
+              }).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+
+        if (controller.signal.aborted || drawerOpenTokenRef.current !== openToken) {
+          return;
+        }
+        enrichedDraftIdsRef.current.add(draftId);
         setDraftItem((curr) => {
-          if (!curr || curr.id !== initialDraft.id) return curr;
-          return applyEnrichedFieldsToWork(curr, res.work);
+          if (!curr || curr.id !== draftId) return curr;
+          let updated = enrichRes?.work ? applyEnrichedFieldsToWork(curr, enrichRes.work) : curr;
+          if (seasonRes) {
+            updated = applyEnrichedFieldsToWork(updated, seasonRes);
+          }
+          return updated;
         });
       } catch {
         // Mantém rascunho inicial sem travar
       } finally {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && drawerOpenTokenRef.current === openToken) {
           setEnrichingCandidate(false);
         }
       }
@@ -451,19 +520,27 @@ export function AddScreen({
       ...draftItem,
       id: draftItem.id || createUuid(),
     };
-    const alreadyEnriched = candidateEnrichedRef.current;
+    const alreadyEnriched = enrichedDraftIdsRef.current.has(finalDraft.id);
     onAddItem(finalDraft);
     setDraftItem(null);
 
-    if (!alreadyEnriched && onUpdateItem && workHasAnyExternalIds(finalDraft)) {
-      enrichWorkWithExternalRatings(finalDraft, {
-        tmdbApiKey: tmdbKey,
-        omdbApiKey: omdbKey,
-        maxConcurrency: 2,
-      })
-        .then((res) => {
-          if (!res?.work) return;
-          const patched = applyEnrichedFieldsToWork(finalDraft, res.work);
+    if (!alreadyEnriched && onUpdateItem && (workHasAnyExternalIds(finalDraft) || isEpisodicWork(finalDraft))) {
+      Promise.all([
+        workHasAnyExternalIds(finalDraft)
+          ? enrichWorkWithExternalRatings(finalDraft, {
+              tmdbApiKey: tmdbKey,
+              omdbApiKey: omdbKey,
+              maxConcurrency: 2,
+            }).catch(() => null)
+          : Promise.resolve(null),
+        isEpisodicWork(finalDraft) && Number(finalDraft.totalSeasons || 1) <= 1
+          ? enrichSeriesAndAnimeSeasons(finalDraft, { tmdbApiKey: tmdbKey }).catch(() => null)
+          : Promise.resolve(null),
+      ])
+        .then(([res, seasonRes]) => {
+          if (!res?.work && !seasonRes) return;
+          let patched = res?.work ? applyEnrichedFieldsToWork(finalDraft, res.work) : finalDraft;
+          if (seasonRes) patched = applyEnrichedFieldsToWork(patched, seasonRes);
           onUpdateItem(finalDraft.id, {
             ids: patched.ids,
             tmdbId: patched.tmdbId,
@@ -480,6 +557,11 @@ export function AddScreen({
             franchiseRelations: patched.franchiseRelations,
             director: patched.director,
             studio: patched.studio,
+            genres: patched.genres,
+            atmosphere: patched.atmosphere,
+            moods: patched.moods,
+            tropes: patched.tropes,
+            tags: patched.tags,
             totalSeasons: patched.totalSeasons,
             totalEpisodes: patched.totalEpisodes,
             episodesPerSeason: patched.episodesPerSeason,
@@ -488,6 +570,7 @@ export function AddScreen({
             durationMinutes: patched.durationMinutes,
             totalSeconds: patched.totalSeconds,
             synopsis: patched.synopsis,
+            overview: patched.overview,
           });
         })
         .catch(() => {});
@@ -727,8 +810,8 @@ export function AddScreen({
               type="button"
               onClick={() => {
                 searchAbortRef.current?.abort();
+                oneShotSourcesRef.current = sug.sources?.length ? sug.sources : null;
                 updateSearchFilter(sug.filter || 'all');
-                if (sug.sources?.length) updateSources(sug.sources);
                 setQuery(sug.query);
               }}
               className="min-h-[36px] shrink-0 rounded-[4px] border border-line bg-card px-2.5 text-[11px] font-medium text-muted hover:border-accent hover:text-ink"
@@ -950,6 +1033,7 @@ export function AddScreen({
       {/* Drawer de Confirmação ao Catalogar Resultado */}
       {draftItem && (
         <div
+          key={`draft-drawer-${draftItem.id}`}
           className="fixed inset-0 z-50 flex items-end justify-center bg-black/65 sm:items-center sm:p-4"
           onClick={() => {
             enrichAbortRef.current?.abort();
@@ -974,10 +1058,17 @@ export function AddScreen({
                   <h2 className="mt-0.5 line-clamp-2 text-sm font-semibold text-ink">
                     {draftItem.title}
                   </h2>
-                  <p className="mt-0.5 text-[11px] text-muted">
+                  <p className="mt-0.5 text-[11px] tabular-nums text-muted">
                     {[
                       draftItem.director || draftItem.studio,
                       draftItem.releaseYear,
+                      isEpisodicWork(draftItem)
+                        ? `${Math.max(1, Number(draftItem.totalSeasons) || 1)} temp.${
+                            draftItem.totalEpisodes ? ` · ${draftItem.totalEpisodes} eps` : ''
+                          }`
+                        : draftItem.durationMinutes
+                          ? `${draftItem.durationMinutes} min`
+                          : null,
                     ]
                       .filter(Boolean)
                       .join(' · ')}
@@ -997,7 +1088,14 @@ export function AddScreen({
               </button>
             </div>
 
+            {draftItem.synopsis && (
+              <p className="line-clamp-3 rounded-xl border border-line bg-app px-3 py-2 text-xs leading-relaxed text-muted">
+                {draftItem.synopsis}
+              </p>
+            )}
+
             <WorkTypeSelector
+              key={`wt-${draftItem.id}`}
               label={add.drawerWorkTypeLabel}
               value={draftItem.workType}
               onChange={(nextType) =>
@@ -1076,6 +1174,7 @@ export function AddScreen({
             </div>
 
             <SmartCatalogButton
+              key={`smart-${draftItem.id}`}
               item={draftItem}
               geminiKey={geminiKey}
               onApplyFields={(updates) =>
@@ -1085,7 +1184,10 @@ export function AddScreen({
             />
 
             <TechnicalAtmosphereSection
+              key={`atmo-${draftItem.id}`}
               item={draftItem}
+              compactAutoChips
+              defaultExpanded
               onChange={(updates) => setDraftItem((curr) => ({ ...curr, ...updates }))}
             />
 

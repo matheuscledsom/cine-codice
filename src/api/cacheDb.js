@@ -7,6 +7,7 @@
  */
 
 import { stripApiKeysFromUrl } from './httpClient.js';
+import { putRelationalEpisodeReview } from '../services/relationalDb.js';
 import {
   CACHE_DB_NAME,
   CACHE_SCHEMA_VERSION,
@@ -453,6 +454,7 @@ export async function saveEpisodeEvaluation(
       ...record,
       provisional: false,
     });
+    putRelationalEpisodeReview(record, { idbFactory }).catch(() => {});
     return {
       ...record,
       persisted: true,
