@@ -1,8 +1,8 @@
 # Progresso — Cine Códice v1.1.0 · Lumière
 
 **Branch ativa:** `feat/v1.1.0-lumiere`
-**Última fase concluída:** `5`
-**Próxima fase:** `6` (Perfil, social oculto e resíduos de livro)
+**Última fase concluída:** `6`
+**Próxima fase:** `7` (Testes finais, versão 1.1.0 e publicação)
 
 ## Linha do Tempo das Fases
 - [x] **Fase 0 — Auditoria (somente leitura)** — concluída na `main` sem alterações.
@@ -43,7 +43,12 @@
   - Backfill único em segundo plano de `backdropUrl` via [`backfillWorkHeroBackdrop`](../src/services/cinemaApi.js) (máx. `2` simultâneos na fila, sem OMDb, cooldown de `30` dias em `backdropCheckedAt` preservando `updatedAt`).
   - Pílulas circulares (`56x56 px`, anel de progresso, máx. `12` + `"Ver todas"`, 1 toque sem texto aberto); trilhos sob demanda (`IntersectionObserver`) com os 5 estados D6: **Continuar Assistindo** (sem `legacy-default`), **Franquias & Sagas** (`>= 2` obras, % e média), **Sugestões do DNA / Quero Ver** (TMDB `/discover` + AniList cache `24 h` em [`src/components/RecommendationsSection.jsx`](../src/components/RecommendationsSection.jsx), botão `"O que assistir hoje?"` com Roleta e Curador opcional) e **Cápsula do Tempo & Destaques** (com campo opcional `favoriteScene` até `200` caracteres em [`src/components/ItemDetailSheet.jsx`](../src/components/ItemDetailSheet.jsx), persistido nos backups R10).
   - Validada convivência de `safe-area` e `360x800 px` do alerta fixo de `localStorage` (`[data-testid="storage-quota-alert"]`) com Hero e pílulas no Chrome headless via Playwright, além da suíte [`tests/fase5-home.test.mjs`](../tests/fase5-home.test.mjs) (`64/64` testes aprovados).
-- [ ] **Fase 6 — Perfil, social oculto e resíduos de livro**
+- [x] **Fase 6 — Perfil, social oculto e resíduos de livro** — concluída na branch `feat/v1.1.0-lumiere`.
+  - Criado [`src/lib/profileMetrics.js`](../src/lib/profileMetrics.js) com fórmulas explícitas em JS puro (`resolveProfileHeroBackdrop`, `computeProfileMetrics`, `formatWatchedHoursLabel`) para exibir **Obras** (total e concluídas), **Episódios / Horas** (apenas durações conhecidas, com contagem explícita de obras sem duração excluídas) e **Média Geral** (apenas notas confirmadas pelo usuário, excluindo `ratingSource === 'legacy-default'`, retornando `—` quando vazia).
+  - Atualizado [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx): banner dinâmico com `backdropUrl` da obra em andamento (`playing`/`rewatching`) coberto por filtro escuro AA (`rgba(10,12,16,0.72–0.84)`) e fallback para gradiente do tema; substituição de `"0 Seguidores · 0 Seguindo"` pelos 3 cartões de métricas reais do acervo.
+  - Adicionada flag `SOCIAL_ENABLED = false` em [`src/config/flags.js`](../src/config/flags.js) para ocultar sem apagar nenhum código nem dado: barra inferior (`Comunidade` + badge DM em [`src/components/BottomNav.jsx`](../src/components/BottomNav.jsx)), rotas e modais (`CommunityScreen`, `AuthModal`, `UserProfileModal`, `DirectChatDrawer`, `ShareProfileCardModal`, `FriendProfileCardModal`, parâmetros `?invite=`/`?card=` e diálogo de convite em [`src/App.jsx`](../src/App.jsx)), aba `Mural`, `@handle`, `"Compartilhar Meu Perfil"`, `"Rede & Amigos"` e lista de conexões em [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx), `"Conjunta"` / `"Indicar Obra"` em [`src/components/ItemDetailSheet.jsx`](../src/components/ItemDetailSheet.jsx) e visibilidade pública/mural/comentários/chat + aba `"Modo Calmo"` em [`src/components/ProfileSettingsDrawer.jsx`](../src/components/ProfileSettingsDrawer.jsx).
+  - Removidos resíduos visíveis de livros (Regra **R7**) em [`src/components/ReadingStreakWidget.jsx`](../src/components/ReadingStreakWidget.jsx), [`src/components/JournalComposerModal.jsx`](../src/components/JournalComposerModal.jsx), [`src/utils/themeTokens.js`](../src/utils/themeTokens.js), [`src/components/TitlesBadgesModal.jsx`](../src/components/TitlesBadgesModal.jsx), [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx), [`src/components/EpisodeListTab.jsx`](../src/components/EpisodeListTab.jsx) e [`src/services/geminiApi.js`](../src/services/geminiApi.js), mantendo módulos sociais desativados, chaves internas de armazenamento e falsos positivos técnicos devidamente justificados.
+  - Criada suíte [`tests/fase6-profile-social-r7.test.mjs`](../tests/fase6-profile-social-r7.test.mjs) (`68/68` testes aprovados).
 - [ ] **Fase 7 — Testes finais, versão 1.1.0 e publicação**
 
 ## Resumo da Auditoria (Fase 0)

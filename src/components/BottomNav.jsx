@@ -1,5 +1,6 @@
 import { BarChart2, Home, Library, PlusCircle, User, Users } from 'lucide-react';
 import { domainConfig } from '../config/domainConfig';
+import { SOCIAL_ENABLED } from '../config/flags';
 
 const ICONS = {
   Home,
@@ -11,6 +12,10 @@ const ICONS = {
 };
 
 export function BottomNav({ activeTab, onChangeTab, unreadDmCount = 0 }) {
+  const navItems = domainConfig.navigation.filter(
+    (item) => SOCIAL_ENABLED || item.id !== 'community'
+  );
+
   return (
     <nav
       aria-label="Navegação principal"
@@ -20,10 +25,10 @@ export function BottomNav({ activeTab, onChangeTab, unreadDmCount = 0 }) {
         <div
           className="grid h-16 items-center px-2"
           style={{
-            gridTemplateColumns: `repeat(${domainConfig.navigation.length}, minmax(0, 1fr))`,
+            gridTemplateColumns: `repeat(${navItems.length}, minmax(0, 1fr))`,
           }}
         >
-          {domainConfig.navigation.map((item) => {
+          {navItems.map((item) => {
             const Icon = ICONS[item.icon] || Home;
             const isActive = activeTab === item.id;
 
@@ -57,7 +62,7 @@ export function BottomNav({ activeTab, onChangeTab, unreadDmCount = 0 }) {
               );
             }
 
-            const showUnread = item.id === 'profile' && unreadDmCount > 0;
+            const showUnread = SOCIAL_ENABLED && item.id === 'profile' && unreadDmCount > 0;
 
             return (
               <button

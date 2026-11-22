@@ -5,6 +5,7 @@ import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SkeletonScreen } from './components/SkeletonScreen';
 import { domainConfig } from './config/domainConfig';
+import { SOCIAL_ENABLED } from './config/flags';
 import { useToast } from './context/ToastContext';
 import { GraphicFilters } from './design/GraphicFilters';
 import { useAiConfig } from './hooks/useAiConfig';
@@ -1250,6 +1251,12 @@ export function App() {
   }, [backendReady, titleEvaluation?.stalePinnedCleared, updateProfile]);
 
   useEffect(() => {
+    if (!SOCIAL_ENABLED && activeTab === 'community') {
+      setActiveTab('profile');
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search || '');
     const hasInvite = params.has('invite');
@@ -1267,6 +1274,8 @@ export function App() {
     if (typeof window.history?.replaceState === 'function') {
       window.history.replaceState({}, '', cleanUrl);
     }
+
+    if (!SOCIAL_ENABLED) return;
 
     if (rawCard) {
       const decoded = decodePublicProfileCard(rawCard);
@@ -1723,7 +1732,7 @@ export function App() {
                   onAddItem={handleAddItem}
                 />
               )}
-              {activeTab === 'community' && (
+              {SOCIAL_ENABLED && activeTab === 'community' && (
                 <CommunityScreen
                   viewerId={activeViewerId}
                   myProfile={profile}
@@ -1758,9 +1767,15 @@ export function App() {
                   backupReminder={backupReminder}
                   onSaveBackupNow={handleSaveBackupCopyNow}
                   onDismissBackupReminder={() => setBackupReminderDismissed(true)}
-                  onOpenShareProfileCard={() => setShareProfileModalOpen(true)}
-                  onOpenCommunity={() => setActiveTab('community')}
-                  onOpenAuthModal={() => setAuthModalOpen(true)}
+                  onOpenShareProfileCard={
+                    SOCIAL_ENABLED ? () => setShareProfileModalOpen(true) : undefined
+                  }
+                  onOpenCommunity={
+                    SOCIAL_ENABLED ? () => setActiveTab('community') : undefined
+                  }
+                  onOpenAuthModal={
+                    SOCIAL_ENABLED ? () => setAuthModalOpen(true) : undefined
+                  }
                   onOpenGeminiSettings={() => setGeminiModalOpen(true)}
                   onOpenThemeStudio={() => setThemeModalOpen(true)}
                   onOpenImportCatalog={() => setImportCatalogOpen(true)}
@@ -1828,7 +1843,7 @@ export function App() {
         <BottomNav
           activeTab={activeTab === 'community' ? 'profile' : activeTab}
           onChangeTab={setActiveTab}
-          unreadDmCount={unreadDmCount}
+          unreadDmCount={SOCIAL_ENABLED ? unreadDmCount : 0}
         />
 
         <Suspense fallback={null}>
@@ -1932,7 +1947,7 @@ export function App() {
             />
           )}
 
-          {authModalOpen && (
+          {SOCIAL_ENABLED && authModalOpen && (
             <AuthModal
               isOpen={authModalOpen}
               onClose={() => setAuthModalOpen(false)}
@@ -1948,7 +1963,7 @@ export function App() {
             />
           )}
 
-          {Boolean(viewingUserProfileId) && (
+          {SOCIAL_ENABLED && Boolean(viewingUserProfileId) && (
             <UserProfileModal
               isOpen={Boolean(viewingUserProfileId)}
               profileId={viewingUserProfileId}
@@ -1964,7 +1979,7 @@ export function App() {
             />
           )}
 
-          {chatOpen && (
+          {SOCIAL_ENABLED && chatOpen && (
             <DirectChatDrawer
               isOpen={chatOpen}
               onClose={() => setChatOpen(false)}
@@ -1978,7 +1993,7 @@ export function App() {
             />
           )}
 
-          {shareProfileModalOpen && (
+          {SOCIAL_ENABLED && shareProfileModalOpen && (
             <ShareProfileCardModal
               isOpen={shareProfileModalOpen}
               onClose={() => setShareProfileModalOpen(false)}
@@ -1989,7 +2004,7 @@ export function App() {
             />
           )}
 
-          {Boolean(friendCardModal) && (
+          {SOCIAL_ENABLED && Boolean(friendCardModal) && (
             <FriendProfileCardModal
               isOpen={Boolean(friendCardModal)}
               card={friendCardModal}
@@ -2121,7 +2136,7 @@ export function App() {
           {perfDebugEnabled && <PerfOverlay />}
         </Suspense>
 
-        {inviteCandidate && (
+        {SOCIAL_ENABLED && inviteCandidate && (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"
             onClick={() => setInviteCandidate(null)}

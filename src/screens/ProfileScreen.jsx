@@ -27,9 +27,14 @@ import { ThemeModal } from '../components/ThemeModal';
 import { TitlesBadgesModal } from '../components/TitlesBadgesModal';
 import { ProfileWall } from '../components/social/ProfileWall';
 import { domainConfig } from '../config/domainConfig';
+import { SOCIAL_ENABLED } from '../config/flags';
 import { CODICE_RELEASE } from '../config/versioning';
 import { useToast } from '../context/ToastContext';
 import { useAiConfig } from '../hooks/useAiConfig';
+import {
+  computeProfileMetrics,
+  resolveProfileHeroBackdrop,
+} from '../lib/profileMetrics';
 import {
   buildInviteShareUrl,
   getFollowSummaryLists,
@@ -48,7 +53,9 @@ import {
 const PROFILE_TAB_SESSION_KEY = 'codice_profile_active_tab_v1';
 const PAGE_SIZE = 20;
 
-const PROFILE_TABS_IDS = ['journal', 'wall', 'shelf', 'badges'];
+const PROFILE_TABS_IDS = SOCIAL_ENABLED
+  ? ['journal', 'wall', 'shelf', 'badges']
+  : ['journal', 'shelf', 'badges'];
 
 function loadSessionActiveTab() {
   try {
@@ -107,6 +114,7 @@ export function ProfileScreen({
   const { profile: profileCfg } = ui;
 
   const [activeTab, setActiveTab] = useState(loadSessionActiveTab);
+  const [bannerImgError, setBannerImgError] = useState(false);
   const [journalLimit, setJournalLimit] = useState(PAGE_SIZE);
   const [shelfLimit, setShelfLimit] = useState(PAGE_SIZE);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -145,6 +153,7 @@ export function ProfileScreen({
   }, [activeTab]);
 
   const refreshFollowLists = useCallback(() => {
+    if (!SOCIAL_ENABLED) return;
     const targetId = profile?.id || viewerId;
     if (!targetId) return;
     getFollowSummaryLists(targetId, { viewerId: viewerId || targetId })
@@ -310,15 +319,35 @@ export function ProfileScreen({
     }
   };
 
-  const tabs = useMemo(
-    () => [
-      { id: 'journal', label: 'Publicações & Diário' },
-      { id: 'wall', label: `Mural (${wallPostsCount})` },
-      { id: 'shelf', label: 'Estante Pública' },
-      { id: 'badges', label: calmMode ? 'Passaporte' : 'Insígnias' },
-    ],
-    [wallPostsCount, calmMode]
-  );
+  const heroBanner = useMemo(() => resolveProfileHeroBackdrop(items), [items]);
+  const profileMetrics = useMemo(() => computeProfileMetrics(items), [items]);
+
+  useEffect(() => {
+    setBannerImgError(false);
+  }, [heroBanner?.backdropUrl]);
+
+  const tabs = useMemo(() => {
+    const base = [
+      {
+        id: 'journal',
+        label: SOCIAL_ENABLED ? 'Publicações & Diário' : 'Diário de Sessões',
+      },
+    ];
+    if (SOCIAL_ENABLED) {
+      base.push({ id: 'wall', label: `Mural (${wallPostsCount})` });
+    }
+    base.push(
+      {
+        id: 'shelf',
+        label: SOCIAL_ENABLED ? 'Estante Pública' : 'Meu Acervo',
+      },
+      { id: 'badges', label: calmMode ? 'Passaporte' : 'Insígnias' }
+    );
+    return base;
+  }, [wallPostsCount, calmMode]);
+
+  const resolvedActiveTab =
+    !SOCIAL_ENABLED && activeTab === 'wall' ? 'journal' : activeTab;
 
   const handleTabKeyDown = (e, idx) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
@@ -362,17 +391,45 @@ export function ProfileScreen({
         />
       )}
 
-      {/* Cabeçalho Editorial (Estilo Letterboxd / Goodreads) */}
+      {/* Cabeçalho Editorial */}
       <header className="-mx-4 sm:-mx-6">
         <div
           className="relative aspect-[3/1] w-full overflow-hidden border-y border-line"
-          style={{ backgroundColor: 'var(--bg-elevated, var(--bg-card))' }}
+          style={{
+            background:
+              heroBanner?.backdropUrl && !bannerImgError
+                ? 'var(--bg-elevated, var(--bg-card))'
+                : 'linear-gradient(135deg, color-mix(in srgb, var(--accent-color) 28%, var(--bg-app)) 0%, var(--bg-elevated, var(--bg-card)) 55%, var(--bg-app) 100%)',
+          }}
         >
-          {profile.coverUrl && (
-            <img
-              src={profile.coverUrl}
-              alt="Capa do perfil"
-              className="h-full w-full object-cover"
+          {heroBanner?.backdropUrl && !bannerImgError ? (
+            <>
+              <img
+                src={heroBanner.backdropUrl}
+                alt={`Cena de ${heroBanner.title}`}
+                onError={() => setBannerImgError(true)}
+                className="h-full w-full object-cover"
+              />
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0"
+                style={{
+                  background:
+                    'linear-gradient(180deg, rgba(10,12,16,0.72) 0%, rgba(10,12,16,0.84) 100%)',
+                }}
+              />
+              <div className="pointer-events-none absolute right-3 top-2.5 max-w-[70%] rounded-[4px] bg-black/75 px-2.5 py-1 text-right text-[11px] font-medium text-white backdrop-blur-sm">
+                <span className="block truncate">Em cartaz: {heroBanner.title}</span>
+              </div>
+            </>
+          ) : (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-65"
+              style={{
+                background:
+                  'radial-gradient(circle at 80% 25%, color-mix(in srgb, var(--accent-color) 32%, transparent) 0%, transparent 62%)',
+              }}
             />
           )}
         </div>
@@ -407,15 +464,17 @@ export function ProfileScreen({
             </button>
           </div>
 
-          {/* Nome, @handle, bio e 1 insígnia ativa */}
+          {/* Nome, bio e 1 insígnia ativa */}
           <div className="min-w-0 space-y-1">
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
               <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight text-ink">
-                {profile.displayName || profile.handle}
+                {profile.displayName || (SOCIAL_ENABLED ? profile.handle : 'Espectador')}
               </h1>
-              <span className="min-w-0 truncate text-xs text-subtle tabular-nums">
-                {profile.handle}
-              </span>
+              {SOCIAL_ENABLED && profile.handle && (
+                <span className="min-w-0 truncate text-xs text-subtle tabular-nums">
+                  {profile.handle}
+                </span>
+              )}
             </div>
 
             {gamificationEnabled && titleEvaluation.resolvedActiveBadge?.name && (
@@ -435,7 +494,7 @@ export function ProfileScreen({
               </p>
             )}
 
-            {profile.linkLabel && (
+            {SOCIAL_ENABLED && profile.linkLabel && (
               <a
                 href={profile.linkUrl || '#'}
                 target="_blank"
@@ -448,50 +507,119 @@ export function ProfileScreen({
             )}
           </div>
 
-          {/* Métricas clicáveis como <button> reais */}
-          <div className="flex flex-wrap items-center gap-1.5 border-y border-line py-2 text-xs tabular-nums">
-            <button
-              type="button"
-              onClick={() => setActiveTab('shelf')}
-              aria-label={`Ver ${backlogItems.length} obras catalogadas`}
-              className="min-h-[44px] rounded-[4px] px-2 py-1 text-left font-medium text-ink hover:text-accent"
-            >
-              <strong>{backlogItems.length}</strong>{' '}
-              <span style={{ color: 'var(--text-secondary)' }}>Obras</span>
-            </button>
-            <span aria-hidden="true" className="text-subtle">
-              ·
-            </span>
-            <button
-              type="button"
-              onClick={(e) => {
-                connectionsReturnRef.current = e.currentTarget;
-                setConnectionsModal({ tab: 'followers' });
-              }}
-              aria-label={`Ver ${followSummary.followers.length} seguidores`}
-              className="min-h-[44px] rounded-[4px] px-2 py-1 text-left font-medium text-ink hover:text-accent"
-            >
-              <strong>{followSummary.followers.length}</strong>{' '}
-              <span style={{ color: 'var(--text-secondary)' }}>Seguidores</span>
-            </button>
-            <span aria-hidden="true" className="text-subtle">
-              ·
-            </span>
-            <button
-              type="button"
-              onClick={(e) => {
-                connectionsReturnRef.current = e.currentTarget;
-                setConnectionsModal({ tab: 'following' });
-              }}
-              aria-label={`Ver ${followSummary.following.length} perfis seguindo`}
-              className="min-h-[44px] rounded-[4px] px-2 py-1 text-left font-medium text-ink hover:text-accent"
-            >
-              <strong>{followSummary.following.length}</strong>{' '}
-              <span style={{ color: 'var(--text-secondary)' }}>Seguindo</span>
-            </button>
-          </div>
+          {/* Métricas reais do acervo (ou seguidores/seguindo quando social ativo) */}
+          {SOCIAL_ENABLED ? (
+            <div className="flex flex-wrap items-center gap-1.5 border-y border-line py-2 text-xs tabular-nums">
+              <button
+                type="button"
+                onClick={() => setActiveTab('shelf')}
+                aria-label={`Ver ${backlogItems.length} obras catalogadas`}
+                className="min-h-[44px] rounded-[4px] px-2 py-1 text-left font-medium text-ink hover:text-accent"
+              >
+                <strong>{backlogItems.length}</strong>{' '}
+                <span style={{ color: 'var(--text-secondary)' }}>Obras</span>
+              </button>
+              <span aria-hidden="true" className="text-subtle">
+                ·
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  connectionsReturnRef.current = e.currentTarget;
+                  setConnectionsModal({ tab: 'followers' });
+                }}
+                aria-label={`Ver ${followSummary.followers.length} seguidores`}
+                className="min-h-[44px] rounded-[4px] px-2 py-1 text-left font-medium text-ink hover:text-accent"
+              >
+                <strong>{followSummary.followers.length}</strong>{' '}
+                <span style={{ color: 'var(--text-secondary)' }}>Seguidores</span>
+              </button>
+              <span aria-hidden="true" className="text-subtle">
+                ·
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  connectionsReturnRef.current = e.currentTarget;
+                  setConnectionsModal({ tab: 'following' });
+                }}
+                aria-label={`Ver ${followSummary.following.length} perfis seguindo`}
+                className="min-h-[44px] rounded-[4px] px-2 py-1 text-left font-medium text-ink hover:text-accent"
+              >
+                <strong>{followSummary.following.length}</strong>{' '}
+                <span style={{ color: 'var(--text-secondary)' }}>Seguindo</span>
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 border-y border-line py-2.5 sm:grid-cols-3 tabular-nums">
+              <button
+                type="button"
+                onClick={() => setActiveTab('shelf')}
+                aria-label={`Ver ${profileMetrics.totalWorks} obras no acervo`}
+                className="flex min-h-[44px] flex-col justify-center rounded-[4px] border border-line bg-app px-3 py-2 text-left transition-colors hover:border-accent"
+              >
+                <span
+                  className="text-[11px] font-medium uppercase tracking-wider"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Obras
+                </span>
+                <span className="text-sm font-semibold text-ink">
+                  {profileMetrics.totalWorks}{' '}
+                  <span
+                    className="text-xs font-normal"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    ({profileMetrics.completedWorks}{' '}
+                    {profileMetrics.completedWorks === 1 ? 'concluída' : 'concluídas'})
+                  </span>
+                </span>
+              </button>
 
-          {/* Barra de ações compacta com 3 botões */}
+              <div className="flex min-h-[44px] flex-col justify-center rounded-[4px] border border-line bg-app px-3 py-2">
+                <span
+                  className="text-[11px] font-medium uppercase tracking-wider"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Episódios / Horas
+                </span>
+                <span className="text-sm font-semibold text-ink">
+                  {profileMetrics.episodesWatched} eps · {profileMetrics.watchedHoursLabel}
+                </span>
+                {profileMetrics.unknownDurationCount > 0 && (
+                  <span
+                    className="text-[11px]"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    {profileMetrics.unknownDurationCount} sem duração excluída(s)
+                  </span>
+                )}
+              </div>
+
+              <div className="flex min-h-[44px] flex-col justify-center rounded-[4px] border border-line bg-app px-3 py-2">
+                <span
+                  className="text-[11px] font-medium uppercase tracking-wider"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Média Geral
+                </span>
+                <span className="text-sm font-semibold text-ink">
+                  {profileMetrics.averageRatingLabel}
+                  {profileMetrics.averageRating !== null ? ' / 100' : ''}
+                </span>
+                <span
+                  className="text-[11px]"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  {profileMetrics.ratedWorksCount > 0
+                    ? `${profileMetrics.ratedWorksCount} avaliada(s)`
+                    : 'Sem notas confirmadas'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Barra de ações compacta */}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -502,20 +630,22 @@ export function ProfileScreen({
               <span className="truncate">{profileCfg.editProfileLabel}</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                if (onOpenShareProfileCard) {
-                  onOpenShareProfileCard();
-                } else {
-                  handleShareInvite();
-                }
-              }}
-              className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-[4px] border border-line bg-card px-3 py-2 text-xs font-medium text-ink hover:border-accent hover:text-accent"
-            >
-              <QrCode className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-              <span className="truncate">Compartilhar Meu Perfil</span>
-            </button>
+            {SOCIAL_ENABLED && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (onOpenShareProfileCard) {
+                    onOpenShareProfileCard();
+                  } else {
+                    handleShareInvite();
+                  }
+                }}
+                className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-[4px] border border-line bg-card px-3 py-2 text-xs font-medium text-ink hover:border-accent hover:text-accent"
+              >
+                <QrCode className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                <span className="truncate">Compartilhar Meu Perfil</span>
+              </button>
+            )}
 
             <button
               ref={settingsBtnRef}
@@ -535,7 +665,7 @@ export function ProfileScreen({
             </button>
           </div>
 
-          {onOpenCommunity && (
+          {SOCIAL_ENABLED && onOpenCommunity && (
             <button
               type="button"
               onClick={onOpenCommunity}
@@ -548,7 +678,7 @@ export function ProfileScreen({
         </div>
       </header>
 
-      {/* Abas acessíveis (Publicações & Diário, Mural, Estante Pública, Insígnias) */}
+      {/* Abas acessíveis (Diário, Acervo, Insígnias; + Mural quando social ativo) */}
       <section className="-mx-4 sm:-mx-6 pt-1">
         <div
           role="tablist"
@@ -559,7 +689,7 @@ export function ProfileScreen({
           }}
         >
           {tabs.map((tab, idx) => {
-            const isActive = activeTab === tab.id;
+            const isActive = resolvedActiveTab === tab.id;
             return (
               <button
                 key={tab.id}
@@ -587,7 +717,7 @@ export function ProfileScreen({
         </div>
 
         {/* Monte apenas o conteúdo da aba ativa */}
-        {activeTab === 'journal' && (
+        {resolvedActiveTab === 'journal' && (
           <div className="px-4 sm:px-6 pt-4">
             {posts.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-3 rounded-[4px] border border-line bg-card px-4 py-8 text-center">
@@ -684,7 +814,7 @@ export function ProfileScreen({
           </div>
         )}
 
-        {activeTab === 'wall' && (
+        {SOCIAL_ENABLED && resolvedActiveTab === 'wall' && (
           <div className="px-4 sm:px-6 pt-4">
             <ProfileWall
               profileId={profile?.id}
@@ -698,11 +828,13 @@ export function ProfileScreen({
           </div>
         )}
 
-        {activeTab === 'shelf' && (
+        {resolvedActiveTab === 'shelf' && (
           <div className="px-4 sm:px-6 pt-4">
             {backlogItems.length === 0 ? (
               <p className="rounded-[4px] border border-line bg-card py-8 text-center text-xs text-muted">
-                Nenhuma obra catalogada na estante ainda.
+                {SOCIAL_ENABLED
+                  ? 'Nenhuma obra catalogada na estante ainda.'
+                  : 'Nenhuma obra catalogada no acervo ainda.'}
               </p>
             ) : (
               <div className="space-y-3">
@@ -753,7 +885,7 @@ export function ProfileScreen({
           </div>
         )}
 
-        {activeTab === 'badges' && (
+        {resolvedActiveTab === 'badges' && (
           <div className="px-4 sm:px-6 pt-4 space-y-4">
             <ReaderPassportWidget
               items={items}
@@ -786,7 +918,7 @@ export function ProfileScreen({
                   </div>
                   <div
                     role="progressbar"
-                    aria-label="Progresso de XP do leitor"
+                    aria-label="Progresso de XP do espectador"
                     aria-valuemin={0}
                     aria-valuemax={statsData.xpPerLevel}
                     aria-valuenow={statsData.currentLevelXp}
@@ -813,7 +945,7 @@ export function ProfileScreen({
       </section>
 
       {/* Modal de Seguidores / Seguindo */}
-      {connectionsModal && (
+      {SOCIAL_ENABLED && connectionsModal && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4"
           onClick={() => setConnectionsModal(null)}

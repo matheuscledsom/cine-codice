@@ -101,9 +101,9 @@ function normalizeItem(rawItem, spectatorDna = null) {
   const rawCurrentSeconds = normalizeNonNegativeInt(rawItem.currentSeconds);
   const currentSeconds = isCompleted && totalSeconds ? totalSeconds : rawCurrentSeconds;
 
-  const episodeDurationMinutes =
-    normalizeNullablePositiveInt(rawItem.episodeDurationMinutes) ||
-    (workType === 'anime' ? 24 : workType === 'series' ? 45 : null);
+  const episodeDurationMinutes = normalizeNullablePositiveInt(
+    rawItem.episodeDurationMinutes
+  );
 
   const episodeFields = syncCinemaEpisodeFields(rawItem, isCompleted);
   const withIds = applyCanonicalIdsToWork(rawItem);

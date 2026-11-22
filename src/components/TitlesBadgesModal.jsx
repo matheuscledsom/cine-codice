@@ -34,7 +34,7 @@ export function TitlesBadgesModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Títulos e Insígnias do Leitor"
+        aria-label="Títulos e Insígnias do Espectador"
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[92dvh] w-full max-w-2xl flex-col rounded-t-[6px] border border-line bg-card text-ink sm:rounded-[6px] pb-[env(safe-area-inset-bottom)]"
       >

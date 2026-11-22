@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { domainConfig, getStatusList } from '../config/domainConfig';
+import { SOCIAL_ENABLED } from '../config/flags';
 import { useToast } from '../context/ToastContext';
 import { formatNextAiringBadge } from '../lib/episodeStats';
 import { searchReaderProfiles, sendDirectMessage } from '../services/codiceBackend';
@@ -478,8 +479,12 @@ export function ItemDetailSheet({
           </div>
         </div>
 
-        {/* Ações principais no topo: Atualizar Progresso & Indicar */}
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {/* Ações principais no topo: Atualizar Progresso (& Indicar quando SOCIAL_ENABLED) */}
+        <div
+          className={`mt-4 grid grid-cols-1 gap-2 ${
+            SOCIAL_ENABLED ? 'sm:grid-cols-2' : ''
+          }`}
+        >
           <button
             type="button"
             onClick={() => {
@@ -497,22 +502,24 @@ export function ItemDetailSheet({
             <span>Atualizar Progresso</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setShareOpen((prev) => !prev)}
-            aria-expanded={shareOpen}
-            className={`flex min-h-[44px] w-full items-center justify-center gap-2 rounded-[4px] border px-3.5 py-2 text-xs font-medium transition-colors ${
-              shareOpen
-                ? 'border-accent bg-accent/10 text-accent'
-                : 'border-line bg-app text-ink hover:border-accent hover:text-accent'
-            }`}
-          >
-            <Share2 className="h-4 w-4 text-accent" strokeWidth={1.5} />
-            <span>Indicar Obra</span>
-          </button>
+          {SOCIAL_ENABLED && (
+            <button
+              type="button"
+              onClick={() => setShareOpen((prev) => !prev)}
+              aria-expanded={shareOpen}
+              className={`flex min-h-[44px] w-full items-center justify-center gap-2 rounded-[4px] border px-3.5 py-2 text-xs font-medium transition-colors ${
+                shareOpen
+                  ? 'border-accent bg-accent/10 text-accent'
+                  : 'border-line bg-app text-ink hover:border-accent hover:text-accent'
+              }`}
+            >
+              <Share2 className="h-4 w-4 text-accent" strokeWidth={1.5} />
+              <span>Indicar Obra</span>
+            </button>
+          )}
         </div>
 
-        {shareOpen && (
+        {SOCIAL_ENABLED && shareOpen && (
           <div className="mt-2.5 space-y-3 rounded-[4px] border border-line bg-app p-3">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] font-semibold text-ink">
@@ -575,10 +582,16 @@ export function ItemDetailSheet({
           </div>
         )}
 
-        {/* Abas da Obra: Ficha | (Episódios) | Falas & Cenas | Sessão Conjunta */}
+        {/* Abas da Obra: Ficha | (Episódios) | Falas & Cenas | (Sessão Conjunta se SOCIAL_ENABLED) */}
         <div
           className={`mt-4 grid gap-1 rounded-2xl border border-line bg-app p-1 ${
-            episodic ? 'grid-cols-4' : 'grid-cols-3'
+            episodic
+              ? SOCIAL_ENABLED
+                ? 'grid-cols-4'
+                : 'grid-cols-3'
+              : SOCIAL_ENABLED
+                ? 'grid-cols-3'
+                : 'grid-cols-2'
           }`}
         >
           <button
@@ -630,21 +643,23 @@ export function ItemDetailSheet({
               </span>
             )}
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveSheetTab('buddy')}
-            className={`flex min-h-[44px] items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[11px] font-semibold transition-colors ${
-              activeSheetTab === 'buddy'
-                ? 'bg-accent text-accent-ink'
-                : 'text-muted hover:text-ink'
-            }`}
-          >
-            <Users className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
-            <span className="truncate">Conjunta</span>
-          </button>
+          {SOCIAL_ENABLED && (
+            <button
+              type="button"
+              onClick={() => setActiveSheetTab('buddy')}
+              className={`flex min-h-[44px] items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[11px] font-semibold transition-colors ${
+                activeSheetTab === 'buddy'
+                  ? 'bg-accent text-accent-ink'
+                  : 'text-muted hover:text-ink'
+              }`}
+            >
+              <Users className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
+              <span className="truncate">Conjunta</span>
+            </button>
+          )}
         </div>
 
-        {activeSheetTab === 'buddy' ? (
+        {SOCIAL_ENABLED && activeSheetTab === 'buddy' ? (
           <div className="mt-4">
             <BuddyReadPanel item={item} profile={profile} />
           </div>

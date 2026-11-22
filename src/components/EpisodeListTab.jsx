@@ -1376,7 +1376,7 @@ export function EpisodeListTab({
         >
           <div className="flex items-center gap-1.5 text-xs font-semibold text-ink">
             <Layers className="h-4 w-4 text-accent" strokeWidth={1.5} />
-            <span>Arcos &amp; Capítulos</span>
+            <span>Arcos &amp; Episódios</span>
           </div>
 
           {userStoryArcs.length > 0 && (
