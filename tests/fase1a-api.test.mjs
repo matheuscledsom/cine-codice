@@ -15,6 +15,7 @@ import {
   getCachedEntry,
   getEpisodeEvaluationsForWork,
   getEpisodesTtlMs,
+  normalizeSafeCacheKey,
   saveEpisodeEvaluation,
   setCachedEntry,
 } from '../src/api/cacheDb.js';
@@ -24,9 +25,11 @@ import {
   ApiRateLimitError,
   ApiTimeoutError,
   getOmdbDailyUsage,
+  maskSecretsInText,
   parseRetryAfterMs,
   resetApiClientStateForTests,
   setOmdbDailyUsageForTests,
+  stripApiKeysFromUrl,
 } from '../src/api/httpClient.js';
 import {
   CACHE_STORES,
@@ -55,6 +58,8 @@ import {
   fetchOmdbByImdbId,
   lookupTvMazeByImdb,
   saveOmdbApiKey,
+  searchCinemaMedia,
+  testOmdbConnection,
 } from '../src/services/cinemaApi.js';
 
 function createMemoryStorage() {
@@ -616,5 +621,165 @@ describe('Fase 1A — Ponte de IDs (D1 / D2) e Headers CSP', () => {
     assert.match(txt, /https:\/\/www\.wikidata\.org/);
     assert.match(txt, /https:\/\/image\.tmdb\.org/);
     assert.match(txt, /https:\/\/s4\.anilist\.co/);
+  });
+
+  it('remove apikey/api_key das chaves de cache e mascara chaves em mensagens de erro', async () => {
+    const omdbSecret = 'demo-omdb-secret-9911';
+    const tmdbSecret = 'demo-tmdb-secret-8822';
+
+    assert.equal(
+      stripApiKeysFromUrl(`https://www.omdbapi.com/?apikey=${omdbSecret}&i=tt0133093`),
+      'https://www.omdbapi.com/?i=tt0133093'
+    );
+    assert.equal(
+      stripApiKeysFromUrl(`https://api.themoviedb.org/3/movie/603?api_key=${tmdbSecret}&language=pt-BR`),
+      'https://api.themoviedb.org/3/movie/603?language=pt-BR'
+    );
+    assert.equal(
+      normalizeSafeCacheKey(`https://www.omdbapi.com/?apikey=${omdbSecret}&i=tt0133093`),
+      'https://www.omdbapi.com/?i=tt0133093'
+    );
+
+    const saved = await setCachedEntry(
+      CACHE_STORES.ratings,
+      `https://www.omdbapi.com/?apikey=${omdbSecret}&i=tt0133093`,
+      { imdb: { value: 8.7 } }
+    );
+    assert.equal(saved.record.cacheKey.includes(omdbSecret), false);
+    assert.equal(saved.record.cacheKey.includes('apikey='), false);
+
+    // Busca TMDB no cache local não armazena valor da chave em nenhuma chave do localStorage
+    await searchCinemaMedia('Matrix', {
+      filter: 'movie',
+      sources: ['tmdb'],
+      tmdbApiKey: tmdbSecret,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: {},
+        json: async () => ({
+          results: [{ id: 603, media_type: 'movie', title: 'Matrix', release_date: '1999-03-31' }],
+        }),
+      }),
+    });
+    const searchCacheRaw = globalThis.localStorage.getItem('cine_codice_search_cache_v1') || '';
+    assert.equal(searchCacheRaw.includes(tmdbSecret), false);
+    assert.equal(searchCacheRaw.includes('api_key='), false);
+
+    // Mensagens de erro com eco de URL mascaram apikey= e api_key=
+    const echoedError = maskSecretsInText(
+      `Falha ao consultar https://www.omdbapi.com/?apikey=${omdbSecret}&i=tt0133093 e api_key=${tmdbSecret}`,
+      [omdbSecret, tmdbSecret]
+    );
+    assert.equal(echoedError.includes(omdbSecret), false);
+    assert.equal(echoedError.includes(tmdbSecret), false);
+    assert.match(echoedError, /apikey=\*{4}/);
+    assert.match(echoedError, /api_key=\*{4}/);
+
+    await assert.rejects(
+      () =>
+        apiRequest(`https://api.themoviedb.org/3/movie/603?api_key=${tmdbSecret}`, {
+          provider: 'tmdb',
+          maxRetries: 0,
+          fetchImpl: async (u) => {
+            throw new Error(`Network failed at ${u}`);
+          },
+        }),
+      (err) => {
+        assert.equal(err.message.includes(tmdbSecret), false);
+        assert.match(err.message, /api_key=\*{4}/);
+        return true;
+      }
+    );
+
+    const connRes = await testOmdbConnection(omdbSecret, {
+      fetchImpl: async () => ({
+        ok: false,
+        status: 401,
+        headers: {},
+        json: async () => ({ Response: 'False', Error: `Invalid API key: ${omdbSecret}` }),
+      }),
+    });
+    assert.equal(connRes.ok, false);
+    assert.equal(connRes.errorMessage.includes(omdbSecret), false);
+  });
+
+  it('continua funcionando sem erro quando IndexedDB falha (modo privado ou cota zero)', async () => {
+    const brokenIdbFactory = {
+      open() {
+        const err = new Error('Private mode forbids IndexedDB');
+        err.name = 'SecurityError';
+        throw err;
+      },
+    };
+
+    const cachedMiss = await getCachedEntry(CACHE_STORES.ratings, 'omdb:tt0133093', {
+      idbFactory: brokenIdbFactory,
+    });
+    assert.equal(cachedMiss.hit, false);
+
+    const savedInMem = await setCachedEntry(
+      CACHE_STORES.ratings,
+      'omdb:tt0133093',
+      { imdb: 8.7 },
+      { idbFactory: brokenIdbFactory }
+    );
+    assert.equal(savedInMem.saved, true);
+
+    const quotaZeroSave = await setCachedEntry(
+      CACHE_STORES.ratings,
+      'omdb:tt0111161',
+      { imdb: 9.3 },
+      {
+        idbFactory: brokenIdbFactory,
+        onQuotaTestHook: async () => {
+          const err = new Error('Quota exceeded');
+          err.name = 'QuotaExceededError';
+          throw err;
+        },
+      }
+    );
+    assert.equal(quotaZeroSave.saved, false);
+    assert.equal(quotaZeroSave.quotaFailed, true);
+
+    // Simula globalThis.indexedDB lançando SecurityError durante busca + OMDb completa
+    const prevIdb = globalThis.indexedDB;
+    globalThis.indexedDB = brokenIdbFactory;
+    try {
+      const searchRes = await searchCinemaMedia('Cowboy Bebop', {
+        filter: 'anime',
+        sources: ['jikan'],
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          headers: {},
+          json: async () => ({
+            data: [
+              { mal_id: 1, title: 'Cowboy Bebop', year: 1998, episodes: 26, type: 'TV' },
+            ],
+          }),
+        }),
+      });
+      assert.equal(searchRes.results.length, 1);
+
+      saveOmdbApiKey('demo-omdb-key-idb-test');
+      const omdbRes = await fetchOmdbByImdbId('tt0213338', {
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          headers: {},
+          json: async () => ({
+            Response: 'True',
+            imdbRating: '8.9',
+            imdbVotes: '140,000',
+            Ratings: [],
+          }),
+        }),
+      });
+      assert.equal(omdbRes.ok, true);
+      assert.equal(omdbRes.ratings.imdb.value, 8.9);
+    } finally {
+      globalThis.indexedDB = prevIdb;
+    }
   });
 });

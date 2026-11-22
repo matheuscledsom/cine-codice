@@ -16,6 +16,8 @@ import {
   apiRequest,
   ApiQuotaError,
   getOmdbDailyUsage,
+  maskSecretsInText,
+  stripApiKeysFromUrl,
 } from '../api/httpClient.js';
 import {
   API_TIMEOUT_MS,
@@ -339,18 +341,25 @@ function setCachedCinemaSearch(query, filter, sources, payload) {
 }
 
 function openSearchCacheIdb() {
-  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function') {
+    return Promise.resolve(null);
+  }
   return new Promise((resolve) => {
     try {
       const req = indexedDB.open(IDB_SEARCH_CACHE_DB, 1);
       req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(IDB_SEARCH_CACHE_STORE)) {
-          db.createObjectStore(IDB_SEARCH_CACHE_STORE, { keyPath: 'key' });
+        try {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_SEARCH_CACHE_STORE)) {
+            db.createObjectStore(IDB_SEARCH_CACHE_STORE, { keyPath: 'key' });
+          }
+        } catch {
+          // Modo privado pode bloquear criação de schema
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
     } catch {
       resolve(null);
     }
@@ -358,15 +367,16 @@ function openSearchCacheIdb() {
 }
 
 export async function getIdbCachedSearch(key) {
+  const safeKey = stripApiKeysFromUrl(key);
   const db = await openSearchCacheIdb();
   if (!db) return null;
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(IDB_SEARCH_CACHE_STORE, 'readonly');
-      const req = tx.objectStore(IDB_SEARCH_CACHE_STORE).get(key);
+      const req = tx.objectStore(IDB_SEARCH_CACHE_STORE).get(safeKey);
       req.onsuccess = () => {
         const rec = req.result;
-        db.close();
+        try { db.close(); } catch { /* silencioso */ }
         if (!rec || Date.now() - Number(rec.timestamp || 0) >= IDB_SEARCH_CACHE_TTL_MS) {
           resolve(null);
           return;
@@ -374,35 +384,46 @@ export async function getIdbCachedSearch(key) {
         resolve(rec);
       };
       req.onerror = () => {
-        db.close();
+        try { db.close(); } catch { /* silencioso */ }
+        resolve(null);
+      };
+      tx.onabort = () => {
+        try { db.close(); } catch { /* silencioso */ }
         resolve(null);
       };
     } catch {
+      try { db.close(); } catch { /* silencioso */ }
       resolve(null);
     }
   });
 }
 
 export async function setIdbCachedSearch(key, payload) {
+  const safeKey = stripApiKeysFromUrl(key);
   const db = await openSearchCacheIdb();
   if (!db) return;
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(IDB_SEARCH_CACHE_STORE, 'readwrite');
       tx.objectStore(IDB_SEARCH_CACHE_STORE).put({
-        key,
+        key: safeKey,
         ...payload,
         timestamp: Date.now(),
       });
       tx.oncomplete = () => {
-        db.close();
+        try { db.close(); } catch { /* silencioso */ }
         resolve();
       };
       tx.onerror = () => {
-        db.close();
+        try { db.close(); } catch { /* silencioso */ }
+        resolve();
+      };
+      tx.onabort = () => {
+        try { db.close(); } catch { /* silencioso */ }
         resolve();
       };
     } catch {
+      try { db.close(); } catch { /* silencioso */ }
       resolve();
     }
   });
@@ -1579,7 +1600,7 @@ export async function fetchOmdbByImdbId(
     if (json?.Response === 'False') {
       return {
         ok: false,
-        reason: json?.Error || 'OMDB_NOT_FOUND',
+        reason: maskSecretsInText(json?.Error || 'OMDB_NOT_FOUND', [key]),
         ratings: { imdb: null, rottenTomatoes: null, metacritic: null },
         data: null,
       };
@@ -1616,7 +1637,12 @@ export async function fetchOmdbByImdbId(
     if (err instanceof ApiQuotaError) {
       return { ok: false, reason: err.code, ratings: null, data: null, quota: err.usage };
     }
-    return { ok: false, reason: err?.code || 'OMDB_ERROR', ratings: null, data: null };
+    return {
+      ok: false,
+      reason: maskSecretsInText(err?.code || err?.message || 'OMDB_ERROR', [key]),
+      ratings: null,
+      data: null,
+    };
   }
 }
 
@@ -1642,14 +1668,20 @@ export async function testOmdbConnection(apiKey = '', { fetchImpl = fetch } = {}
     if (!res.ok || json?.Response === 'False') {
       return {
         ok: false,
-        errorMessage: json?.Error || (res.status === 401 ? 'Chave OMDb inválida.' : `Erro HTTP ${res.status}`),
+        errorMessage: maskSecretsInText(
+          json?.Error || (res.status === 401 ? 'Chave OMDb inválida.' : `Erro HTTP ${res.status}`),
+          [key]
+        ),
       };
     }
     return { ok: true, latencyMs, model: 'OMDb API' };
   } catch (err) {
     return {
       ok: false,
-      errorMessage: err instanceof ApiQuotaError ? err.message : 'Não foi possível conectar à OMDb agora.',
+      errorMessage:
+        err instanceof ApiQuotaError
+          ? maskSecretsInText(err.message, [key])
+          : 'Não foi possível conectar à OMDb agora.',
     };
   }
 }

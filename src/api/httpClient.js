@@ -298,6 +298,93 @@ function enqueueOnProvider(providerId, taskFn, { nowFn = Date.now, sleepFn = def
   return runPromise;
 }
 
+const SECRET_QUERY_PARAM_RE = /^(api_key|apikey|access_token|token)$/i;
+
+export function extractSecretParamsFromUrl(rawUrl) {
+  const secrets = [];
+  const str = String(rawUrl || '');
+  if (!str) return secrets;
+  try {
+    const parsed = new URL(str, 'https://local.invalid');
+    for (const [k, v] of parsed.searchParams.entries()) {
+      if (SECRET_QUERY_PARAM_RE.test(k) && v) {
+        secrets.push(v);
+      }
+    }
+  } catch {
+    const matches = str.matchAll(/(?:^|[?&])(?:api_?key|access_token|token)=([^&\s]+)/gi);
+    for (const m of matches) {
+      if (m[1]) {
+        try {
+          secrets.push(decodeURIComponent(m[1]));
+        } catch {
+          secrets.push(m[1]);
+        }
+      }
+    }
+  }
+  return Array.from(new Set(secrets.filter((s) => s.length >= 3)));
+}
+
+export function stripApiKeysFromUrl(rawUrl) {
+  const str = String(rawUrl || '').trim();
+  if (!str) return '';
+  if (!/[?&](?:api_?key|access_token|token)=/i.test(str)) {
+    return str;
+  }
+  try {
+    const isAbsolute = /^https?:\/\//i.test(str);
+    const parsed = new URL(str, 'https://local.invalid');
+    const toDelete = [];
+    for (const k of parsed.searchParams.keys()) {
+      if (SECRET_QUERY_PARAM_RE.test(k)) {
+        toDelete.push(k);
+      }
+    }
+    toDelete.forEach((k) => parsed.searchParams.delete(k));
+    if (isAbsolute) return parsed.toString();
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return str
+      .replace(/([?&])(api_?key|access_token|token)=[^&#]*/gi, '$1')
+      .replace(/[?&]+$/, '')
+      .replace(/\?&/, '?');
+  }
+}
+
+export function maskSecretsInText(rawText, explicitSecrets = []) {
+  let out = String(rawText ?? '');
+  if (!out) return out;
+  out = out.replace(/((?:api_?key|apikey|access_token)=)([^&\s'"]+)/gi, '$1****');
+  out = out.replace(/(Bearer\s+)([A-Za-z0-9._-]+)/gi, '$1****');
+  for (const secret of Array.isArray(explicitSecrets) ? explicitSecrets : []) {
+    const s = String(secret || '').trim();
+    if (s.length >= 3) {
+      out = out.split(s).join('****');
+      const encoded = encodeURIComponent(s);
+      if (encoded !== s) {
+        out = out.split(encoded).join('****');
+      }
+    }
+  }
+  return out;
+}
+
+function sanitizeThrownError(err, url, explicitSecrets = []) {
+  if (!err || typeof err !== 'object') {
+    return new Error(maskSecretsInText(String(err || 'Erro de rede'), explicitSecrets));
+  }
+  const urlSecrets = extractSecretParamsFromUrl(url);
+  const allSecrets = [...urlSecrets, ...(Array.isArray(explicitSecrets) ? explicitSecrets : [])];
+  const maskedMsg = maskSecretsInText(err.message || '', allSecrets);
+  if (maskedMsg === err.message) return err;
+  const safeErr = new Error(maskedMsg);
+  safeErr.name = err.name || 'Error';
+  if (err.code !== undefined) safeErr.code = err.code;
+  if (err.status !== undefined) safeErr.status = err.status;
+  return safeErr;
+}
+
 function makeAbortError(reason = 'Requisição cancelada.') {
   const err = new Error(typeof reason === 'string' ? reason : 'Requisição cancelada.');
   err.name = 'AbortError';
@@ -316,8 +403,9 @@ function cloneResponseSafe(res) {
 }
 
 function buildDefaultDedupKey(provider, method, url, body) {
+  const safeUrl = stripApiKeysFromUrl(url);
   const bodyStr = typeof body === 'string' ? body : body ? JSON.stringify(body) : '';
-  return `${provider}:${String(method || 'GET').toUpperCase()}:${url}:${bodyStr}`;
+  return `${provider}:${String(method || 'GET').toUpperCase()}:${safeUrl}:${bodyStr}`;
 }
 
 async function fetchSingleAttempt(
@@ -390,7 +478,7 @@ async function fetchSingleAttempt(
     if (sharedSignal?.aborted) {
       throw makeAbortError();
     }
-    throw err;
+    throw sanitizeThrownError(err, url);
   } finally {
     clearTimeout(timer);
     if (sharedSignal) {
@@ -445,7 +533,9 @@ export async function apiRequest(
     }
   }
 
-  const key = dedup ? dedupKey || buildDefaultDedupKey(provider, method, url, body) : null;
+  const key = dedup
+    ? stripApiKeysFromUrl(dedupKey || buildDefaultDedupKey(provider, method, url, body))
+    : null;
 
   let entry = key ? inflightRequests.get(key) : null;
   if (!entry) {

@@ -6,6 +6,7 @@
  * Módulo puro em .js (D7).
  */
 
+import { stripApiKeysFromUrl } from './httpClient.js';
 import {
   CACHE_DB_NAME,
   CACHE_SCHEMA_VERSION,
@@ -14,6 +15,10 @@ import {
   DURABLE_STORES,
   MAX_MEMORY_CACHE_ENTRIES_PER_STORE,
 } from './limits.js';
+
+export function normalizeSafeCacheKey(rawKey) {
+  return stripApiKeysFromUrl(String(rawKey || '').trim());
+}
 
 const ALL_TTL_STORES = Object.values(CACHE_STORES);
 
@@ -77,28 +82,33 @@ function openApiCacheDb(idbFactory = null) {
   const factory =
     idbFactory ||
     (typeof indexedDB !== 'undefined' ? indexedDB : null);
-  if (!factory) return Promise.resolve(null);
+  if (!factory || typeof factory.open !== 'function') return Promise.resolve(null);
 
   return new Promise((resolve) => {
     try {
       const req = factory.open(CACHE_DB_NAME, CACHE_SCHEMA_VERSION);
       req.onupgradeneeded = () => {
-        const db = req.result;
-        for (const storeName of ALL_TTL_STORES) {
-          if (!db.objectStoreNames.contains(storeName)) {
-            const store = db.createObjectStore(storeName, { keyPath: 'cacheKey' });
-            store.createIndex('updatedAt', 'updatedAt', { unique: false });
+        try {
+          const db = req.result;
+          for (const storeName of ALL_TTL_STORES) {
+            if (!db.objectStoreNames.contains(storeName)) {
+              const store = db.createObjectStore(storeName, { keyPath: 'cacheKey' });
+              store.createIndex('updatedAt', 'updatedAt', { unique: false });
+            }
           }
-        }
-        if (!db.objectStoreNames.contains(DURABLE_STORES.episodeEvaluations)) {
-          const evalStore = db.createObjectStore(DURABLE_STORES.episodeEvaluations, {
-            keyPath: 'evalKey',
-          });
-          evalStore.createIndex('workId', 'workId', { unique: false });
+          if (!db.objectStoreNames.contains(DURABLE_STORES.episodeEvaluations)) {
+            const evalStore = db.createObjectStore(DURABLE_STORES.episodeEvaluations, {
+              keyPath: 'evalKey',
+            });
+            evalStore.createIndex('workId', 'workId', { unique: false });
+          }
+        } catch {
+          // Modo privado pode bloquear criação de schema
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
     } catch {
       resolve(null);
     }
@@ -225,8 +235,16 @@ export async function evictOldestCacheEntries(
         await idbDeleteKeys(targetDb, storeName, keys);
         evicted += keys.length;
       }
+    } catch {
+      // Silencioso se o IndexedDB bloquear leitura/exclusão em modo privado
     } finally {
-      if (!db) targetDb.close?.();
+      if (!db) {
+        try {
+          targetDb.close?.();
+        } catch {
+          // Silencioso
+        }
+      }
     }
   }
 
@@ -242,22 +260,29 @@ export async function getCachedEntry(
     idbFactory = null,
   } = {}
 ) {
-  if (!ALL_TTL_STORES.includes(storeName) || !cacheKey) {
+  const safeKey = normalizeSafeCacheKey(cacheKey);
+  if (!ALL_TTL_STORES.includes(storeName) || !safeKey) {
     return { hit: false, expired: false, stale: false, data: null };
   }
 
-  let record = memoryStores.get(storeName)?.get(String(cacheKey)) || null;
+  let record = memoryStores.get(storeName)?.get(safeKey) || null;
 
   if (!record) {
     const db = await openApiCacheDb(idbFactory);
     if (db) {
       try {
-        record = await idbGet(db, storeName, String(cacheKey));
+        record = await idbGet(db, storeName, safeKey);
         if (record) {
           setMemoryEntry(storeName, 'cacheKey', record);
         }
+      } catch {
+        record = null;
       } finally {
-        db.close?.();
+        try {
+          db.close?.();
+        } catch {
+          // Silencioso
+        }
       }
     }
   }
@@ -306,13 +331,14 @@ export async function setCachedEntry(
     onQuotaTestHook = null,
   } = {}
 ) {
-  if (!ALL_TTL_STORES.includes(storeName) || !cacheKey) {
+  const safeKey = normalizeSafeCacheKey(cacheKey);
+  if (!ALL_TTL_STORES.includes(storeName) || !safeKey) {
     return { saved: false, evicted: 0 };
   }
 
   const resolvedTtl = Number(ttlMs) > 0 ? Number(ttlMs) : getDefaultTtlForStore(storeName);
   const record = {
-    cacheKey: String(cacheKey),
+    cacheKey: safeKey,
     data,
     fetchedAt: now,
     updatedAt: now,
@@ -330,7 +356,11 @@ export async function setCachedEntry(
     } catch (err) {
       if (isQuotaError(err)) {
         evicted += await evictOldestCacheEntries({ fraction: 0.25, idbFactory });
-        await onQuotaTestHook(record, { retriedAfterEviction: true });
+        try {
+          await onQuotaTestHook(record, { retriedAfterEviction: true });
+        } catch {
+          return { saved: false, quotaFailed: true, evicted, record };
+        }
       } else {
         throw err;
       }
@@ -347,13 +377,17 @@ export async function setCachedEntry(
           evicted += await evictOldestCacheEntries({ db, fraction: 0.25 });
           await idbPut(db, storeName, record);
         } else {
-          return { saved: false, evicted };
+          return { saved: false, evicted, record };
         }
       }
     } catch {
-      return { saved: false, evicted };
+      return { saved: false, quotaFailed: true, evicted, record };
     } finally {
-      db.close?.();
+      try {
+        db.close?.();
+      } catch {
+        // Silencioso
+      }
     }
   }
 
@@ -403,7 +437,11 @@ export async function saveEpisodeEvaluation(
     } catch {
       // Preserva em memória se IndexedDB falhar
     } finally {
-      db.close?.();
+      try {
+        db.close?.();
+      } catch {
+        // Silencioso
+      }
     }
   }
   return record;
@@ -425,8 +463,14 @@ export async function getEpisodeEvaluationsForWork(
         setMemoryEntry(DURABLE_STORES.episodeEvaluations, 'evalKey', rec)
       );
       if (filtered.length > 0) return filtered;
+    } catch {
+      // Fallback em memória se IndexedDB falhar
     } finally {
-      db.close?.();
+      try {
+        db.close?.();
+      } catch {
+        // Silencioso
+      }
     }
   }
 
@@ -443,8 +487,14 @@ export async function getAllEpisodeEvaluations({ idbFactory = null } = {}) {
         setMemoryEntry(DURABLE_STORES.episodeEvaluations, 'evalKey', rec)
       );
       return all;
+    } catch {
+      // Fallback em memória
     } finally {
-      db.close?.();
+      try {
+        db.close?.();
+      } catch {
+        // Silencioso
+      }
     }
   }
   return Array.from(memoryStores.get(DURABLE_STORES.episodeEvaluations).values());
