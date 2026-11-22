@@ -154,44 +154,31 @@ describe('Fase 6 — Perfil, social oculto (SOCIAL_ENABLED) e limpeza R7', () =>
     assert.equal(formatWatchedHoursLabel(0), '0h');
   });
 
-  it('SOCIAL_ENABLED = false oculta superfícies sociais mantendo o código preservado no disco', () => {
+  it('R6 (v1.2.0) — código social morto foi fisicamente removido e superfícies sociais não existem', () => {
     assert.equal(SOCIAL_ENABLED, false);
 
-    const preservedSocialFiles = [
+    const removedSocialFiles = [
       'src/components/social/CommunityScreen.jsx',
       'src/components/social/ProfileWall.jsx',
       'src/components/social/UserProfileModal.jsx',
       'src/components/social/DirectChatDrawer.jsx',
       'src/components/social/ShareProfileCardModal.jsx',
       'src/components/social/FriendProfileCardModal.jsx',
+      'src/components/social/ActivityFeed.jsx',
       'src/components/auth/AuthModal.jsx',
       'src/components/BuddyReadPanel.jsx',
-      'src/services/codiceBackend.js',
       'src/services/buddyReadService.js',
     ];
-    for (const rel of preservedSocialFiles) {
+    for (const rel of removedSocialFiles) {
       assert.equal(
         fs.existsSync(path.join(ROOT, rel)),
-        true,
-        `${rel} deve permanecer preservado no disco quando SOCIAL_ENABLED = false`
+        false,
+        `${rel} deve ter sido fisicamente removido na v1.2.0 (R6)`
       );
     }
 
     const bottomNavSrc = readSrc('src/components/BottomNav.jsx');
-    assert.match(bottomNavSrc, /SOCIAL_ENABLED/);
     assert.match(bottomNavSrc, /item\.id !== 'community'/);
-
-    const appSrc = readSrc('src/App.jsx');
-    assert.match(appSrc, /if \(!SOCIAL_ENABLED && activeTab === 'community'\)/);
-    assert.match(appSrc, /if \(!SOCIAL_ENABLED\) return;/);
-    assert.match(appSrc, /SOCIAL_ENABLED && activeTab === 'community'/);
-    assert.match(appSrc, /SOCIAL_ENABLED && authModalOpen/);
-    assert.match(appSrc, /SOCIAL_ENABLED && Boolean\(viewingUserProfileId\)/);
-    assert.match(appSrc, /SOCIAL_ENABLED && chatOpen/);
-    assert.match(appSrc, /SOCIAL_ENABLED && shareProfileModalOpen/);
-    assert.match(appSrc, /SOCIAL_ENABLED && Boolean\(friendCardModal\)/);
-    assert.match(appSrc, /SOCIAL_ENABLED && inviteCandidate/);
-    assert.match(appSrc, /unreadDmCount=\{SOCIAL_ENABLED \? unreadDmCount : 0\}/);
 
     const profileSrc = readSrc('src/screens/ProfileScreen.jsx');
     assert.match(profileSrc, /resolveProfileHeroBackdrop/);
@@ -201,17 +188,10 @@ describe('Fase 6 — Perfil, social oculto (SOCIAL_ENABLED) e limpeza R7', () =>
     assert.match(profileSrc, /Episódios \/ Horas/);
     assert.match(profileSrc, /Média Geral/);
     assert.match(profileSrc, /sem duração excluída/);
-    assert.match(profileSrc, /\{SOCIAL_ENABLED && resolvedActiveTab === 'wall'/);
-    assert.match(profileSrc, /\{SOCIAL_ENABLED && connectionsModal/);
-    assert.match(profileSrc, /\{SOCIAL_ENABLED && onOpenCommunity/);
-
-    const detailSrc = readSrc('src/components/ItemDetailSheet.jsx');
-    assert.match(detailSrc, /SOCIAL_ENABLED &&/);
-    assert.match(detailSrc, /Conjunta/);
+    assert.match(profileSrc, /Favoritos da Vida · Top 4/);
 
     const settingsSrc = readSrc('src/components/ProfileSettingsDrawer.jsx');
-    assert.match(settingsSrc, /SOCIAL_ENABLED/);
-    assert.match(settingsSrc, /SOCIAL_ENABLED \? 'Privacidade' : 'Modo Calmo'/);
+    assert.match(settingsSrc, /Modo Calmo/);
   });
 
   it('R7 — telas visíveis e prompts de IA não carregam resíduos de livros', () => {

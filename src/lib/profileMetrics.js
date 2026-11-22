@@ -140,3 +140,125 @@ export function computeProfileMetrics(items = []) {
     averageRatingLabel: averageRating !== null ? String(averageRating) : '—',
   };
 }
+
+export const PROFILE_AVATAR_EMBLEMS = [
+  { id: 'Film', label: 'Película 35mm' },
+  { id: 'Clapperboard', label: 'Claquete de Direção' },
+  { id: 'Tv', label: 'Tela & Séries' },
+  { id: 'Sparkles', label: 'Animação & Fantasia' },
+  { id: 'Award', label: 'Palma de Ouro' },
+  { id: 'Compass', label: 'Explorador de Acervo' },
+  { id: 'Flame', label: 'Sessão Contínua' },
+  { id: 'Star', label: 'Crítica & Curadoria' },
+];
+
+/**
+ * Monta os 4 slots da vitrine "Favoritos da Vida" (Top 4) a partir de favoriteRank (1..4).
+ */
+export function resolveTop4Favorites(items = []) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false
+  );
+
+  const byRank = new Map();
+  for (const work of backlog) {
+    const rank = Number(work.favoriteRank);
+    if (Number.isInteger(rank) && rank >= 1 && rank <= 4 && !byRank.has(rank)) {
+      byRank.set(rank, work);
+    }
+  }
+
+  return [1, 2, 3, 4].map((slot) => ({
+    slot,
+    work: byRank.get(slot) || null,
+  }));
+}
+
+/**
+ * Constrói o feed pessoal dinâmico com Últimas Avaliações, Episódios Vistos & Cenas Favoritas
+ * extraídas automaticamente do acervo do espectador.
+ */
+export function buildProfilePersonalFeed(items = [], posts = [], { limit = 16 } = {}) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false
+  );
+
+  const entries = [];
+
+  for (const work of backlog) {
+    const timestamp =
+      Date.parse(work.updatedAt || work.completedDate || work.createdAt || '') || 0;
+    const confirmedScore = isConfirmedUserRating(work) ? Number(work.rating) : null;
+    const sceneText =
+      String(work.favoriteScene || '').trim() ||
+      (Array.isArray(work.quotes) && work.quotes[0]?.text
+        ? String(work.quotes[0].text).trim()
+        : '');
+    const reviewText = String(work.notes || work.fichamento || '').trim();
+    const epsWatched = isEpisodicWork(work) ? getWatchedEpisodesCount(work) : 0;
+
+    if (sceneText) {
+      entries.push({
+        id: `feed-scene-${work.id}`,
+        kind: 'scene',
+        badge: 'Cena Marcante',
+        workId: work.id,
+        work,
+        title: work.title,
+        quoteText: sceneText,
+        rating: confirmedScore,
+        timestamp: timestamp + 2,
+      });
+    }
+
+    if (confirmedScore !== null || reviewText) {
+      entries.push({
+        id: `feed-review-${work.id}`,
+        kind: 'review',
+        badge: confirmedScore !== null ? `Avaliação · ${confirmedScore}/100` : 'Crítica Pessoal',
+        workId: work.id,
+        work,
+        title: work.title,
+        reviewText,
+        rating: confirmedScore,
+        timestamp: timestamp + 1,
+      });
+    } else if (epsWatched > 0 || work.status === 'completed' || work.status === 'playing') {
+      entries.push({
+        id: `feed-progress-${work.id}`,
+        kind: 'progress',
+        badge:
+          work.status === 'completed'
+            ? 'Concluída'
+            : isEpisodicWork(work)
+              ? `T${work.currentSeason || 1} · Ep. ${work.currentEpisode || epsWatched}`
+              : 'Em Sessão',
+        workId: work.id,
+        work,
+        title: work.title,
+        rating: null,
+        timestamp,
+      });
+    }
+  }
+
+  for (const post of Array.isArray(posts) ? posts : []) {
+    if (!post?.id) continue;
+    const linked = post.itemId ? backlog.find((w) => w.id === post.itemId) : null;
+    entries.push({
+      id: `feed-post-${post.id}`,
+      kind: 'post',
+      badge: post.progressMarker || 'Diário de Sessão',
+      workId: linked?.id || post.itemId || null,
+      work: linked || post.itemSnapshot || null,
+      post,
+      title: post.title || linked?.title || 'Nota de Sessão',
+      reviewText: post.content || '',
+      timestamp: Date.parse(post.createdAt || '') || 0,
+    });
+  }
+
+  return entries
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, Math.max(1, Number(limit) || 16));
+}

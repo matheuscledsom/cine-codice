@@ -1,19 +1,17 @@
-import { BarChart2, Home, Library, PlusCircle, User, Users } from 'lucide-react';
+import { BarChart2, Home, Library, PlusCircle, User } from 'lucide-react';
 import { domainConfig } from '../config/domainConfig';
-import { SOCIAL_ENABLED } from '../config/flags';
 
 const ICONS = {
   Home,
   BarChart2,
   PlusCircle,
   Library,
-  Users,
   User,
 };
 
-export function BottomNav({ activeTab, onChangeTab, unreadDmCount = 0 }) {
+export function BottomNav({ activeTab, onChangeTab }) {
   const navItems = domainConfig.navigation.filter(
-    (item) => SOCIAL_ENABLED || item.id !== 'community'
+    (item) => item.id !== 'community'
   );
 
   return (
@@ -62,18 +60,12 @@ export function BottomNav({ activeTab, onChangeTab, unreadDmCount = 0 }) {
               );
             }
 
-            const showUnread = SOCIAL_ENABLED && item.id === 'profile' && unreadDmCount > 0;
-
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => onChangeTab(item.id)}
-                aria-label={
-                  showUnread
-                    ? `${item.label} (${unreadDmCount} mensagens não lidas)`
-                    : item.label
-                }
+                aria-label={item.label}
                 aria-current={isActive ? 'page' : undefined}
                 className="relative flex flex-col items-center justify-center gap-1 py-1 min-h-[44px] transition-colors focus:outline-none"
               >
@@ -84,11 +76,6 @@ export function BottomNav({ activeTab, onChangeTab, unreadDmCount = 0 }) {
                     }`}
                     strokeWidth={1.5}
                   />
-                  {showUnread && (
-                    <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-[16px] px-1 rounded-[2px] bg-accent text-white text-[9px] font-semibold tabular-nums flex items-center justify-center">
-                      {unreadDmCount > 99 ? '99+' : unreadDmCount}
-                    </span>
-                  )}
                 </span>
                 <span
                   className={`text-[10px] font-medium tracking-tight transition-colors ${

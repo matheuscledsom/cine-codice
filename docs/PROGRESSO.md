@@ -2,8 +2,8 @@
 
 **Branch ativa:** `feat/v1.2.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.1.0 · Lumière` (merge na `main` `99478e0` + tag `v1.1.0` + `git push origin main --tags`)
-**Última fase concluída (v1.2.0):** `4`
-**Próxima fase (v1.2.0):** `5` (Perfil Top 4 Favoritos, Avatar Customizável & Remoção do Código Social)
+**Última fase concluída (v1.2.0):** `5`
+**Próxima fase (v1.2.0):** `6` (Regressão Completa, Auditoria Visual Multi-Resolução & Preparação v1.2.0)
 
 ## Linha do Tempo das Fases — Ciclo v1.2.0 · Lumière
 - [x] **Fase 0 (v1.2.0) — Auditoria Técnica, Git Pre-Flight & Mapeamento de Causa Raiz** — concluída sem alterações de código; roteiro salvo em [`docs/PROMPT_MESTRE_V1_2.md`](./PROMPT_MESTRE_V1_2.md).
@@ -24,7 +24,10 @@
 - [x] **Fase 4 (v1.2.0) — Métricas Acumuladas de Espectador (`StatsScreen.jsx` & `statsEngine.js`)** — concluída na branch `feat/v1.2.0-lumiere`.
   - Criado motor puro [`src/lib/statsEngine.js`](../src/lib/statsEngine.js) (`computeSpectatorMetrics`, `formatDecadeLabel`) e redesenhado [`src/screens/StatsScreen.jsx`](../src/screens/StatsScreen.jsx) como Bento Grid Editorial de Tempo & Volume, removendo as métricas de cobrança (*"Taxa de Conclusão"* e *"Média p/ concluir"*) e destacando o Hero de Tempo Acumulado (`watchedHours`, dias equivalentes de cinema, episódios assistidos, obras concluídas e média confirmada), Distribuição por Formato (Horas & Títulos em Filmes, Séries e Animes), Linha do Tempo por Década, Top Diretores/Estúdios e Gêneros por horas acumuladas, Mapa de Sessões e Cine Wrapped.
   - Criada suíte [`tests/fase4-v120-metrics.test.mjs`](../tests/fase4-v120-metrics.test.mjs) (`88/88` testes aprovados).
-- [ ] **Fase 5 (v1.2.0) — Perfil Top 4 Favoritos, Avatar Customizável & Remoção do Código Social**
+- [x] **Fase 5 (v1.2.0) — Perfil Top 4 Favoritos, Avatar Customizável & Remoção do Código Social** — concluída na branch `feat/v1.2.0-lumiere`.
+  - Redesenhado [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx) e [`src/components/ProfileEditModal.jsx`](../src/components/ProfileEditModal.jsx) com Avatar Customizável (upload local `256×256 px` em [`src/components/ImageCropModal.jsx`](../src/components/ImageCropModal.jsx) persistido no IndexedDB ou escolha entre os 8 emblemas cinematográficos minimalistas `PROFILE_AVATAR_EMBLEMS`), Vitrine *Favoritos da Vida · Top 4* (`resolveTop4Favorites`, grade `2:3` de 4 slots com seletor rápido `+ Escolher favorito`) e Feed Pessoal Dinâmico de *Últimas Cenas & Avaliações* (`buildProfilePersonalFeed` em [`src/lib/profileMetrics.js`](../src/lib/profileMetrics.js)).
+  - Removidos fisicamente os 10 arquivos sociais mortos (R6: `CommunityScreen.jsx`, `ProfileWall.jsx`, `DirectChatDrawer.jsx`, `UserProfileModal.jsx`, `FriendProfileCardModal.jsx`, `ShareProfileCardModal.jsx`, `ActivityFeed.jsx`, `AuthModal.jsx`, `BuddyReadPanel.jsx`, `buddyReadService.js`) e enxugados [`src/services/codiceBackend.js`](../src/services/codiceBackend.js), [`src/App.jsx`](../src/App.jsx) e [`src/components/BottomNav.jsx`](../src/components/BottomNav.jsx).
+  - Criada suíte [`tests/fase5-v120-profile-nosocial.test.mjs`](../tests/fase5-v120-profile-nosocial.test.mjs) (`92/92` testes aprovados).
 - [ ] **Fase 6 (v1.2.0) — Regressão Completa, Auditoria Visual Multi-Resolução & Preparação v1.2.0**
 
 ## Linha do Tempo das Fases — Ciclo v1.1.0 · Lumière (Concluído)

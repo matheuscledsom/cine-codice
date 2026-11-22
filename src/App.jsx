@@ -1,11 +1,10 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Download, RefreshCw, UserCheck, UserPlus, X } from 'lucide-react';
+import { AlertTriangle, Download, RefreshCw } from 'lucide-react';
 import { getAllEpisodeEvaluations, importEpisodeEvaluations } from './api/cacheDb';
 import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SkeletonScreen } from './components/SkeletonScreen';
 import { domainConfig } from './config/domainConfig';
-import { SOCIAL_ENABLED } from './config/flags';
 import { useToast } from './context/ToastContext';
 import { GraphicFilters } from './design/GraphicFilters';
 import { useAiConfig } from './hooks/useAiConfig';
@@ -34,15 +33,7 @@ import {
 } from './services/backupEngine';
 import {
   bootstrapBackend,
-  ensureLocalCommunitySeeded,
-  followReader,
   getBackendMode,
-  getUnreadMessagesCount,
-  listDirectConversations,
-  listDirectMessages,
-  listWallPosts,
-  parseInviteHandleParam,
-  resolveInviteProfile,
   syncActiveWorkspaceToBackend,
   updateActiveProfileInBackend,
 } from './services/codiceBackend';
@@ -52,12 +43,6 @@ import {
   createUuid,
   persistCodiceDatabase,
 } from './services/codiceDatabase';
-import {
-  decodePublicProfileCard,
-  listSavedPeerCards,
-  removeSavedPeerCard,
-  savePeerProfileCard,
-} from './services/peerProfileShare';
 import { evaluateReaderTitles } from './services/readerTitlesEngine';
 import {
   advanceEpisodeProgress,
@@ -76,16 +61,8 @@ const AddScreen = lazy(() =>
 const ListScreen = lazy(() =>
   import('./screens/ListScreen').then((m) => ({ default: m.ListScreen }))
 );
-const CommunityScreen = lazy(() =>
-  import('./components/social/CommunityScreen').then((m) => ({
-    default: m.CommunityScreen,
-  }))
-);
 const ProfileScreen = lazy(() =>
   import('./screens/ProfileScreen').then((m) => ({ default: m.ProfileScreen }))
-);
-const AuthModal = lazy(() =>
-  import('./components/auth/AuthModal').then((m) => ({ default: m.AuthModal }))
 );
 const BackupRestoreModal = lazy(() =>
   import('./components/BackupRestoreModal').then((m) => ({
@@ -114,26 +91,6 @@ const OnboardingFlow = lazy(() =>
 );
 const ThemeModal = lazy(() =>
   import('./components/ThemeModal').then((m) => ({ default: m.ThemeModal }))
-);
-const DirectChatDrawer = lazy(() =>
-  import('./components/social/DirectChatDrawer').then((m) => ({
-    default: m.DirectChatDrawer,
-  }))
-);
-const FriendProfileCardModal = lazy(() =>
-  import('./components/social/FriendProfileCardModal').then((m) => ({
-    default: m.FriendProfileCardModal,
-  }))
-);
-const ShareProfileCardModal = lazy(() =>
-  import('./components/social/ShareProfileCardModal').then((m) => ({
-    default: m.ShareProfileCardModal,
-  }))
-);
-const UserProfileModal = lazy(() =>
-  import('./components/social/UserProfileModal').then((m) => ({
-    default: m.UserProfileModal,
-  }))
 );
 const PerfOverlay = lazy(() =>
   import('./components/PerfOverlay').then((m) => ({ default: m.PerfOverlay }))
@@ -247,7 +204,6 @@ export function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [selectedItemId, setSelectedItemId] = useState(null);
   const [geminiModalOpen, setGeminiModalOpen] = useState(false);
-  const [authModalOpen, setAuthModalOpen] = useState(false);
   const [backupModalOpen, setBackupModalOpen] = useState(false);
   const [themeModalOpen, setThemeModalOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -273,20 +229,6 @@ export function App() {
     open: false,
     itemId: null,
   });
-  const [viewingUserProfileId, setViewingUserProfileId] = useState(null);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatPeerId, setChatPeerId] = useState(null);
-  const [unreadDmCount, setUnreadDmCount] = useState(0);
-  const [socialCounts, setSocialCounts] = useState({
-    wallPostsCount: 0,
-    chatMessagesCount: 0,
-  });
-  const [pendingInviteHandle, setPendingInviteHandle] = useState(null);
-  const [inviteCandidate, setInviteCandidate] = useState(null);
-  const [inviteFollowBusy, setInviteFollowBusy] = useState(false);
-  const [shareProfileModalOpen, setShareProfileModalOpen] = useState(false);
-  const [friendCardModal, setFriendCardModal] = useState(null);
-  const [savedPeerCards, setSavedPeerCards] = useState(() => listSavedPeerCards());
   const [backupReminderDismissed, setBackupReminderDismissed] = useState(false);
   const [backupReminderTick, setBackupReminderTick] = useState(0);
 
@@ -1187,48 +1129,6 @@ export function App() {
   const activeViewerId =
     backendSession?.user?.id || backendSession?.profile?.id || profile?.id || null;
 
-  const refreshSocialSignals = useCallback(() => {
-    if (!backendReady) return;
-    ensureLocalCommunitySeeded()
-      .then(() =>
-        Promise.all([
-          getUnreadMessagesCount({ viewerId: activeViewerId }),
-          listWallPosts(activeViewerId || 'local-default', {
-            viewerId: activeViewerId,
-          }),
-          listDirectConversations({ viewerId: activeViewerId }),
-        ])
-      )
-      .then(async ([unread, wallList, convs]) => {
-        setUnreadDmCount(Number(unread) || 0);
-        let msgCount = 0;
-        if (Array.isArray(convs) && convs.length > 0) {
-          const threads = await Promise.all(
-            convs.map((c) =>
-              listDirectMessages(c.peerId, { viewerId: activeViewerId }).catch(() => [])
-            )
-          );
-          msgCount = threads.reduce(
-            (sum, list) =>
-              sum +
-              (Array.isArray(list)
-                ? list.filter((m) => m.senderId === (activeViewerId || 'local-default')).length
-                : 0),
-            0
-          );
-        }
-        setSocialCounts({
-          wallPostsCount: Array.isArray(wallList) ? wallList.length : 0,
-          chatMessagesCount: msgCount,
-        });
-      })
-      .catch(() => {});
-  }, [backendReady, activeViewerId]);
-
-  useEffect(() => {
-    refreshSocialSignals();
-  }, [refreshSocialSignals]);
-
   const titleEvaluation = useMemo(
     () =>
       evaluateReaderTitles({
@@ -1237,10 +1137,10 @@ export function App() {
         readingSessions,
         streakCount,
         posts,
-        wallPostsCount: socialCounts.wallPostsCount,
-        chatMessagesCount: socialCounts.chatMessagesCount,
+        wallPostsCount: 0,
+        chatMessagesCount: 0,
       }),
-    [items, profile, readingSessions, streakCount, posts, socialCounts]
+    [items, profile, readingSessions, streakCount, posts]
   );
 
   const resolvedTitleBadge = titleEvaluation?.resolvedActiveBadge?.name || '';
@@ -1249,50 +1149,6 @@ export function App() {
     if (!backendReady || !titleEvaluation?.stalePinnedCleared) return;
     updateProfile({ activeTitleBadge: 'auto' });
   }, [backendReady, titleEvaluation?.stalePinnedCleared, updateProfile]);
-
-  useEffect(() => {
-    if (!SOCIAL_ENABLED && activeTab === 'community') {
-      setActiveTab('profile');
-    }
-  }, [activeTab]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search || '');
-    const hasInvite = params.has('invite');
-    const hasCard = params.has('card');
-    if (!hasInvite && !hasCard) return;
-
-    const rawInvite = hasInvite ? params.get('invite') : null;
-    const rawCard = hasCard ? params.get('card') : null;
-    const parsedHandle = rawInvite ? parseInviteHandleParam(rawInvite) : null;
-
-    params.delete('invite');
-    params.delete('card');
-    const nextSearch = params.toString();
-    const cleanUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash || ''}`;
-    if (typeof window.history?.replaceState === 'function') {
-      window.history.replaceState({}, '', cleanUrl);
-    }
-
-    if (!SOCIAL_ENABLED) return;
-
-    if (rawCard) {
-      const decoded = decodePublicProfileCard(rawCard);
-      if (decoded.ok) {
-        setFriendCardModal(decoded.card);
-      } else {
-        showToast({
-          message: decoded.error || 'Link de cartão de perfil inválido.',
-          type: 'error',
-        });
-      }
-    }
-
-    if (parsedHandle) {
-      setPendingInviteHandle(parsedHandle);
-    }
-  }, [showToast]);
 
   const backupReminder = useMemo(() => {
     if (backupReminderDismissed) {
@@ -1333,69 +1189,6 @@ export function App() {
       });
     }
   }, [items, profile, posts, streakData, readingSessions, collections, showToast]);
-
-  const handleSavePeerCard = useCallback(
-    (card) => {
-      if (!card) return;
-      const next = savePeerProfileCard(card);
-      setSavedPeerCards(next);
-      showToast({
-        message: `${card.displayName || card.handle} salvo na sua Rede local.`,
-        type: 'success',
-      });
-    },
-    [showToast]
-  );
-
-  const handleRemovePeerCard = useCallback(
-    (cardIdOrHandle) => {
-      const next = removeSavedPeerCard(cardIdOrHandle);
-      setSavedPeerCards(next);
-      showToast({ message: 'Contato removido da lista salva.', type: 'info' });
-    },
-    [showToast]
-  );
-
-  useEffect(() => {
-    if (!backendReady || !pendingInviteHandle) return undefined;
-    let active = true;
-    resolveInviteProfile(pendingInviteHandle, { viewerId: activeViewerId })
-      .then((resolved) => {
-        if (!active) return;
-        setPendingInviteHandle(null);
-        if (resolved) {
-          setInviteCandidate(resolved);
-        } else {
-          showToast({
-            message: `Convite ${pendingInviteHandle} não encontrado.`,
-            type: 'info',
-          });
-        }
-      })
-      .catch(() => {
-        if (active) setPendingInviteHandle(null);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [backendReady, pendingInviteHandle, activeViewerId, showToast]);
-
-  useEffect(() => {
-    if (!inviteCandidate) return undefined;
-    const onKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        setInviteCandidate(null);
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [inviteCandidate]);
-
-  const handleOpenDirectChat = useCallback((peerId = null) => {
-    setChatPeerId(peerId || null);
-    setChatOpen(true);
-  }, []);
 
   const handleCopyWorkToWishlist = useCallback(
     (work) => {
@@ -1452,15 +1245,14 @@ export function App() {
         caption:
           noteText ||
           `Recomendo assistir "${work.title}"${creator ? ` (${creator})` : ''}.`,
-        visibility: profile?.privacyLevel === 'private' ? 'private' : 'public',
+        visibility: 'private',
       });
-      refreshSocialSignals();
       showToast({
         message: `"${work.title}" registrada no Diário`,
         type: 'success',
       });
     },
-    [addPost, profile?.privacyLevel, refreshSocialSignals, showToast]
+    [addPost, showToast]
   );
 
   const handleSelectOrAddFromRecommendation = useCallback(
@@ -1732,24 +1524,6 @@ export function App() {
                   onAddItem={handleAddItem}
                 />
               )}
-              {SOCIAL_ENABLED && activeTab === 'community' && (
-                <CommunityScreen
-                  viewerId={activeViewerId}
-                  myProfile={profile}
-                  myShelfItems={items}
-                  savedPeerCards={savedPeerCards}
-                  unreadDmCount={unreadDmCount}
-                  backendMode={backendSession?.mode || 'local'}
-                  onOpenAuthModal={() => setAuthModalOpen(true)}
-                  onOpenShareProfileCard={() => setShareProfileModalOpen(true)}
-                  onOpenFriendCard={(card) => setFriendCardModal(card)}
-                  onRemoveFriendCard={handleRemovePeerCard}
-                  onOpenUserProfile={(id) => setViewingUserProfileId(id)}
-                  onOpenDirectChat={handleOpenDirectChat}
-                  onCopyBookToWishlist={handleCopyWorkToWishlist}
-                  onSocialChanged={refreshSocialSignals}
-                />
-              )}
               {activeTab === 'profile' && (
                 <ProfileScreen
                   items={items}
@@ -1757,25 +1531,12 @@ export function App() {
                   posts={posts}
                   readingSessions={readingSessions}
                   streakCount={streakCount}
-                  viewerId={activeViewerId}
-                  wallPostsCount={socialCounts.wallPostsCount}
-                  chatMessagesCount={socialCounts.chatMessagesCount}
                   geminiKey={geminiKey}
                   hasGeminiKey={aiConfig.hasAnyAiKey || hasGeminiKey}
                   aiConfig={aiConfig}
-                  backendSession={backendSession}
                   backupReminder={backupReminder}
                   onSaveBackupNow={handleSaveBackupCopyNow}
                   onDismissBackupReminder={() => setBackupReminderDismissed(true)}
-                  onOpenShareProfileCard={
-                    SOCIAL_ENABLED ? () => setShareProfileModalOpen(true) : undefined
-                  }
-                  onOpenCommunity={
-                    SOCIAL_ENABLED ? () => setActiveTab('community') : undefined
-                  }
-                  onOpenAuthModal={
-                    SOCIAL_ENABLED ? () => setAuthModalOpen(true) : undefined
-                  }
                   onOpenGeminiSettings={() => setGeminiModalOpen(true)}
                   onOpenThemeStudio={() => setThemeModalOpen(true)}
                   onOpenImportCatalog={() => setImportCatalogOpen(true)}
@@ -1821,6 +1582,7 @@ export function App() {
                   onUpdateProfile={(updates) =>
                     handleUpdateProfileWithSync(updates, 'Perfil atualizado')
                   }
+                  onUpdateItem={handleUpdateItem}
                   onSelectItem={(item) => setSelectedItemId(item.id)}
                   onOpenJournalComposer={handleOpenJournalComposer}
                   onDeletePost={deletePost}
@@ -1832,8 +1594,6 @@ export function App() {
                   onImportBackup={handleImportBackup}
                   onOpenBackupModal={() => setBackupModalOpen(true)}
                   onOpenAboutCredits={() => setAboutCreditsOpen(true)}
-                  onWallMutated={refreshSocialSignals}
-                  onSelectPeerProfile={(id) => setViewingUserProfileId(id)}
                 />
               )}
             </Suspense>
@@ -1841,9 +1601,8 @@ export function App() {
         </main>
 
         <BottomNav
-          activeTab={activeTab === 'community' ? 'profile' : activeTab}
+          activeTab={activeTab}
           onChangeTab={setActiveTab}
-          unreadDmCount={SOCIAL_ENABLED ? unreadDmCount : 0}
         />
 
         <Suspense fallback={null}>
@@ -1870,8 +1629,6 @@ export function App() {
               onRemoveItem={handleRemoveItem}
               onOpenJournal={handleOpenJournalComposer}
               onOpenGeminiSettings={() => setGeminiModalOpen(true)}
-              onRecommendToFeed={handleRecommendWorkToFeed}
-              onSocialActivityChanged={refreshSocialSignals}
               onFilterByCreator={(creatorName) => {
                 setSelectedItemId(null);
                 setRequestedCreatorQuery(String(creatorName || '').trim());
@@ -1945,81 +1702,6 @@ export function App() {
               onExportCsv={handleExportCsv}
               onExportBibtex={handleExportMarkdown}
               onApplyRestore={handleApplyRestoreSnapshot}
-            />
-          )}
-
-          {SOCIAL_ENABLED && authModalOpen && (
-            <AuthModal
-              isOpen={authModalOpen}
-              onClose={() => setAuthModalOpen(false)}
-              backendSession={backendSession}
-              currentWorkspace={{
-                profile,
-                items,
-                posts,
-                streak: streakData,
-                readingSessions,
-              }}
-              onAuthSuccess={handleAuthSuccess}
-            />
-          )}
-
-          {SOCIAL_ENABLED && Boolean(viewingUserProfileId) && (
-            <UserProfileModal
-              isOpen={Boolean(viewingUserProfileId)}
-              profileId={viewingUserProfileId}
-              viewerId={activeViewerId}
-              onClose={() => setViewingUserProfileId(null)}
-              onOpenDirectChat={(peerId) => {
-                setViewingUserProfileId(null);
-                handleOpenDirectChat(peerId);
-              }}
-              onCopyBookToWishlist={handleCopyWorkToWishlist}
-              onSelectPeerProfile={(id) => setViewingUserProfileId(id)}
-              onFollowChanged={refreshSocialSignals}
-            />
-          )}
-
-          {SOCIAL_ENABLED && chatOpen && (
-            <DirectChatDrawer
-              isOpen={chatOpen}
-              onClose={() => setChatOpen(false)}
-              viewerId={activeViewerId}
-              initialPeerId={chatPeerId}
-              myShelfItems={items}
-              backendMode={backendSession?.mode || 'local'}
-              onOpenAuthModal={() => setAuthModalOpen(true)}
-              onCopyBookToWishlist={handleCopyWorkToWishlist}
-              onUnreadChanged={refreshSocialSignals}
-            />
-          )}
-
-          {SOCIAL_ENABLED && shareProfileModalOpen && (
-            <ShareProfileCardModal
-              isOpen={shareProfileModalOpen}
-              onClose={() => setShareProfileModalOpen(false)}
-              profile={profile}
-              items={items}
-              activeTitleName={resolvedTitleBadge}
-              streakCount={streakCount}
-            />
-          )}
-
-          {SOCIAL_ENABLED && Boolean(friendCardModal) && (
-            <FriendProfileCardModal
-              isOpen={Boolean(friendCardModal)}
-              card={friendCardModal}
-              isAlreadySaved={Boolean(
-                friendCardModal &&
-                  savedPeerCards.some(
-                    (c) =>
-                      String(c.handle || '').toLowerCase() ===
-                      String(friendCardModal.handle || '').toLowerCase()
-                  )
-              )}
-              onClose={() => setFriendCardModal(null)}
-              onSaveFriend={handleSavePeerCard}
-              onCopyBookToWishlist={handleCopyWorkToWishlist}
             />
           )}
 
@@ -2136,136 +1818,6 @@ export function App() {
 
           {perfDebugEnabled && <PerfOverlay />}
         </Suspense>
-
-        {SOCIAL_ENABLED && inviteCandidate && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"
-            onClick={() => setInviteCandidate(null)}
-          >
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-label="Confirmação de convite"
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md rounded-[6px] border border-line bg-card p-5 text-ink space-y-4"
-            >
-              <div className="flex items-start justify-between gap-3 border-b border-line pb-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-                    Convite recebido
-                  </p>
-                  <h2 className="text-base font-serif font-semibold text-ink">
-                    Conectar com este perfil?
-                  </h2>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setInviteCandidate(null)}
-                  aria-label="Fechar convite"
-                  className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[4px] border border-line text-muted hover:text-ink"
-                >
-                  <X className="h-4 w-4" strokeWidth={1.5} />
-                </button>
-              </div>
-
-              <div className="flex items-center gap-3 rounded-[4px] border border-line bg-app p-3">
-                {inviteCandidate.avatarUrl ? (
-                  <img
-                    src={inviteCandidate.avatarUrl}
-                    alt={inviteCandidate.displayName || inviteCandidate.handle}
-                    className="h-12 w-12 shrink-0 rounded-full border border-line object-cover"
-                  />
-                ) : (
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-line bg-card text-sm font-serif font-semibold text-accent">
-                    {inviteCandidate.avatarInitials || 'CC'}
-                  </div>
-                )}
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-serif font-semibold text-ink">
-                    {inviteCandidate.displayName || inviteCandidate.handle}
-                  </p>
-                  <p className="truncate text-xs text-muted tabular-nums">
-                    {inviteCandidate.handle}
-                  </p>
-                </div>
-              </div>
-
-              {Boolean(
-                inviteCandidate.isLocalContact ||
-                  String(inviteCandidate.id || '').startsWith('contact:')
-              ) && (
-                <p className="rounded-[4px] border border-line bg-app px-3 py-2 text-xs text-muted leading-relaxed">
-                  Convite salvo na lista local de contatos. Conecte o Supabase para seguir em tempo real.
-                </p>
-              )}
-
-              <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const targetId = inviteCandidate.id;
-                    setInviteCandidate(null);
-                    if (targetId) setViewingUserProfileId(targetId);
-                  }}
-                  className="min-h-[44px] rounded-[4px] border border-line px-3.5 py-2 text-xs font-medium text-ink hover:border-accent hover:text-accent"
-                >
-                  Ver perfil
-                </button>
-
-                {inviteCandidate.isLocalContact ||
-                String(inviteCandidate.id || '').startsWith('contact:') ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setInviteCandidate(null);
-                      setAuthModalOpen(true);
-                    }}
-                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent px-3.5 py-2 text-xs font-medium text-accent-ink"
-                  >
-                    <UserCheck className="h-4 w-4" strokeWidth={1.5} />
-                    <span>Conectar Supabase</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={inviteFollowBusy}
-                    onClick={async () => {
-                      if (inviteFollowBusy) return;
-                      setInviteFollowBusy(true);
-                      try {
-                        const res = await followReader(inviteCandidate.id, {
-                          viewerId: activeViewerId,
-                        });
-                        showToast({
-                          message:
-                            res?.status === 'pending'
-                              ? 'Solicitação enviada.'
-                              : `Você começou a seguir ${inviteCandidate.displayName || inviteCandidate.handle}.`,
-                          type: 'success',
-                        });
-                        refreshSocialSignals();
-                        setInviteCandidate(null);
-                      } catch (err) {
-                        showToast({
-                          message:
-                            err?.userMessage ||
-                            'Não foi possível seguir este perfil.',
-                          type: 'error',
-                        });
-                      } finally {
-                        setInviteFollowBusy(false);
-                      }
-                    }}
-                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent px-3.5 py-2 text-xs font-medium text-accent-ink disabled:opacity-50"
-                  >
-                    <UserPlus className="h-4 w-4" strokeWidth={1.5} />
-                    <span>{inviteFollowBusy ? 'Seguindo...' : 'Seguir'}</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
