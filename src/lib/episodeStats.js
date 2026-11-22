@@ -14,6 +14,58 @@ export const EPISODE_TAGS = Object.freeze([
 
 export const MAX_EPISODE_REACTION_CHARS = 280;
 export const VIRTUALIZE_EPISODE_THRESHOLD = 100;
+export const JIKAN_EPISODE_PAGE_SIZE = 100;
+
+export function computeJikanEpisodeBlocks(totalEpisodes = 0, lastVisiblePage = 1) {
+  const numTotal = Math.max(0, Math.round(Number(totalEpisodes) || 0));
+  const pagesFromTotal = numTotal > 0 ? Math.ceil(numTotal / JIKAN_EPISODE_PAGE_SIZE) : 1;
+  const totalPages = Math.max(1, Math.round(Number(lastVisiblePage) || 1), pagesFromTotal);
+
+  return Array.from({ length: totalPages }, (_, idx) => {
+    const page = idx + 1;
+    const startEp = idx * JIKAN_EPISODE_PAGE_SIZE + 1;
+    const endEp =
+      numTotal > 0
+        ? Math.min(Math.max(numTotal, startEp), page * JIKAN_EPISODE_PAGE_SIZE)
+        : page * JIKAN_EPISODE_PAGE_SIZE;
+    return {
+      page,
+      blockIndex: idx,
+      startEp,
+      endEp,
+      label: `${startEp}–${endEp}`,
+    };
+  });
+}
+
+export function resolveEpisodeJumpTarget(
+  targetEpisodeNumber,
+  { totalEpisodes = 0, lastVisiblePage = 1, blockSize = JIKAN_EPISODE_PAGE_SIZE } = {}
+) {
+  const safeSize = Math.max(1, Math.round(Number(blockSize) || JIKAN_EPISODE_PAGE_SIZE));
+  const rawEp = Math.max(1, Math.round(Number(targetEpisodeNumber) || 1));
+  const maxAllowed =
+    Number(totalEpisodes) > 0
+      ? Math.max(Number(totalEpisodes), (Number(lastVisiblePage) || 1) * safeSize)
+      : Math.max(rawEp, (Number(lastVisiblePage) || 1) * safeSize);
+  const episodeNumber = Math.min(rawEp, maxAllowed);
+  const blockIndex = Math.floor((episodeNumber - 1) / safeSize);
+  const page = blockIndex + 1;
+  const startEp = blockIndex * safeSize + 1;
+  const endEp =
+    Number(totalEpisodes) > 0
+      ? Math.min(Math.max(Number(totalEpisodes), episodeNumber), page * safeSize)
+      : page * safeSize;
+
+  return {
+    episodeNumber,
+    page,
+    blockIndex,
+    startEp,
+    endEp,
+    label: `${startEp}–${endEp}`,
+  };
+}
 
 function compareDisplayOrder(a, b) {
   const sA = Math.max(1, Number(a?.season) || 1);

@@ -2,8 +2,8 @@
 
 **Branch ativa:** `feat/v1.3.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.2.0 · Lumière` (merge na `main` `bbf099c` + tag `v1.2.0` + `git push origin main --tags`)
-**Última fase concluída (v1.3.0):** `2`
-**Próxima fase (v1.3.0):** `3` (Página da Obra Imersiva: Paleta Dinâmica por Obra, Episódios Reais Paginados & Selos de Crítica)
+**Última fase concluída (v1.3.0):** `3`
+**Próxima fase (v1.3.0):** `4` (Franquias de Filmes vs. Universos de Séries/Animes, Onde Assistir BR & Distinção Visual no Catálogo)
 
 ## Linha do Tempo das Fases — Ciclo v1.3.0 · Lumière
 - [x] **Fase 0 (v1.3.0) — Auditoria Técnica & Mapeamento de Impacto** — concluída sem alterações; roteiro salvo em [`docs/PROMPT_MESTRE_V1_3.md`](./PROMPT_MESTRE_V1_3.md).
@@ -17,7 +17,11 @@
   - Criado [`src/services/backupCryptoService.js`](../src/services/backupCryptoService.js) e estendido [`src/services/backupEngine.js`](../src/services/backupEngine.js) com compressão GZIP nativa (`CompressionStream('gzip')` / `DecompressionStream('gzip')`), criptografia ponta-a-ponta opcional `PBKDF2 (150.000 iterações SHA-256) + AES-GCM 256-bit` no formato `.ccodex`, bloqueio de Base64 em pôsteres/backdrops e retrocompatibilidade 100% com backups `.json` legados.
   - Criado [`src/services/googleDriveBackup.js`](../src/services/googleDriveBackup.js) e integrado a [`src/components/BackupRestoreModal.jsx`](../src/components/BackupRestoreModal.jsx) e [`src/components/ProfileSettingsDrawer.jsx`](../src/components/ProfileSettingsDrawer.jsx) para envio e restauração de backups `.ccodex` no Google Drive pessoal (`drive.appdata`).
   - Criada suíte [`tests/fase2-v130-pwa-crypto-gdrive.test.mjs`](../tests/fase2-v130-pwa-crypto-gdrive.test.mjs) (`106/106` testes aprovados).
-- [ ] **Fase 3 (v1.3.0) — Página da Obra Imersiva: Paleta Dinâmica por Obra, Episódios Reais Paginados (*One Piece*) & Selos de Crítica**
+- [x] **Fase 3 (v1.3.0) — Página da Obra Imersiva: Paleta Dinâmica por Obra, Episódios Reais Paginados (*One Piece*) & Selos de Crítica** — concluída na branch `feat/v1.3.0-lumiere`.
+  - Criado [`src/utils/colorExtractor.js`](../src/utils/colorExtractor.js) (`extractWorkAdaptivePalette`, `getWorkAdaptivePaletteSync`, `calibrateWorkPaletteOklch`) com amostragem `<canvas>` + fallback determinístico OKLCH calibrado para contraste WCAG 2.2 AA (`>= 4.5:1`), integrado a [`src/components/WorkDetailPage.jsx`](../src/components/WorkDetailPage.jsx) com fundo atmosférico `blur(32px)` e variáveis locais `--work-accent` e `--work-glow`.
+  - Estendidos [`src/lib/episodeStats.js`](../src/lib/episodeStats.js) (`computeJikanEpisodeBlocks`, `resolveEpisodeJumpTarget`) e [`src/components/EpisodeListTab.jsx`](../src/components/EpisodeListTab.jsx) com paginação real da Jikan por blocos de 100 episódios (`1–100`, `101–200`, ..., `1001–1100` para *One Piece* `malId: 21`), título real, data, duração, resumo e badge `Filler` oficial, além de salto rápido **"Ir para o ep. #"** (ex.: `1015` abre direto o bloco `1001–1100` e destaca o episódio).
+  - Criado [`src/lib/ratingBadges.js`](../src/lib/ratingBadges.js) (`computeCritiqueComparisonBadge`, `computeWorkCritiqueBadge`) exibindo selos comparativos (*Obra-Prima Consensual*, *Sintonia Total*, *Você Amou Mais que o Público*, *Mais Exigente que a Crítica*) em [`src/components/WorkDetailPage.jsx`](../src/components/WorkDetailPage.jsx) e [`src/components/ExternalRatingsPanel.jsx`](../src/components/ExternalRatingsPanel.jsx).
+  - Criada suíte [`tests/fase3-v130-work-page-episodes-badges.test.mjs`](../tests/fase3-v130-work-page-episodes-badges.test.mjs) (`109/109` testes aprovados).
 - [ ] **Fase 4 (v1.3.0) — Franquias (Filmes) vs. Universos (Séries/Animes), Onde Assistir (BR) & Distinção Visual no Catálogo**
 - [ ] **Fase 5 (v1.3.0) — Métricas Compactas ("Zero-Scroll"), Início Refinada & Perfil Editorial**
 - [ ] **Fase 6 (v1.3.0) — Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0**

@@ -28,12 +28,15 @@ import {
 import { useToast } from '../context/ToastContext';
 import {
   EPISODE_TAGS,
+  JIKAN_EPISODE_PAGE_SIZE,
   MAX_EPISODE_REACTION_CHARS,
   buildEpisodeBarChartModel,
   computeEpisodeStats,
+  computeJikanEpisodeBlocks,
   computeVirtualEpisodeWindow,
   formatNextAiringBadge,
   needsManualRatingOverwriteConfirm,
+  resolveEpisodeJumpTarget,
 } from '../lib/episodeStats';
 import {
   formatEpisodeRating10,
@@ -60,16 +63,21 @@ import { playTactileSound } from '../utils/soundEffects';
 const ROW_VIRTUAL_HEIGHT = 96;
 const QUICK_SCORE_OPTIONS = Array.from({ length: 21 }, (_, idx) => idx * 5);
 
-function buildFallbackEpisodeNumbers(count) {
-  return Array.from({ length: Math.max(1, count) }, (_, i) => ({
-    number: i + 1,
-    title: `Episódio ${i + 1}`,
-    publicScore: null,
-    jikanFiller: false,
-    jikanRecap: false,
-    airdate: '',
-    runtime: null,
-  }));
+function buildFallbackEpisodeNumbers(count, startOffset = 0) {
+  return Array.from({ length: Math.max(1, count) }, (_, i) => {
+    const num = startOffset + i + 1;
+    return {
+      number: num,
+      title: `Episódio ${num}`,
+      publicScore: null,
+      jikanFiller: false,
+      jikanRecap: false,
+      airdate: '',
+      aired: '',
+      runtime: null,
+      summary: '',
+    };
+  });
 }
 
 export function EpisodeListTab({
@@ -113,6 +121,16 @@ export function EpisodeListTab({
   const [newArcStart, setNewArcStart] = useState('1');
   const [newArcEnd, setNewArcEnd] = useState('12');
   const [episodePageBlock, setEpisodePageBlock] = useState(0);
+  const [jikanPage, setJikanPage] = useState(() => {
+    const curEp = Math.max(1, Number(item?.currentEpisode) || 1);
+    return Math.floor((curEp - 1) / JIKAN_EPISODE_PAGE_SIZE) + 1;
+  });
+  const [jikanLastPage, setJikanLastPage] = useState(() =>
+    Math.max(1, Math.ceil((Number(item?.totalEpisodes) || 0) / JIKAN_EPISODE_PAGE_SIZE))
+  );
+  const [showJumpForm, setShowJumpForm] = useState(false);
+  const [jumpInput, setJumpInput] = useState('');
+  const [highlightedEp, setHighlightedEp] = useState(null);
 
   const abortRef = useRef(null);
 
@@ -127,7 +145,15 @@ export function EpisodeListTab({
     setListScrollTop(0);
     setTmdbGroups([]);
     setTmdbSuggestedArcs([]);
-  }, [item?.id, item?.totalSeasons, item?.currentSeason]);
+    const curEp = Math.max(1, Number(item?.currentEpisode) || 1);
+    setJikanPage(Math.floor((curEp - 1) / JIKAN_EPISODE_PAGE_SIZE) + 1);
+    setJikanLastPage(
+      Math.max(1, Math.ceil((Number(item?.totalEpisodes) || 0) / JIKAN_EPISODE_PAGE_SIZE))
+    );
+    setShowJumpForm(false);
+    setJumpInput('');
+    setHighlightedEp(null);
+  }, [item?.id, item?.totalSeasons, item?.currentSeason, item?.totalEpisodes]);
 
   // Carrega avaliações duráveis deste item ao montar/trocar obra
   useEffect(() => {
@@ -163,10 +189,27 @@ export function EpisodeListTab({
     [item?.storyArcs]
   );
 
+  const isJikanPaginatedAnime = Boolean(
+    item?.workType === 'anime' && (item?.ids?.mal || item?.malId)
+  );
+  const activeCacheKey = isJikanPaginatedAnime
+    ? `jikan:s${selectedSeason}:p${jikanPage}`
+    : `season:${selectedSeason}`;
+
   const loadSeasonData = useCallback(
-    async (seasonNum, { forceRefresh = false } = {}) => {
+    async (seasonNum, { forceRefresh = false, pageOverride = null } = {}) => {
       if (!item?.id) return;
-      if (!forceRefresh && seasonCache[seasonNum]?.loaded) return;
+      const malId = item.ids?.mal || item.malId;
+      const isAnimeJikan = Boolean(item.workType === 'anime' && malId);
+      const effectiveJikanPage = Math.max(
+        1,
+        Number(pageOverride) || Number(jikanPage) || 1
+      );
+      const cacheSlotKey = isAnimeJikan
+        ? `jikan:s${seasonNum}:p${effectiveJikanPage}`
+        : `season:${seasonNum}`;
+
+      if (!forceRefresh && seasonCache[cacheSlotKey]?.loaded) return;
 
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -175,13 +218,12 @@ export function EpisodeListTab({
       const tmdbId = item.ids?.tmdb || item.tmdbId;
       const imdbId = item.ids?.imdb || item.imdbId;
       const tvmazeId = item.ids?.tvmaze || item.tvmazeId;
-      const malId = item.ids?.mal || item.malId;
       const hasAnyEpApi = Boolean(tmdbId || tvmazeId || malId || imdbId);
 
       if (!hasAnyEpApi) {
         setSeasonCache((prev) => ({
           ...prev,
-          [seasonNum]: { loaded: true, episodes: [], partial: false },
+          [cacheSlotKey]: { loaded: true, episodes: [], partial: false },
         }));
         setLoadingSeason(false);
         setSeasonError(false);
@@ -201,25 +243,32 @@ export function EpisodeListTab({
         let anyFailed = false;
 
         // 1. Base de episódios (máx. 2 em paralelo por etapa)
-        if (item.workType === 'anime' && malId) {
+        if (isAnimeJikan) {
           const jikanRes = await fetchJikanEpisodes(malId, {
-            page: seasonNum,
+            page: effectiveJikanPage,
             showStatus,
             allowStaleOffline: true,
             signal: controller.signal,
           });
           if (jikanRes && Array.isArray(jikanRes.episodes)) {
             anyAttemptedSuccess = true;
+            if (Number(jikanRes.lastVisiblePage) > 1) {
+              setJikanLastPage((prev) =>
+                Math.max(prev, Number(jikanRes.lastVisiblePage) || 1)
+              );
+            }
             if (jikanRes.isOfflineCache) {
               anyOffline = true;
               offlineDate = offlineDate || jikanRes.cacheDateLabel || '';
             }
+            const baseOffset = (effectiveJikanPage - 1) * JIKAN_EPISODE_PAGE_SIZE;
             jikanRes.episodes.forEach((ep, idx) => {
-              const num = ep.number || idx + 1;
+              const num = ep.number || baseOffset + idx + 1;
               mergedByNum.set(num, {
                 number: num,
                 title: ep.title || `Episódio ${num}`,
                 aired: ep.aired || '',
+                airdate: ep.aired ? String(ep.aired).slice(0, 10) : '',
                 publicScore: ep.score ?? null,
                 jikanFiller: Boolean(ep.filler),
                 jikanRecap: Boolean(ep.recap),
@@ -323,7 +372,7 @@ export function EpisodeListTab({
         const sortedList = Array.from(mergedByNum.values()).sort((a, b) => a.number - b.number);
         setSeasonCache((prev) => ({
           ...prev,
-          [seasonNum]: {
+          [cacheSlotKey]: {
             loaded: true,
             episodes: sortedList,
             partial: anyFailed && anyAttemptedSuccess,
@@ -341,16 +390,16 @@ export function EpisodeListTab({
         }
       }
     },
-    [item, seasonCache, tmdbKey, omdbKey]
+    [item, seasonCache, tmdbKey, omdbKey, jikanPage]
   );
 
   useEffect(() => {
-    loadSeasonData(selectedSeason);
+    loadSeasonData(selectedSeason, { pageOverride: jikanPage });
     return () => {
       abortRef.current?.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item?.id, selectedSeason]);
+  }, [item?.id, selectedSeason, jikanPage]);
 
   // Busca episode_groups do TMDB como sugestão de arcos apenas se TMDB ID existir
   useEffect(() => {
@@ -374,7 +423,15 @@ export function EpisodeListTab({
   }, [item?.id, item?.ids?.tmdb, item?.tmdbId, item?.workType, item?.tmdbStatus, tmdbKey]);
 
   const seasonCountFallback = getSeasonEpisodeCount(item, selectedSeason);
-  const loadedSeason = seasonCache[selectedSeason];
+  const loadedSeason = seasonCache[activeCacheKey];
+
+  const jikanBlocks = useMemo(
+    () =>
+      isJikanPaginatedAnime
+        ? computeJikanEpisodeBlocks(item?.totalEpisodes || seasonCountFallback, jikanLastPage)
+        : [],
+    [isJikanPaginatedAnime, item?.totalEpisodes, seasonCountFallback, jikanLastPage]
+  );
 
   const seasonEpisodes = useMemo(() => {
     const list = loadedSeason?.episodes;
@@ -393,8 +450,51 @@ export function EpisodeListTab({
         }));
       if (filtered.length > 0) return filtered;
     }
+    if (isJikanPaginatedAnime) {
+      const block =
+        jikanBlocks.find((b) => b.page === jikanPage) ||
+        jikanBlocks[0] || { startEp: 1, endEp: Math.min(100, seasonCountFallback) };
+      const countInBlock = Math.max(1, block.endEp - block.startEp + 1);
+      return buildFallbackEpisodeNumbers(countInBlock, block.startEp - 1);
+    }
     return buildFallbackEpisodeNumbers(seasonCountFallback);
-  }, [loadedSeason, item?.episodeList, selectedSeason, seasonCountFallback]);
+  }, [
+    loadedSeason,
+    item?.episodeList,
+    selectedSeason,
+    seasonCountFallback,
+    isJikanPaginatedAnime,
+    jikanBlocks,
+    jikanPage,
+  ]);
+
+  const handleJumpToEpisodeSubmit = (e) => {
+    e.preventDefault();
+    const rawNum = Number(jumpInput);
+    if (!Number.isFinite(rawNum) || rawNum < 1) return;
+
+    if (isJikanPaginatedAnime) {
+      const target = resolveEpisodeJumpTarget(rawNum, {
+        totalEpisodes: item?.totalEpisodes || seasonCountFallback,
+        lastVisiblePage: jikanLastPage,
+        blockSize: JIKAN_EPISODE_PAGE_SIZE,
+      });
+      setJikanPage(target.page);
+      setEpisodePageBlock(0);
+      setHighlightedEp(target.episodeNumber);
+      setShowJumpForm(false);
+      return;
+    }
+
+    const target = resolveEpisodeJumpTarget(rawNum, {
+      totalEpisodes: seasonEpisodes.length,
+      lastVisiblePage: Math.ceil(seasonEpisodes.length / 50),
+      blockSize: 50,
+    });
+    setEpisodePageBlock(target.blockIndex);
+    setHighlightedEp(target.episodeNumber);
+    setShowJumpForm(false);
+  };
 
   const virtualWin = useMemo(
     () =>
@@ -409,6 +509,9 @@ export function EpisodeListTab({
   );
 
   const visibleEpisodes = useMemo(() => {
+    if (isJikanPaginatedAnime) {
+      return seasonEpisodes;
+    }
     if (virtualWin.virtualized) {
       return seasonEpisodes.slice(virtualWin.startIndex, virtualWin.endIndex + 1);
     }
@@ -417,7 +520,7 @@ export function EpisodeListTab({
       return seasonEpisodes.slice(start, start + 50);
     }
     return seasonEpisodes;
-  }, [seasonEpisodes, virtualWin, episodePageBlock]);
+  }, [isJikanPaginatedAnime, seasonEpisodes, virtualWin, episodePageBlock]);
 
   const getSeasonWatchedProgress = useCallback(
     (sNum) => {
@@ -1086,6 +1189,13 @@ export function EpisodeListTab({
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
+              onClick={() => setShowJumpForm((prev) => !prev)}
+              className="inline-flex min-h-[44px] items-center gap-1 rounded-[4px] border border-line bg-card px-2.5 text-xs font-medium text-accent hover:border-accent"
+            >
+              <span>Ir para o ep. #</span>
+            </button>
+            <button
+              type="button"
               onClick={() => handleQuickAdvanceSeason(1)}
               className="inline-flex min-h-[44px] items-center gap-1 rounded-[4px] border border-line bg-card px-2.5 text-xs font-semibold tabular-nums text-ink hover:border-accent"
             >
@@ -1109,7 +1219,53 @@ export function EpisodeListTab({
           </div>
         </div>
 
-        {!virtualWin.virtualized && seasonEpisodes.length > 50 && (
+        {showJumpForm && (
+          <form
+            onSubmit={handleJumpToEpisodeSubmit}
+            className="flex flex-wrap items-center gap-2 rounded-[4px] border border-accent/40 bg-card p-2.5"
+          >
+            <span className="text-xs font-medium text-ink">Ir para o ep. #:</span>
+            <input
+              type="number"
+              min="1"
+              value={jumpInput}
+              onChange={(e) => setJumpInput(e.target.value)}
+              placeholder="Ex: 1015"
+              aria-label="Número do episódio para ir diretamente"
+              className="min-h-[38px] w-28 rounded-[4px] border border-line bg-app px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+            />
+            <button
+              type="submit"
+              className="min-h-[38px] rounded-[4px] bg-accent px-3 text-xs font-semibold text-accent-ink"
+            >
+              Ir
+            </button>
+          </form>
+        )}
+
+        {isJikanPaginatedAnime && jikanBlocks.length > 1 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            {jikanBlocks.map((block) => (
+              <button
+                key={block.page}
+                type="button"
+                onClick={() => {
+                  setJikanPage(block.page);
+                  setHighlightedEp(null);
+                }}
+                className={`min-h-[38px] rounded-[4px] border px-2.5 text-[11px] font-semibold tabular-nums ${
+                  jikanPage === block.page
+                    ? 'border-accent bg-accent/15 text-ink'
+                    : 'border-line bg-card text-muted hover:text-ink'
+                }`}
+              >
+                {block.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {!isJikanPaginatedAnime && !virtualWin.virtualized && seasonEpisodes.length > 50 && (
           <div className="flex flex-wrap items-center gap-1.5 pt-1">
             {Array.from({ length: Math.ceil(seasonEpisodes.length / 50) }, (_, bIdx) => {
               const startNum = bIdx * 50 + 1;
@@ -1205,8 +1361,13 @@ export function EpisodeListTab({
             return (
               <div
                 key={ep.number}
+                data-episode-number={ep.number}
                 className={`space-y-2 rounded-[4px] border px-3 py-2 ${
-                  isWatched ? 'border-accent/50 bg-card' : 'border-line bg-card'
+                  highlightedEp === ep.number
+                    ? 'border-accent bg-accent/10 ring-1 ring-accent'
+                    : isWatched
+                      ? 'border-accent/50 bg-card'
+                      : 'border-line bg-card'
                 } ${virtualWin.virtualized ? 'min-h-[88px]' : ''}`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1218,7 +1379,23 @@ export function EpisodeListTab({
                       <span className="truncate text-xs font-medium text-ink">
                         {ep.title}
                       </span>
+                      {(ep.airdate || ep.aired) && (
+                        <span className="text-[10px] tabular-nums text-subtle">
+                          · {String(ep.airdate || ep.aired).slice(0, 10)}
+                        </span>
+                      )}
+                      {ep.runtime && (
+                        <span className="text-[10px] tabular-nums text-subtle">
+                          · {ep.runtime} min
+                        </span>
+                      )}
                     </div>
+
+                    {ep.summary && (
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted">
+                        {ep.summary}
+                      </p>
+                    )}
 
                     <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] tabular-nums text-muted">
                       {ev?.rating !== null && ev?.rating !== undefined && (

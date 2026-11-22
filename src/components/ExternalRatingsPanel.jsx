@@ -1,10 +1,12 @@
 import {
   AlertTriangle,
+  Award,
   BarChart3,
   KeyRound,
   RefreshCw,
   WifiOff,
 } from 'lucide-react';
+import { computeWorkCritiqueBadge } from '../lib/ratingBadges';
 import { buildExternalRatingsViewModel } from '../lib/ratings';
 
 function formatVotesCompact(votes) {
@@ -36,6 +38,7 @@ export function ExternalRatingsPanel({
     cacheDateLabel,
     hasAttempted,
   });
+  const critiqueBadge = computeWorkCritiqueBadge(item);
 
   const showBadges = vm.badges.length > 0;
   const showSkeletons = vm.skeletonSourceIds.length > 0;
@@ -199,9 +202,19 @@ export function ExternalRatingsPanel({
             <span className="text-[11px] font-semibold text-ink">
               Sua Nota vs. Público
             </span>
-            <span className="rounded-[4px] border border-accent/40 bg-accent/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">
-              {vm.comparison.alignmentText}
-            </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {critiqueBadge && (
+                <span className="inline-flex items-center gap-1 rounded-[4px] border border-accent bg-accent/20 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">
+                  <Award className="h-3 w-3" strokeWidth={1.5} />
+                  <span>
+                    {critiqueBadge.label} ({critiqueBadge.detail})
+                  </span>
+                </span>
+              )}
+              <span className="rounded-[4px] border border-accent/40 bg-accent/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">
+                {vm.comparison.alignmentText}
+              </span>
+            </div>
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-4 text-[11px] tabular-nums text-muted">
             <span>
