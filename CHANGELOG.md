@@ -17,6 +17,14 @@ npm run version:major -- --name="Odin"
 
 ---
 
+## [v1.1.0 · Lumière] — 2026-11
+
+**Resumo:** Atualização de uso pessoal e privado (`SOCIAL_ENABLED = false`), infraestrutura de fila/cache de APIs (incluindo OMDb com IMDb, Rotten Tomatoes e Metacritic), ponte canônica de IDs, migração atômica sem nota 80 automática, avaliação individual por episódio (`0–100`), radar automático de franquias (TMDB/AniList/Jikan), Home redesenhada em 4 estados e Perfil com banner da obra ativa, métricas reais e limpeza de textos residuais de livro.
+
+## [v1.0.0 · Lumière] — 2026-11
+
+**Resumo:** Lançamento da cinemateca pessoal Cine Códice (filmes, séries e animes) com agregador multi-fonte gratuito, controle tátil de minutagem/episódios, DNA do Espectador em 8 dimensões, Bilhete de Cinema PNG, Cine Wrapped PNG e Blindagem Tripla anti-perda.
+
 ## [v5.0.0 · Alexandria] — 2026-11
 
 **Resumo:** Códice 5.0.0 Alexandria: Leitura Conjunta com Escudo Anti-Spoiler no DOM, Códice Wrapped exportável em PNG, Blindagem Tripla sem imagens Base64 e File Handlers PWA (.epub/.pdf/.cbz).

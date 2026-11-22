@@ -1,8 +1,8 @@
 # Progresso — Cine Códice v1.1.0 · Lumière
 
 **Branch ativa:** `feat/v1.1.0-lumiere`
-**Última fase concluída:** `6`
-**Próxima fase:** `7` (Testes finais, versão 1.1.0 e publicação)
+**Última fase concluída:** `7` (pronta para publicação mediante comando `publicar`)
+**Próxima fase:** `Publicação na main (tag v1.1.0)`
 
 ## Linha do Tempo das Fases
 - [x] **Fase 0 — Auditoria (somente leitura)** — concluída na `main` sem alterações.
@@ -49,7 +49,10 @@
   - Adicionada flag `SOCIAL_ENABLED = false` em [`src/config/flags.js`](../src/config/flags.js) para ocultar sem apagar nenhum código nem dado: barra inferior (`Comunidade` + badge DM em [`src/components/BottomNav.jsx`](../src/components/BottomNav.jsx)), rotas e modais (`CommunityScreen`, `AuthModal`, `UserProfileModal`, `DirectChatDrawer`, `ShareProfileCardModal`, `FriendProfileCardModal`, parâmetros `?invite=`/`?card=` e diálogo de convite em [`src/App.jsx`](../src/App.jsx)), aba `Mural`, `@handle`, `"Compartilhar Meu Perfil"`, `"Rede & Amigos"` e lista de conexões em [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx), `"Conjunta"` / `"Indicar Obra"` em [`src/components/ItemDetailSheet.jsx`](../src/components/ItemDetailSheet.jsx) e visibilidade pública/mural/comentários/chat + aba `"Modo Calmo"` em [`src/components/ProfileSettingsDrawer.jsx`](../src/components/ProfileSettingsDrawer.jsx).
   - Removidos resíduos visíveis de livros (Regra **R7**) em [`src/components/ReadingStreakWidget.jsx`](../src/components/ReadingStreakWidget.jsx), [`src/components/JournalComposerModal.jsx`](../src/components/JournalComposerModal.jsx), [`src/utils/themeTokens.js`](../src/utils/themeTokens.js), [`src/components/TitlesBadgesModal.jsx`](../src/components/TitlesBadgesModal.jsx), [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx), [`src/components/EpisodeListTab.jsx`](../src/components/EpisodeListTab.jsx) e [`src/services/geminiApi.js`](../src/services/geminiApi.js), mantendo módulos sociais desativados, chaves internas de armazenamento e falsos positivos técnicos devidamente justificados.
   - Criada suíte [`tests/fase6-profile-social-r7.test.mjs`](../tests/fase6-profile-social-r7.test.mjs) (`68/68` testes aprovados).
-- [ ] **Fase 7 — Testes finais, versão 1.1.0 e publicação**
+- [x] **Fase 7 — Testes finais, versão 1.1.0 e publicação** — implementada e verificada na branch `feat/v1.1.0-lumiere` (aguardando autorização `publicar` para merge em `main`, tag `v1.1.0` e push).
+  - Atualizada versão `1.1.0 · Lumière` manualmente (sem criar commit/tag automático pelo `bump-version.mjs`) em [`package.json`](../package.json), [`package-lock.json`](../package-lock.json), [`src/config/versioning.js`](../src/config/versioning.js), [`README.md`](../README.md) e [`CHANGELOG.md`](../CHANGELOG.md) (incluindo entradas resumidas da `v1.1.0` e `v1.0.0` e preservando o histórico antigo abaixo). Confirmado que `vsn: '1.0.0'` em [`src/services/codiceBackend.js`](../src/services/codiceBackend.js) refere-se ao protocolo WebSocket e permaneceu intacto.
+  - Criada suíte final [`tests/fase7-release-regression.test.mjs`](../tests/fase7-release-regression.test.mjs) cobrindo Filme × Franquia (1 obra, 2+ e atual sem nota), notas externas (cada uma das 6 fontes individualmente ausente), fim da nota 80 automática, round-trip R10 (`favoriteScene`, `backdropUrl`, `backdropCheckedAt`, `episodeEvaluations`) e consistência de versão (`72/72` testes em `21` suítes).
+  - Aprovados os 4 gates obrigatórios (`npm test`, `npm run validate:contrast`, `npm run build` e `npm run validate:design`) e a verificação visual/CSP no Chrome headless via Playwright em `360 px`, `768 px` e `1280 px` sobre o build `dist/` com `_headers` real (`0` violações de CSP ao chamar `www.omdbapi.com` e `0` rolagem horizontal).
 
 ## Resumo da Auditoria (Fase 0)
 - Repositório na `main` com commit único `7738835` (`v1.0.0`), sem alterações não commitadas e zero chaves secretas no histórico ou código.

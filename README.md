@@ -1,40 +1,36 @@
-# Cine Códice — v1.0.0 · Lumière
+# Cine Códice — v1.1.0 · Lumière
 
-Cinemateca pessoal e offline-first construída em **React + Vite + Tailwind CSS v4** para catalogar, organizar e acompanhar **filmes, séries e animes** com estética física de videolocadora curada.
+Cinemateca pessoal, privada e offline-first construída em **React + Vite + Tailwind CSS v4** para catalogar, avaliar e acompanhar **filmes, séries e animes** com estética física de videolocadora curada.
 
 ## Principais Recursos
 
-- **Agregador Multi-Fonte Gratuito (`src/services/cinemaApi.js`):** Consulta paralela com timeout de 8s, cache local + IndexedDB (7 dias), deduplificação por título normalizado e ano e falha isolada (se uma API falhar, as demais respondem):
+- **Agregador Multi-Fonte & Fila Inteligente (`src/services/cinemaApi.js`, `src/api/httpClient.js`):** Consulta com controle de limites por provedor, tratamento de `429 / Retry-After`, deduplicação em voo, lote AniList com aliases, ponte canônica de IDs (`tmdb`, `imdb`, `tvmaze`, `anilist`, `mal`) e cache offline no IndexedDB:
   - **Animes:** AniList GraphQL e Jikan API v4 (MyAnimeList), sem necessidade de chave.
-  - **Séries:** TVmaze API com temporadas, episódios e duração média, sem necessidade de chave.
-  - **Filmes & Séries:** TMDB API (quando `VITE_TMDB_API_KEY` está configurada no `.env` ou nas Configurações), IMDb Suggestion API e Wikidata / Internet Archive.
-  - Badge discreto de origem em cada resultado (`AniList`, `MAL`, `TVmaze`, `TMDB`, `IMDb`, `Wikidata`, `Archive`).
-- **Controle Tátil de Progresso por Tipo de Obra:**
-  - **Filmes:** Minutagem atual (`HH:MM:SS / HH:MM:SS`) com atalhos `+15 min`, `+30 min` e `Concluir Sessão`, contador `Rewatch #N` e formato/áudio (*Legendado*, *Dublado*, *Original*, *IMAX/4K*).
-  - **Séries & Animes:** Painel `Temp. X / Y · Ep. Z / W (%)` com atalhos `+1 Ep`, `+3 Eps`, `+1 Temp` e grade clicável por temporada com marcação individual de assistidos, fillers e arcos (com opção de ignorar fillers no percentual).
-  - **Status:** `Quero Ver`, `Assistindo`, `Concluído`, `Em Pausa`, `Reassistindo` e `Abandonado`.
-- **Estante Direta & Pôster Determinístico:** Alternância imediata entre **Grade** (`2:3` com borda de 2px e fita de progresso), **Lista** compacta e **Estante** vertical de fitas/Blu-ray. Obras sem imagem recebem pôster tipográfico editorial determinístico sem IA (`src/graphics/posterGenerator.js`).
-- **Radar de Franquias & Ordem Cronológica (`src/services/franchiseEngine.js`):** Agrupa sequências, prequels, OVAs e filmes canônicos na ficha da obra e no carrossel *Sagas & Universos em Andamento* com botão `+ Catalogar` em 1 toque para títulos faltantes.
-- **DNA do Espectador (8 Dimensões) & Roleta:** Sliders táteis de 0 a 100 para calcular nota ponderada determinística, **Roleta "O que assistir hoje?"** com filtro de tempo disponível (`25 min`, `50 min`, `2h+`), cartões **Bilhete de Cinema (PNG)** e **Cine Wrapped (PNG `1080×1350`)**.
-- **Qualidade de Vida:** Check-in de Sessão na Home (`+1 Ep` ou `+20 min`), Mapa de Calor Anual, Command Palette (`Ctrl+K`), Seleção em Lote com Desfazer (8s), Coleções Personalizadas, Importador CSV (**Letterboxd**, **IMDb**, **MyAnimeList**) com detector de duplicados e Exportador JSON/CSV/Markdown (`.md`).
-- **Design System v2 (6 Temas Reais):** `pastel-glass`, `windows-xp`, `windows-7`, `frutiger-aero`, `manga-ink` e `focus-dim`, com verificação WCAG AA e zero emojis em código de interface.
-- **Blindagem Tripla Anti-Perda:**
-  1. Solicitação de armazenamento persistente (`navigator.storage.persist()`).
-  2. Espelho comprimido LZW no `localStorage` sob a chave `cine_codice_emergency_mirror_v1` sem imagens `data:image/` Base64.
-  3. Lembrete automático de backup com exportação `.json` assinada com checksum `SHA-256`.
-- **Compartilhamento sem Servidor & Sincronização Opcional:** Cartão público compacto em URL (`?card=...` + QR Code SVG nativo) e backend opcional via Supabase (`@handle#XXXX`).
+  - **Séries:** TVmaze API com temporadas, episódios, duração média e próximo episódio, sem necessidade de chave.
+  - **Filmes, Séries & Notas Públicas:** TMDB API e OMDb API (IMDb, Rotten Tomatoes e Metacritic), além de IMDb Suggestion, Wikidata e Internet Archive.
+  - Selo discreto de origem em cada resultado (`AniList`, `MAL`, `TVmaze`, `TMDB`, `IMDb`, `RT`, `Metacritic`, `Wikidata`, `Archive`).
+- **Avaliação por Episódio, Obra e Franquia:**
+  - **Episódios (0–10 em passos de 0,5 / 0–100 interna):** Nota por episódio com tags, reação rápida, atalhos `"Assistir"`, `"Até aqui"` e `"Temporada inteira"` com **Desfazer**, gráfico + tabela acessível, sugestões de filler (Jikan) e arcos (TMDB), além de persistência segura com aviso explícito caso o armazenamento falhe.
+  - **Obra & Notas Públicas:** Ficha com notas externas normalizadas (sem inventar valores ausentes), comparativo `"Sua Nota vs. Público"` exclusivo para notas confirmadas (fim da nota 80 automática) e campo opcional de **Cena Favorita**.
+  - **Radar de Franquias (`src/services/franchiseEngine.js`):** Liga coleções do TMDB, relações automáticas da AniList/Jikan e vínculos manuais em grafo seguro (máx. profundidade `3` e `60` nós) com progresso separado por formato (Filmes, OVAs, Especiais, Spin-offs).
+- **Home & Perfil Pessoal (`SOCIAL_ENABLED = false`):**
+  - **Início:** Renderização local imediata, Hero em 4 estados com `backdropUrl` (preenchido em segundo plano sem OMDb), ações `+1 Ep` / `+20 min` com **Desfazer**, pílulas das obras ativas e trilhos sob demanda.
+  - **Perfil:** Banner com cena da obra em andamento (ou gradiente do tema), métricas reais do acervo (**Obras**, **Episódios / Horas** sem durações inventadas e **Média Geral**), e ocultação não destrutiva de recursos sociais (`Mural`, `Comunidade`, `Chat`, `@handle`, `Login`).
+- **Controle Tátil, DNA do Espectador & Design System:**
+  - **Filmes & Séries:** Minutagem (`HH:MM:SS`), `+15/+30 min`, `Rewatch #N`, legendado/dublado/IMAX, **DNA do Espectador** em 8 dimensões, Roleta por tempo disponível, **Bilhete de Cinema PNG**, **Cine Wrapped PNG**, Importador CSV e Blindagem Tripla anti-perda (storage persistente, espelho LZW sem Base64 e backup JSON com assinatura `SHA-256`).
+  - **Design & Acessibilidade:** Temas verificados WCAG AA, zero emojis em interface (`\p{Extended_Pictographic}`), alvos táteis `>= 44×44 px` e suporte a `prefers-reduced-motion`.
 
-## Variáveis de Ambiente Opcionais
+## Chaves de API Opcionais
 
-Crie um arquivo `.env` na raiz a partir do [`.env.example`](.env.example) caso deseje ativar fontes ou sincronização extras (todas as demais fontes gratuitas funcionam sem configuração):
+Todas as fontes abertas (**AniList**, **Jikan/MAL**, **TVmaze**, **Wikidata**, **Internet Archive**) funcionam sem nenhuma chave. Caso queira habilitar **TMDB**, **OMDb** ou **Google Gemini**, você pode colar suas chaves diretamente dentro do app em **Perfil → Configurações (engrenagem) → Dados & APIs** (armazenadas localmente apenas no seu navegador), ou usar um `.env` local em desenvolvimento a partir do [`.env.example`](.env.example):
 
 ```bash
 cp .env.example .env
 ```
 
-- `VITE_TMDB_API_KEY`: chave opcional da API v3 do TMDB (pode também ser inserida dentro do app na aba **Configurações**).
-- `VITE_SUPABASE_URL`: URL opcional do projeto Supabase para sincronização e perfis sociais (`@handle#XXXX`).
-- `VITE_SUPABASE_ANON_KEY`: chave pública anônima (`anon key`) do Supabase.
+- `VITE_TMDB_API_KEY`: chave opcional da API v3 do TMDB (somente desenvolvimento local; em produção use a aba **Dados & APIs**).
+- `VITE_OMDB_API_KEY`: chave opcional da OMDb API (plano gratuito de 1.000 req/dia, também configurável na aba **Dados & APIs**).
+- `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`: opcionais e inativos enquanto `SOCIAL_ENABLED = false`.
 
 ## Comandos Locais
 
