@@ -304,6 +304,53 @@ export function getSeasonEpisodeCount(item = {}, seasonNumber = 1) {
   return 12;
 }
 
+export function formatCatalogCardFormatBadge(item = {}) {
+  const workType = item?.workType || 'movie';
+  if (workType === 'anime') {
+    const audioRaw = String(item?.audioFormat || '').toLowerCase();
+    const audioCode = audioRaw.includes('dub') ? 'DUB' : 'LEG';
+    return {
+      workType: 'anime',
+      label: `Anime · ${audioCode}`,
+      shortType: 'Anime',
+      detail: audioCode,
+    };
+  }
+  if (workType === 'series') {
+    const season = Math.max(1, Number(item?.currentSeason) || 1);
+    const ep =
+      Number(item?.currentEpisode) > 0
+        ? Number(item.currentEpisode)
+        : Number(item?.totalEpisodes) > 0
+          ? Number(item.totalEpisodes)
+          : 1;
+    return {
+      workType: 'series',
+      label: `Série · T${season} E${ep}`,
+      shortType: 'Série',
+      detail: `T${season} E${ep}`,
+    };
+  }
+  const mins = Number(item?.durationMinutes) || 0;
+  if (mins > 0) {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    const durText = h > 0 ? `${h}h ${m}m` : `${m}m`;
+    return {
+      workType: 'movie',
+      label: `Filme · ${durText}`,
+      shortType: 'Filme',
+      detail: durText,
+    };
+  }
+  return {
+    workType: 'movie',
+    label: 'Filme',
+    shortType: 'Filme',
+    detail: '',
+  };
+}
+
 export function createExpandedSeasonPatch(item = {}, optionsOrCount = 12) {
   const curTotal = Math.max(1, Number(item.totalSeasons) || 1);
   const rawCount =

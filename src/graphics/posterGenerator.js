@@ -130,7 +130,7 @@ export function generateEditorialPosterSvg({
   ${titleSvg}
   ${patternMarkup}
   <line x1="22" y1="262" x2="178" y2="262" stroke="${fg}" stroke-opacity="0.22" stroke-width="1" />
-  <text x="22" y="278" font-family="'Source Sans 3 Variable', system-ui, sans-serif" font-size="10.5" fill="${fg}" fill-opacity="0.86">${safeCreator || 'Cinemateca Cine Códice'}</text>
+  <text x="22" y="278" font-family="'Source Sans 3 Variable', system-ui, sans-serif" font-size="10.5" fill="${fg}" fill-opacity="0.86">${safeCreator || 'Catálogo Cine Códice'}</text>
 </svg>`;
 }
 

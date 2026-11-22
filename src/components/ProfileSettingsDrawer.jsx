@@ -32,8 +32,13 @@ import { useEffect, useRef, useState } from 'react';
 import { domainConfig } from '../config/domainConfig';
 import { SOCIAL_ENABLED } from '../config/flags';
 import { CODICE_RELEASE } from '../config/versioning';
-import { SPECIAL_THEMES } from '../data/themePresets';
+import { THEME_MODES } from '../data/themePresets';
 import { FONT_SCALE_OPTIONS } from '../design/themeEngine';
+import {
+  getConfiguredGoogleClientId,
+  setConfiguredGoogleClientId,
+} from '../services/googleDriveBackup';
+import { InstallAppBanner } from './InstallAppBanner';
 import {
   DNA_DENSITY_OPTIONS,
   DNA_DIMENSIONS,
@@ -54,7 +59,6 @@ import {
   toggleStructuredGenre,
   toggleViewerFocusInList,
 } from '../utils/readerPreferences';
-import { PastelPaletteCustomizer } from './ThemeModal';
 
 export const SETTINGS_TABS = [
   { id: 'appearance', hash: '#settings-appearance', label: 'Aparência', icon: Palette },
@@ -72,7 +76,7 @@ const VISIBILITY_OPTIONS = [
   {
     id: 'public',
     label: 'Público',
-    description: 'Qualquer espectador no Cine Códice pode ver seu perfil e acervo.',
+    description: 'Qualquer espectador no Cine Códice pode ver seu perfil e catálogo.',
     icon: Globe,
   },
   {
@@ -164,6 +168,9 @@ export function ProfileSettingsDrawer({
     typeof window !== 'undefined' ? resolveTabFromHash(window.location.hash) : 'appearance'
   );
   const [exclusionInput, setExclusionInput] = useState('');
+  const [googleClientIdInput, setGoogleClientIdInput] = useState(() =>
+    getConfiguredGoogleClientId()
+  );
   const { ui } = domainConfig;
   const { profile: profileCfg } = ui;
 
@@ -410,12 +417,12 @@ export function ProfileSettingsDrawer({
                   <Palette className="h-4 w-4 text-accent" strokeWidth={1.5} />
                   <span>
                     Temas &amp; Aparência
-                    {themeProps?.specialThemeId && (
+                    {themeProps?.mode && (
                       <span className="ml-1.5 text-[10px] font-normal text-subtle">
                         (
-                        {SPECIAL_THEMES.find(
-                          (item) => item.id === themeProps.specialThemeId
-                        )?.label || themeProps.specialThemeId}
+                        {THEME_MODES.find(
+                          (item) => item.id === themeProps.mode
+                        )?.shortLabel || themeProps.mode}
                         )
                       </span>
                     )}
@@ -423,17 +430,6 @@ export function ProfileSettingsDrawer({
                 </span>
                 <span className="text-[11px] font-medium text-accent">Abrir estúdio</span>
               </button>
-
-              {themeProps?.specialThemeId === 'pastel-glass' && (
-                <div className="rounded-[4px] border border-line bg-app p-3">
-                  <PastelPaletteCustomizer
-                    pastelSubpaletteId={themeProps.pastelSubpaletteId}
-                    pastelCustomColor={themeProps.pastelCustomColor}
-                    onSelectPastelSubpalette={themeProps.onSelectPastelSubpalette}
-                    onChangePastelColor={themeProps.onChangePastelColor}
-                  />
-                </div>
-              )}
 
               {themeProps && (
                 <div className="space-y-2 rounded-[4px] border border-line bg-app p-3">
@@ -504,6 +500,8 @@ export function ProfileSettingsDrawer({
                   <span>Reabrir Boas-Vindas e Tutorial</span>
                 </button>
               </div>
+
+              <InstallAppBanner variant="settings" />
 
               <p className="pt-2 text-center text-[10px] tabular-nums text-subtle">
                 Cine Códice {CODICE_RELEASE.label}
@@ -1019,7 +1017,7 @@ export function ProfileSettingsDrawer({
                   <PrivacySwitchRow
                     icon={Zap}
                     label="Ativar Gamificação (XP, Níveis e Insígnias)"
-                    description="Exibe horas assistidas, sequência e patente da cinemateca."
+                    description="Exibe horas assistidas, sequência e patente do catálogo."
                     checked={gamificationEnabled}
                     onToggle={() =>
                       onUpdateProfile?.({
@@ -1055,8 +1053,39 @@ export function ProfileSettingsDrawer({
                 <div className="flex items-center gap-2">
                   <Database className="h-4 w-4 text-accent" strokeWidth={1.5} />
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-ink">
-                    Backup &amp; Snapshots
+                    Backup, Criptografia (.ccodex) &amp; Nuvem
                   </h3>
+                </div>
+                <div className="space-y-2 rounded-[4px] border border-line bg-app p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink">
+                      <Cloud className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                      <span>Google Drive Pessoal (drive.appdata)</span>
+                    </span>
+                    <span className="text-[10px] text-muted">Client-Side OAuth</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={googleClientIdInput}
+                    onChange={(e) => {
+                      setGoogleClientIdInput(e.target.value);
+                      setConfiguredGoogleClientId(e.target.value);
+                    }}
+                    placeholder="VITE_GOOGLE_CLIENT_ID (ex: 12345.apps.googleusercontent.com)"
+                    aria-label="Google Client ID para backup no Google Drive"
+                    className="min-h-[38px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose?.();
+                      onOpenBackupModal?.();
+                    }}
+                    className="flex min-h-[40px] w-full items-center justify-center gap-2 rounded-[4px] border border-accent bg-accent/15 px-3 py-2 text-xs font-semibold text-accent hover:bg-accent/25"
+                  >
+                    <Cloud className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                    <span>Abrir Backup .ccodex (GZIP + AES-GCM) &amp; Google Drive</span>
+                  </button>
                 </div>
                 <div className="divide-y divide-line rounded-[4px] border border-line bg-app">
                   <button

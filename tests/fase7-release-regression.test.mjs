@@ -242,26 +242,28 @@ describe('Fase 7 — Regressão Final v1.1.0 · Lumière', () => {
     }
   });
 
-  it('Versão Lumière está consistente em todos os arquivos oficiais mantendo histórico 1.0.0/1.1.0/1.2.0 e protocolo WS', () => {
+  it('Versão Lumière está consistente em todos os arquivos oficiais mantendo histórico 1.0.0/1.1.0/1.2.0/1.3.0 e protocolo WS', () => {
     const pkg = JSON.parse(readText('package.json'));
     const lock = JSON.parse(readText('package-lock.json'));
-    assert.equal(pkg.version, '1.2.0');
-    assert.equal(lock.version, '1.2.0');
-    assert.equal(lock.packages?.['']?.version, '1.2.0');
+    assert.equal(pkg.version, '1.3.0');
+    assert.equal(lock.version, '1.3.0');
+    assert.equal(lock.packages?.['']?.version, '1.3.0');
 
-    assert.equal(CODICE_RELEASE.version, '1.2.0');
+    assert.equal(CODICE_RELEASE.version, '1.3.0');
     assert.equal(CODICE_RELEASE.codename, 'Lumière');
-    assert.equal(CODICE_RELEASE.label, 'v1.2.0 · Lumière');
+    assert.equal(CODICE_RELEASE.label, 'v1.3.0 · Lumière');
+    assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.3.0'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.2.0'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.1.0'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.0.0'));
 
     const readme = readText('README.md');
-    assert.match(readme, /# Cine Códice — v1\.2\.0 · Lumière/);
+    assert.match(readme, /# Cine Códice — v1\.3\.0 · Lumière/);
     assert.match(readme, /OMDb/);
     assert.match(readme, /SOCIAL_ENABLED = false/);
 
     const changelog = readText('CHANGELOG.md');
+    assert.match(changelog, /## \[v1\.3\.0 · Lumière\]/);
     assert.match(changelog, /## \[v1\.2\.0 · Lumière\]/);
     assert.match(changelog, /## \[v1\.1\.0 · Lumière\]/);
     assert.match(changelog, /## \[v1\.0\.0 · Lumière\]/);

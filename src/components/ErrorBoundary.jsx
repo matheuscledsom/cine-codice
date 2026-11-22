@@ -46,7 +46,7 @@ export class ErrorBoundary extends Component {
             Algo interrompeu {screenLabel}
           </h2>
           <p className="text-xs leading-relaxed text-muted">
-            Sua cinemateca, anotações e progresso continuam salvos em segurança neste aparelho.
+            Seu catálogo, anotações e progresso continuam salvos em segurança neste aparelho.
           </p>
           {this.state.errorMessage && (
             <p className="truncate text-[11px] font-mono text-subtle">

@@ -377,7 +377,7 @@ export function buildProfileCardShareUrl(cardInput, baseOriginUrl = null) {
 
 export function buildProfileCardQrSvg(shareUrl, options = {}) {
   return generateQrCodeSvg(shareUrl, {
-    ariaLabel: 'QR Code do cartão de perfil da cinemateca',
+    ariaLabel: 'QR Code do cartão de perfil do catálogo',
     ...options,
   });
 }

@@ -33,6 +33,7 @@ import { domainConfig, getStatusList } from '../config/domainConfig';
 import { SOCIAL_ENABLED } from '../config/flags';
 import { useToast } from '../context/ToastContext';
 import { formatNextAiringBadge } from '../lib/episodeStats';
+import { computeWorkCritiqueBadge } from '../lib/ratingBadges';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
 import {
   enrichSeriesAndAnimeSeasons,
@@ -51,6 +52,10 @@ import {
   isLoanOverdue,
   normalizeTagsList,
 } from '../utils/backlogHelpers';
+import {
+  extractWorkAdaptivePalette,
+  getWorkAdaptivePaletteSync,
+} from '../utils/colorExtractor';
 import { downloadWorkMarkdown } from '../utils/markdownExport';
 import { playTactileSound } from '../utils/soundEffects';
 import { CollectionCreatorBar } from './CollectionCreatorBar';
@@ -377,7 +382,27 @@ export function WorkDetailPage({
     [item, allItems]
   );
 
+  const [adaptivePalette, setAdaptivePalette] = useState(() =>
+    item ? getWorkAdaptivePaletteSync(item) : null
+  );
+
+  useEffect(() => {
+    if (!item) return undefined;
+    let cancelled = false;
+    setAdaptivePalette(getWorkAdaptivePaletteSync(item));
+    extractWorkAdaptivePalette(item)
+      .then((res) => {
+        if (!cancelled && res) setAdaptivePalette(res);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [item]);
+
   if (!item) return null;
+
+  const critiqueBadge = computeWorkCritiqueBadge(item);
 
   const statuses = getStatusList();
   const { ui, cardFields } = domainConfig;
@@ -524,9 +549,40 @@ export function WorkDetailPage({
       role="dialog"
       aria-modal="true"
       aria-label={`Página da obra ${item.title}`}
+      style={
+        adaptivePalette
+          ? {
+              '--work-accent': adaptivePalette.workAccent,
+              '--work-glow': adaptivePalette.workGlow,
+              '--work-contrast': adaptivePalette.workContrast,
+            }
+          : undefined
+      }
     >
+      {/* Fundo imersivo desfocado (blur(32px)) sob véu legível do tema ativo */}
+      {(item.backdropUrl || item.coverUrl) && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed inset-0 z-0 overflow-hidden opacity-25"
+        >
+          <img
+            src={item.backdropUrl || item.coverUrl}
+            alt=""
+            className="h-full w-full scale-110 object-cover"
+            style={{ filter: 'blur(32px) saturate(1.25)' }}
+          />
+          <div
+            className="absolute inset-0"
+            style={{
+              background:
+                'radial-gradient(circle at 50% 0%, var(--work-glow, transparent), var(--bg-primary) 75%)',
+            }}
+          />
+        </div>
+      )}
+
       {/* HERO CINEMATOGRÁFICO WIDE (16:9 mobile / 320-380px desktop + scrim >= 72%) */}
-      <header className="relative w-full overflow-hidden border-b border-line bg-card">
+      <header className="relative z-10 w-full overflow-hidden border-b border-line bg-card">
         <div className="relative aspect-video w-full sm:aspect-auto sm:h-[340px] lg:h-[380px]">
           {item.backdropUrl ? (
             <img
@@ -669,6 +725,21 @@ export function WorkDetailPage({
                     {verdictMeta.id}
                   </span>
                 )}
+                {critiqueBadge && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tabular-nums"
+                    style={{
+                      borderColor: 'var(--work-accent, var(--accent-color))',
+                      backgroundColor: 'var(--work-glow, var(--accent-soft))',
+                      color: 'var(--work-accent, var(--accent-color))',
+                    }}
+                  >
+                    <Sparkles className="h-3 w-3 shrink-0" strokeWidth={1.5} />
+                    <span>
+                      {critiqueBadge.label} · {critiqueBadge.detail}
+                    </span>
+                  </span>
+                )}
               </div>
 
               {/* Título Principal e Título Original Discreto */}
@@ -694,7 +765,7 @@ export function WorkDetailPage({
                 {metadataParts.join(' · ')}
               </p>
 
-              {/* Diretor / Estúdio clicável para filtrar acervo */}
+              {/* Diretor / Estúdio clicável para filtrar catálogo */}
               {clickableCreators.length > 0 && onFilterByCreator && (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   {clickableCreators.map((creatorName) => (
@@ -702,7 +773,7 @@ export function WorkDetailPage({
                       key={creatorName}
                       type="button"
                       onClick={() => onFilterByCreator(creatorName)}
-                      aria-label={`Filtrar acervo e buscar mais títulos de ${creatorName}`}
+                      aria-label={`Filtrar catálogo e buscar mais títulos de ${creatorName}`}
                       className="inline-flex min-h-[44px] items-center rounded-lg border border-line bg-app px-3 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
                     >
                       {creatorName}

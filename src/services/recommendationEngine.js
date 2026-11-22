@@ -394,7 +394,7 @@ export function buildHomeCinemaRecommendations({
       score: scored.score,
       reason:
         scored.reasons[0] ||
-        (work.genres?.[0] ? `Curadoria em ${work.genres[0]}` : 'Clássico da Cinemateca'),
+        (work.genres?.[0] ? `Curadoria em ${work.genres[0]}` : 'Clássico do Catálogo'),
       alreadyInBacklog: backlogTitles.has(normTitle),
       sourceKind: 'discovery',
     });

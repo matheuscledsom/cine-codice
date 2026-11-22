@@ -1,6 +1,12 @@
 import { getTodayLocalISO } from '../utils/backlogHelpers.js';
 import { normalizeCollectionList } from '../utils/collections.js';
 import {
+  decodeCcodexOrJsonBackup,
+  encodeCcodexBackup,
+  isCcodexEnvelope,
+  stripBase64MediaFromWorks,
+} from './backupCryptoService.js';
+import {
   buildCodiceDatabase,
   createUuid,
   hydrateAppSnapshotFromDatabase,
@@ -57,7 +63,8 @@ export async function computeSha256Hex(rawText) {
 }
 
 export async function exportSignedBackupPayload(db) {
-  const baseDb = migrateDatabase(db);
+  const sanitizedInput = stripBase64MediaFromWorks(db);
+  const baseDb = stripBase64MediaFromWorks(migrateDatabase(sanitizedInput));
   const canonicalJson = JSON.stringify(stripChecksumEnvelope(baseDb));
   const digest = await computeSha256Hex(canonicalJson);
 
@@ -99,9 +106,44 @@ export function countDatabaseEntities(db, snapshot) {
   };
 }
 
-export async function inspectBackupPayload(rawText) {
+export async function exportSignedCcodexPayload(db, { password = '' } = {}) {
+  const signedJson = await exportSignedBackupPayload(db);
+  return encodeCcodexBackup(signedJson, { password });
+}
+
+export async function inspectBackupPayload(rawText, options = {}) {
   try {
-    const parsed = typeof rawText === 'string' ? JSON.parse(rawText) : rawText;
+    const initialParsed =
+      typeof rawText === 'string' ? JSON.parse(rawText) : rawText;
+
+    let parsed = initialParsed;
+    let backupContainerFormat = 'legacy-json';
+    let wasEncrypted = false;
+    let compressionStats = null;
+
+    if (isCcodexEnvelope(initialParsed)) {
+      const decoded = await decodeCcodexOrJsonBackup(initialParsed, {
+        password: options?.password || '',
+      });
+      if (!decoded.ok) {
+        return {
+          ok: false,
+          requiresPassword: Boolean(decoded.requiresPassword),
+          invalidPassword: Boolean(decoded.invalidPassword),
+          encrypted: Boolean(decoded.encrypted),
+          format: decoded.format || 'ccodex-v1',
+          error: decoded.error || 'Falha ao ler arquivo .ccodex.',
+        };
+      }
+      parsed = decoded.payload;
+      backupContainerFormat = decoded.format;
+      wasEncrypted = decoded.encrypted;
+      compressionStats = {
+        uncompressedBytes: decoded.uncompressedBytes,
+        compressedBytes: decoded.compressedBytes,
+      };
+    }
+
     if (
       !parsed ||
       typeof parsed !== 'object' ||
@@ -139,6 +181,9 @@ export async function inspectBackupPayload(rawText) {
 
     return {
       ok: true,
+      format: backupContainerFormat,
+      encrypted: wasEncrypted,
+      compressionStats,
       checksumStatus,
       declaredDigest,
       computedDigest,

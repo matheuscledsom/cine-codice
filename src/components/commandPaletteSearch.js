@@ -26,7 +26,7 @@ export function buildCommandPaletteEntries({
     {
       id: 'act-list',
       kind: 'Ação',
-      label: 'Ir para Acervo',
+      label: 'Ir para Catálogo',
       hint: 'Estante VHS/Blu-ray, grade de pôsteres e filtros',
       iconKey: 'library',
       run: () => onNavigateTab?.('list'),
@@ -97,7 +97,7 @@ export function buildCommandPaletteEntries({
       const franchiseLabel = item.franchiseName || item.seriesName || '';
       return {
         id: `work-${item.id}`,
-        kind: 'Acervo',
+        kind: 'Catálogo',
         label: titles.primary || item.title,
         hint:
           [creator, item.releaseYear, franchiseLabel].filter(Boolean).join(' · ') ||
@@ -112,7 +112,7 @@ export function buildCommandPaletteEntries({
     id: `col-${col.id}`,
     kind: 'Coleção',
     label: col.name,
-    hint: 'Abrir coleção no Acervo',
+    hint: 'Abrir coleção no Catálogo',
     searchBlob: String(col.name || '').toLowerCase(),
     iconKey: 'folder',
     run: () => {

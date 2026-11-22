@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { BackupReminderBanner } from '../components/BackupReminderBanner';
 import { CoverArt } from '../components/CoverArt';
 import { HomeRail } from '../components/HomeRail';
+import { InstallAppBanner } from '../components/InstallAppBanner';
 import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
 import { RecommendationsSection } from '../components/RecommendationsSection';
 import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
@@ -25,9 +26,11 @@ import { CODICE_RELEASE } from '../config/versioning';
 import { useToast } from '../context/ToastContext';
 import {
   buildCompactStreakChip,
+  buildHomeLiveSummary,
   buildHomeLocalRails,
   buildHomeSessionPills,
   computeHeroAdvancePlan,
+  resolveHeroNextEpisodeTitle,
   resolveHeroVisual,
   selectHeroPresentation,
   shouldBackfillHeroBackdrop,
@@ -286,6 +289,12 @@ export function HomeScreen({
     [hero.work]
   );
 
+  const liveSummary = useMemo(() => buildHomeLiveSummary(items), [items]);
+  const heroNextEpisodeTitle = useMemo(
+    () => (hero.work ? resolveHeroNextEpisodeTitle(hero.work) : ''),
+    [hero.work]
+  );
+
   return (
     <div className="space-y-6 pb-8">
       {/* Cabeçalho + Chip compacto de constância */}
@@ -317,6 +326,9 @@ export function HomeScreen({
               {domainConfig.appSubtitle}
             </span>
           </div>
+          <p className="mt-1 text-xs font-medium tabular-nums text-muted">
+            {liveSummary}
+          </p>
           {streakChip && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <button
@@ -375,6 +387,8 @@ export function HomeScreen({
         )}
       </header>
 
+      <InstallAppBanner variant="home" />
+
       {backupReminder?.shouldRemind && (
         <BackupReminderBanner
           daysWithoutBackup={backupReminder.daysWithoutBackup}
@@ -383,16 +397,16 @@ export function HomeScreen({
         />
       )}
 
-      {/* HERO EM 4 ESTADOS: carregando | ativo | fila Quero Ver | acervo vazio */}
+      {/* HERO EM 4 ESTADOS: carregando | ativo | fila Quero Ver | catálogo vazio */}
       {hero.state === 'loading' ? (
         <section
-          aria-label="Carregando destaque da cinemateca"
+          aria-label="Carregando destaque do catálogo"
           aria-busy="true"
           className="h-56 w-full animate-pulse rounded-[6px] border border-line bg-card"
         />
       ) : hero.state === 'empty' ? (
         <section
-          aria-label="Boas-vindas à cinemateca"
+          aria-label="Boas-vindas ao catálogo"
           className="rounded-[6px] border border-line bg-card px-5 py-9 text-center"
         >
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-[4px] border border-line bg-app text-accent">
@@ -508,8 +522,11 @@ export function HomeScreen({
               </div>
 
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between gap-2 text-xs tabular-nums text-white/90">
-                  <span>{hero.progressLabel}</span>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs tabular-nums text-white/90">
+                  <span>
+                    {hero.progressLabel}
+                    {heroNextEpisodeTitle ? ` · "${heroNextEpisodeTitle}"` : ''}
+                  </span>
                   {Number(hero.work.rewatchCount) > 0 && (
                     <span>Rewatch #{hero.work.rewatchCount}</span>
                   )}
@@ -571,6 +588,33 @@ export function HomeScreen({
             </div>
           </div>
         </section>
+      )}
+
+      {/* Barra de atalhos rápidos abaixo do Hero */}
+      {backlogItems.length > 0 && (
+        <div
+          aria-label="Atalhos rápidos da sessão"
+          className="flex flex-wrap items-center gap-2"
+        >
+          <button
+            type="button"
+            onClick={() => setRouletteOpen(true)}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-3.5 py-2 text-xs font-semibold text-ink transition-colors hover:border-accent hover:text-accent"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+            <span>Sortear da fila Quero Ver</span>
+          </button>
+          {hero.work && (
+            <button
+              type="button"
+              onClick={() => onSelectItem?.(hero.work)}
+              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-3.5 py-2 text-xs font-semibold text-ink transition-colors hover:border-accent hover:text-accent"
+            >
+              <Play className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+              <span>Continuar última sessão</span>
+            </button>
+          )}
+        </div>
       )}
 
       {/* Confirmação ao avançar +1 Ep alcançando/passando o total conhecido */}
@@ -644,6 +688,33 @@ export function HomeScreen({
             ))}
           </div>
         </section>
+      )}
+
+      {/* Barra de atalhos rápidos abaixo do Hero */}
+      {backlogItems.length > 0 && (
+        <div
+          aria-label="Atalhos rápidos da sessão"
+          className="flex flex-wrap items-center gap-2"
+        >
+          <button
+            type="button"
+            onClick={() => setRouletteOpen(true)}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-3.5 py-2 text-xs font-semibold text-ink transition-colors hover:border-accent hover:text-accent"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+            <span>Sortear da fila Quero Ver</span>
+          </button>
+          {hero.work && (
+            <button
+              type="button"
+              onClick={() => onSelectItem?.(hero.work)}
+              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-3.5 py-2 text-xs font-semibold text-ink transition-colors hover:border-accent hover:text-accent"
+            >
+              <Play className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+              <span>Continuar última sessão</span>
+            </button>
+          )}
+        </div>
       )}
 
       {/* Trilho 1: Continuar Assistindo */}

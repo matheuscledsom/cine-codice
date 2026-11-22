@@ -536,6 +536,10 @@ export function normalizeAniListMedia(media) {
     ...createEmptyExternalRatings(),
     anilist: anilistRating,
   };
+  const streamingProvidersBR = normalizeBrazilStreamingProviders(
+    null,
+    media.externalLinks || []
+  );
 
   return applyCanonicalIdsToWork({
     id: `anilist-${media.id}`,
@@ -548,6 +552,7 @@ export function normalizeAniListMedia(media) {
     workType: 'anime',
     animeFormat,
     animeStatus: media.status || null,
+    streamingProvidersBR,
     nextAiringEpisode: media.nextAiringEpisode || null,
     releaseYear: year,
     totalSeasons: 1,
@@ -592,6 +597,7 @@ async function searchAniList(query, { signal, fetchImpl = fetch, timeoutMs = API
           description(asHtml: false)
           coverImage { extraLarge large medium }
           studios(isMain: true) { nodes { name } }
+          externalLinks { site type }
           nextAiringEpisode { episode airingAt timeUntilAiring }
           relations {
             edges {
@@ -996,7 +1002,7 @@ async function fetchTmdbDetailsInternal(
   }
 
   try {
-    const url = `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}?api_key=${encodeURIComponent(key)}&language=pt-BR&append_to_response=credits,external_ids`;
+    const url = `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}?api_key=${encodeURIComponent(key)}&language=pt-BR&append_to_response=credits,external_ids,watch/providers`;
     const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
     if (!res.ok) {
       throw new Error(`TMDB HTTP ${res.status}`);
@@ -1031,6 +1037,9 @@ async function fetchTmdbDetailsInternal(
       ...createEmptyExternalRatings(),
       tmdb: tmdbRating,
     };
+    const streamingProvidersBR = normalizeBrazilStreamingProviders(
+      d['watch/providers']?.results?.BR || d.watchProviders?.results?.BR || null
+    );
 
     let details;
     if (type === 'movie') {
@@ -1056,6 +1065,7 @@ async function fetchTmdbDetailsInternal(
           : null,
         franchiseName: col?.name?.replace(/\s*Collection$/i, '').trim() || '',
         tmdbStatus: d.status || null,
+        streamingProvidersBR,
         externalRatings,
         synopsis: String(d.overview || '').trim(),
       };
@@ -1081,6 +1091,7 @@ async function fetchTmdbDetailsInternal(
         studio: studios,
         cast,
         tmdbStatus: d.status || null,
+        streamingProvidersBR,
         nextEpisodeToAir: d.next_episode_to_air || null,
         originCountry: Array.isArray(d.origin_country) ? d.origin_country : [],
         externalRatings,
@@ -1953,6 +1964,10 @@ export async function enrichWorkWithExternalRatings(
           : enriched.franchiseRelations || [],
       totalEpisodes: enriched.totalEpisodes || ad.totalEpisodes || null,
       animeStatus: ad.animeStatus || enriched.animeStatus || null,
+      streamingProvidersBR: normalizeBrazilStreamingProviders(
+        enriched.streamingProvidersBR || [],
+        ad.streamingProvidersBR || []
+      ),
       nextAiringEpisode: ad.nextAiringEpisode || enriched.nextAiringEpisode || null,
       synopsis:
         String(ad.synopsis || '').length > String(enriched.synopsis || '').length
@@ -3150,7 +3165,7 @@ export async function backfillWorkHeroBackdrop(
 /**
  * Busca sugestões externas baseadas nos gêneros e focos escolhidos no onboarding (Fase 5):
  * - Reutiliza TMDB /discover e AniList GraphQL com cache de 24 h (D4) e máx. 2 reqs simultâneas.
- * - Nunca chama OMDb e nunca retorna obras já presentes no acervo.
+ * - Nunca chama OMDb e nunca retorna obras já presentes no catálogo.
  */
 export async function fetchOnboardingGenreSuggestions(
   profile = null,
@@ -3478,7 +3493,7 @@ export async function fetchOnboardingGenreSuggestions(
 
 /**
  * Resolve e cacheia no IndexedDB (api_cache) pôsteres 2:3 reais (coverUrl),
- * sinopse e temporadas para sugestões curadas ("Sugestões rápidas para seu acervo"
+ * sinopse e temporadas para sugestões curadas ("Sugestões rápidas para seu catálogo"
  * e "Sugestões para Você").
  */
 export async function resolveCuratedSuggestions(
@@ -3702,5 +3717,145 @@ export async function resolveCuratedSuggestions(
   await runBoundedConcurrency(tasks, safeConc);
   return results;
 }
+
+export const BRAZIL_STREAMING_CATALOG = Object.freeze([
+  { id: 'netflix', label: 'Netflix', pattern: /netflix/i },
+  { id: 'crunchyroll', label: 'Crunchyroll', pattern: /crunchyroll/i },
+  { id: 'prime-video', label: 'Prime Video', pattern: /amazon\s*prime|prime\s*video/i },
+  { id: 'max', label: 'Max', pattern: /\b(hbo\s*max|max)\b/i },
+  { id: 'disney-plus', label: 'Disney+', pattern: /disney\s*\+|disney\s*plus/i },
+  { id: 'apple-tv-plus', label: 'Apple TV+', pattern: /apple\s*tv/i },
+  { id: 'globoplay', label: 'Globoplay', pattern: /globoplay/i },
+]);
+
+export function normalizeBrazilStreamingProviders(
+  tmdbBrBlock = null,
+  externalLinksOrList = []
+) {
+  const rawNames = [];
+
+  if (Array.isArray(tmdbBrBlock)) {
+    tmdbBrBlock.forEach((entry) => {
+      if (typeof entry === 'string') rawNames.push(entry);
+      else if (entry?.provider_name || entry?.name || entry?.site) {
+        rawNames.push(entry.provider_name || entry.name || entry.site);
+      }
+    });
+  } else if (tmdbBrBlock && typeof tmdbBrBlock === 'object') {
+    const pools = [
+      ...(Array.isArray(tmdbBrBlock.flatrate) ? tmdbBrBlock.flatrate : []),
+      ...(Array.isArray(tmdbBrBlock.ads) ? tmdbBrBlock.ads : []),
+      ...(Array.isArray(tmdbBrBlock.free) ? tmdbBrBlock.free : []),
+    ];
+    pools.forEach((p) => {
+      if (p?.provider_name) rawNames.push(p.provider_name);
+    });
+  }
+
+  if (Array.isArray(externalLinksOrList)) {
+    externalLinksOrList.forEach((lnk) => {
+      if (typeof lnk === 'string') {
+        rawNames.push(lnk);
+      } else if (lnk && typeof lnk === 'object') {
+        const isStreaming =
+          !lnk.type || String(lnk.type).toUpperCase() === 'STREAMING';
+        if (isStreaming && (lnk.site || lnk.name || lnk.provider_name)) {
+          rawNames.push(lnk.site || lnk.name || lnk.provider_name);
+        }
+      }
+    });
+  }
+
+  const matched = [];
+  const seen = new Set();
+  for (const raw of rawNames) {
+    const clean = String(raw || '').trim();
+    if (!clean) continue;
+    const provider = BRAZIL_STREAMING_CATALOG.find((p) => p.pattern.test(clean));
+    if (provider && !seen.has(provider.label)) {
+      seen.add(provider.label);
+      matched.push(provider.label);
+    }
+  }
+  return matched;
+}
+
+export async function fetchBrazilStreamingProviders(
+  work = {},
+  { tmdbApiKey = '', fetchImpl = fetch, signal } = {}
+) {
+  if (!work || typeof work !== 'object') return [];
+  const existing = normalizeBrazilStreamingProviders(
+    work.streamingProvidersBR || [],
+    work.externalLinks || []
+  );
+
+  const tmdbId = work.ids?.tmdb || work.tmdbId;
+  const key = sanitizeApiKey(tmdbApiKey) || loadTmdbApiKey();
+  if (!tmdbId || !key) {
+    return existing;
+  }
+
+  const type =
+    work.tmdbMediaType === 'tv' ||
+    work.workType === 'series' ||
+    work.workType === 'anime'
+      ? 'tv'
+      : 'movie';
+  try {
+    const url = `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}/watch/providers?api_key=${encodeURIComponent(key)}`;
+    const res = await fetchWithTimeout(url, { signal }, API_TIMEOUT_MS, fetchImpl, 'tmdb');
+    if (!res.ok) return existing;
+    const json = await res.json();
+    const brProviders = normalizeBrazilStreamingProviders(
+      json?.results?.BR || null,
+      existing
+    );
+    return Array.from(new Set([...existing, ...brProviders]));
+  } catch {
+    return existing;
+  }
+}
+
+export function formatWorkStructureBadge(work = {}) {
+  if (!work || typeof work !== 'object') return '';
+  if (work.workType === 'movie' || work.animeFormat === 'Filme') {
+    const mins = Number(work.durationMinutes) || 0;
+    if (mins <= 0) return 'Filme';
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+  }
+
+  const seasons = Math.max(1, Number(work.totalSeasons) || 1);
+  const eps = Number(work.totalEpisodes) || 0;
+  const rawStatus = String(
+    work.animeStatus || work.showStatus || work.tmdbStatus || ''
+  ).toLowerCase();
+  const isOngoing =
+    /releasing|running|returning|currently airing|em exibi/i.test(rawStatus);
+
+  if (work.workType === 'anime' && seasons === 1 && eps > 0) {
+    const formattedEps = eps >= 1000 ? eps.toLocaleString('pt-BR') : String(eps);
+    if (isOngoing) {
+      return `${formattedEps}+ Episódios · Em exibição`;
+    }
+    return `${formattedEps} Episódios`;
+  }
+
+  const parts = [];
+  if (seasons > 1 || work.workType === 'series') {
+    parts.push(`${seasons} ${seasons === 1 ? 'Temporada' : 'Temporadas'}`);
+  }
+  if (eps > 0) {
+    const formattedEps = eps >= 1000 ? eps.toLocaleString('pt-BR') : String(eps);
+    parts.push(`${formattedEps}${isOngoing ? '+' : ''} Episódios`);
+  }
+  if (isOngoing) {
+    parts.push('Em exibição');
+  }
+  return parts.join(' · ');
+}
+
 
 export { getOmdbDailyUsage };

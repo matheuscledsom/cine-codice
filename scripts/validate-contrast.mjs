@@ -1,12 +1,7 @@
 import {
-  PASTEL_SUBPALETTES,
-  SPECIAL_THEMES,
-  buildPastelGlassTheme,
-} from '../src/data/themePresets.js';
-import {
-  EDITORIAL_PRESETS,
+  AMBIENT_TINT_SWATCHES,
   THEME_MODES,
-  buildSurfaceVarsFromBg,
+  buildHarmonizedThemeVars,
   getContrastForAccent,
   getContrastRatio,
 } from '../src/utils/themeTokens.js';
@@ -17,30 +12,16 @@ const UI_MIN = 3.0;
 const failures = [];
 
 function checkThemeEntry(name, vars, accentHex) {
-  const resolved = {
-    ...vars,
-    '--surface-base': vars['--surface-base'] || vars['--bg-app'],
-    '--surface-elevated': vars['--surface-elevated'] || vars['--bg-card'],
-    '--text-1': vars['--text-1'] || vars['--text-primary'],
-    '--text-2': vars['--text-2'] || vars['--text-muted'],
-    '--text-3': vars['--text-3'] || vars['--text-subtle'],
-  };
-
   const surfaces = [
-    ['bg-app', resolved['--bg-app']],
-    ['bg-card', resolved['--bg-card']],
-    ['bg-elevated', resolved['--bg-elevated']],
-    ['surface-base', resolved['--surface-base']],
-    ['surface-elevated', resolved['--surface-elevated']],
+    ['bg-canvas', vars['--bg-canvas'] || vars['--bg-app']],
+    ['bg-surface', vars['--bg-surface'] || vars['--bg-card']],
+    ['bg-elevated', vars['--bg-elevated']],
   ];
 
   const textVars = [
-    ['--text-primary', resolved['--text-primary']],
-    ['--text-muted', resolved['--text-muted']],
-    ['--text-subtle', resolved['--text-subtle']],
-    ['--text-1', resolved['--text-1']],
-    ['--text-2', resolved['--text-2']],
-    ['--text-3', resolved['--text-3']],
+    ['--text-primary', vars['--text-primary']],
+    ['--text-muted', vars['--text-muted']],
+    ['--text-subtle', vars['--text-subtle']],
   ];
 
   surfaces.forEach(([surfName, surfHex]) => {
@@ -56,52 +37,52 @@ function checkThemeEntry(name, vars, accentHex) {
     const accentUiRatio = getContrastRatio(accentHex, surfHex);
     if (accentUiRatio < UI_MIN) {
       failures.push(
-        `${name}: --accent-color (${accentHex}) sobre ${surfName} (${surfHex}) = ${accentUiRatio.toFixed(2)}:1 (< ${UI_MIN}:1)`
+        `${name}: --accent-primary (${accentHex}) sobre ${surfName} (${surfHex}) = ${accentUiRatio.toFixed(2)}:1 (< ${UI_MIN}:1)`
       );
     }
   });
 
-  const accentInk = getContrastForAccent(accentHex);
+  const accentInk = vars['--accent-contrast'] || getContrastForAccent(accentHex);
   const accentBtnRatio = getContrastRatio(accentInk, accentHex);
   if (accentBtnRatio < TEXT_MIN) {
     failures.push(
-      `${name}: --accent-contrast (${accentInk}) sobre --accent-color (${accentHex}) = ${accentBtnRatio.toFixed(2)}:1 (< ${TEXT_MIN}:1)`
+      `${name}: --accent-contrast (${accentInk}) sobre --accent-primary (${accentHex}) = ${accentBtnRatio.toFixed(2)}:1 (< ${TEXT_MIN}:1)`
     );
   }
 }
 
+// 1. Valida os 3 Modos Base Oficiais (dark, white, sepia)
 THEME_MODES.forEach((mode) => {
-  checkThemeEntry(`Modo:${mode.id}`, mode.vars, '#8B5CF6');
+  checkThemeEntry(`ModoBase:${mode.id}`, mode.vars, mode.vars['--accent-primary']);
 });
 
-EDITORIAL_PRESETS.forEach((preset) => {
-  const surface = buildSurfaceVarsFromBg(preset.bg, preset.card);
-  checkThemeEntry(`Preset:${preset.id}`, surface.vars, preset.accent);
-});
-
-SPECIAL_THEMES.forEach((special) => {
-  checkThemeEntry(`Especial:${special.id}`, special.vars, special.accent);
-});
-
-PASTEL_SUBPALETTES.forEach((sub) => {
-  const built = buildPastelGlassTheme(sub.id);
-  checkThemeEntry(`PastelSub:${sub.id}`, built.vars, built.accentColor);
-  built.cards.forEach((cardHex, index) => {
+// 2. Valida todas as 8 cores de ambiente curadas em cada um dos 3 modos base (24 combinações)
+THEME_MODES.forEach((mode) => {
+  AMBIENT_TINT_SWATCHES.forEach((swatch) => {
+    const built = buildHarmonizedThemeVars(mode.id, swatch.color);
     checkThemeEntry(
-      `PastelSub:${sub.id}:Card${index + 1}`,
-      { ...built.vars, '--bg-card': cardHex },
+      `OKLCH:${mode.id}:${swatch.id}`,
+      built.vars,
       built.accentColor
     );
   });
 });
 
-['#FFB3C6', '#38BDF8', '#FACC15', '#22C55E', '#0F172A'].forEach((sampleHex) => {
-  const built = buildPastelGlassTheme('lavender-rose', sampleHex);
-  checkThemeEntry(`PastelCustom:${sampleHex}`, built.vars, built.accentColor);
-  built.cards.forEach((cardHex, index) => {
+// 3. Valida cores livres extremas (input type="color") em cada modo base (18 combinações)
+const FREE_CUSTOM_SAMPLES = [
+  '#FF0055',
+  '#00FFCC',
+  '#FACC15',
+  '#22C55E',
+  '#0F172A',
+  '#38BDF8',
+];
+THEME_MODES.forEach((mode) => {
+  FREE_CUSTOM_SAMPLES.forEach((sampleHex) => {
+    const built = buildHarmonizedThemeVars(mode.id, sampleHex);
     checkThemeEntry(
-      `PastelCustom:${sampleHex}:Card${index + 1}`,
-      { ...built.vars, '--bg-card': cardHex },
+      `OKLCHLivre:${mode.id}:${sampleHex}`,
+      built.vars,
       built.accentColor
     );
   });
@@ -114,5 +95,5 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `Contraste WCAG 2.2 AA aprovado em ${THEME_MODES.length} modos base, ${EDITORIAL_PRESETS.length} presets e ${SPECIAL_THEMES.length} estilos especiais (+ ${PASTEL_SUBPALETTES.length} sub-paletas Pastel).`
+  `Contraste WCAG 2.2 AA aprovado no motor OKLCH: ${THEME_MODES.length} modos base (dark, white, sepia), ${AMBIENT_TINT_SWATCHES.length} cores de ambiente curadas e ${FREE_CUSTOM_SAMPLES.length} amostras livres.`
 );

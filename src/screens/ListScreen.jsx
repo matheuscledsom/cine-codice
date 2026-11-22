@@ -46,6 +46,7 @@ import { SpineRenderer } from '../graphics/SpineRenderer';
 import { searchCinemaMedia } from '../services/cinemaApi';
 import {
   calculateWorkProgress,
+  formatCatalogCardFormatBadge,
   formatFlexibleProgressMetric,
   getDisplayTitles,
   getHypeMeta,
@@ -75,6 +76,7 @@ const VIEW_MODES = [
 ];
 
 const LIST_WINDOW_BATCH = 60;
+export { formatCatalogCardFormatBadge };
 
 function loadSavedTitleMode() {
   try {
@@ -107,19 +109,9 @@ const MemoGridCard = memo(function MemoGridCard({
   const status = getStatusConfig(item.status);
   const workMeta = getWorkTypeConfig(item.workType);
   const itemPct = calculateWorkProgress(item);
-  const episodic = isEpisodicWork(item);
+  const formatBadge = formatCatalogCardFormatBadge(item);
   const pressTimerRef = useRef(null);
   const longPressedRef = useRef(false);
-
-  const badgeMetric = episodic
-    ? Number(item.currentEpisode) > 0
-      ? `T${item.currentSeason || 1}·E${item.currentEpisode}`
-      : Number(item.totalEpisodes) > 0
-        ? `${item.totalEpisodes}ep`
-        : ''
-    : Number(item.durationMinutes) > 0
-      ? `${item.durationMinutes}m`
-      : '';
 
   const titles = getDisplayTitles(item, titleMode);
   const creatorLabel = item.director || item.studio || item.author || workMeta.shortLabel;
@@ -179,24 +171,18 @@ const MemoGridCard = memo(function MemoGridCard({
             </span>
           )}
 
-          {!selectionMode && item.isPlatinum && (
+          {!selectionMode && (
             <span
-              aria-label="Favorito 5 estrelas"
-              className="absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-app/90 text-accent ring-1 ring-accent/60"
+              data-testid="catalog-format-badge"
+              className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded-[3px] border border-white/15 bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-white backdrop-blur-xs"
             >
-              <Star className="h-3 w-3 fill-current" strokeWidth={1.5} />
+              <span>{formatBadge.label}</span>
             </span>
           )}
 
           {typeof item.rating === 'number' && (
             <span className="absolute right-1.5 top-1.5 rounded-[3px] border border-line bg-app/90 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink">
               {item.rating}
-            </span>
-          )}
-
-          {badgeMetric && (
-            <span className="absolute bottom-2 right-1.5 rounded-[3px] bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-white">
-              {badgeMetric}
             </span>
           )}
 
@@ -626,7 +612,7 @@ export function ListScreen({
     const removedCount = snap?.removedItems?.length || selectedIds.length;
     clearSelectionMode();
     showToast({
-      message: `${removedCount} obra(s) removida(s) da cinemateca.`,
+      message: `${removedCount} obra(s) removida(s) do catálogo.`,
       type: 'info',
       duration: 8000,
       action:
@@ -692,6 +678,25 @@ export function ListScreen({
       label: status.label,
       count: backlogItems.filter((item) => item.status === status.id).length,
     })),
+  ];
+
+  const formatQuickTabs = [
+    { id: 'all', label: 'Todos', count: backlogItems.length },
+    {
+      id: 'movie',
+      label: 'Filmes',
+      count: backlogItems.filter((item) => (item.workType || 'movie') === 'movie').length,
+    },
+    {
+      id: 'series',
+      label: 'Séries',
+      count: backlogItems.filter((item) => item.workType === 'series').length,
+    },
+    {
+      id: 'anime',
+      label: 'Animes',
+      count: backlogItems.filter((item) => item.workType === 'anime').length,
+    },
   ];
 
   const clearAllFilters = () => {
@@ -860,7 +865,7 @@ export function ListScreen({
             value={localQuery}
             onChange={(e) => setLocalQuery(e.target.value)}
             placeholder="Buscar filme, diretor, anime, saga..."
-            aria-label="Buscar obras no acervo"
+            aria-label="Buscar obras no catálogo"
             className="min-h-[44px] w-full rounded-[4px] border border-line bg-card py-1.5 pl-8 pr-8 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
           />
           {localQuery && (
@@ -924,6 +929,33 @@ export function ListScreen({
         </div>
       </div>
 
+      {/* Filtros rápidos de formato no topo do Catálogo com contadores (Todos, Filmes, Séries, Animes) */}
+      <div
+        className="flex gap-1.5 overflow-x-auto pb-0.5 no-scrollbar"
+        role="group"
+        aria-label="Filtrar catálogo por formato"
+      >
+        {formatQuickTabs.map((ft) => {
+          const active = selectedWorkType === ft.id;
+          return (
+            <button
+              key={ft.id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => setSelectedWorkType(ft.id)}
+              className={`inline-flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-[4px] border px-3 py-1 text-xs font-semibold tabular-nums transition-colors ${
+                active
+                  ? 'border-accent bg-accent/15 text-accent'
+                  : 'border-line bg-card text-muted hover:text-ink'
+              }`}
+            >
+              <span>{ft.label}</span>
+              <span className="text-[10px] opacity-80">({ft.count})</span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Elemento 3: Fita única de Status */}
       <div className="flex gap-1.5 overflow-x-auto pb-0.5 no-scrollbar" role="tablist" aria-label="Filtrar por status">
         {filterTabs.map((tab) => {
@@ -964,7 +996,7 @@ export function ListScreen({
                   Direção/Estúdio: {creatorFilterBanner}
                 </p>
                 <p className="text-[11px] tabular-nums text-subtle">
-                  {filteredAndSortedItems.length} título(s) encontrado(s) no acervo local
+                  {filteredAndSortedItems.length} título(s) encontrado(s) no catálogo local
                 </p>
               </div>
             </div>
@@ -1028,7 +1060,7 @@ export function ListScreen({
                 </div>
               ) : moreCreatorState.results.length === 0 ? (
                 <p className="rounded-[4px] border border-line bg-app px-3 py-2 text-xs text-muted">
-                  Nenhum outro título novo encontrado para {creatorFilterBanner} além do que já está no seu acervo.
+                  Nenhum outro título novo encontrado para {creatorFilterBanner} além do que já está no seu catálogo.
                 </p>
               ) : (
                 <>
@@ -1067,7 +1099,7 @@ export function ListScreen({
                           </div>
                           {alreadyInLibrary ? (
                             <span className="inline-flex min-h-[44px] items-center rounded-[4px] border border-line bg-card px-2.5 text-[11px] font-medium text-muted">
-                              No acervo
+                              No catálogo
                             </span>
                           ) : (
                             onAddItem && (

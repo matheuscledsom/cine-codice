@@ -180,7 +180,7 @@ export function SpineRenderer({
           ? 'Animes'
           : item.workType === 'series'
             ? 'Séries'
-            : 'Acervo Geral');
+            : 'Catálogo Geral');
       if (!byTheme.has(themeLabel)) byTheme.set(themeLabel, []);
       byTheme.get(themeLabel).push(item);
     }

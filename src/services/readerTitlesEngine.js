@@ -4,7 +4,7 @@ export const READER_TITLE_CATEGORIES = [
   { id: 'all', label: 'Todos' },
   { id: 'living', label: 'Em Cartaz' },
   { id: 'genre', label: 'Gêneros' },
-  { id: 'library', label: 'Cinemateca' },
+  { id: 'library', label: 'Catálogo' },
 ];
 
 function norm(value) {
@@ -169,8 +169,8 @@ export const BADGE_RULES = [
     iconName: 'Film',
     tiers: [
       { id: 'iniciante', name: 'Primeiro Cartaz', target: 1, desc: 'Catalogue sua primeira obra audiovisual.' },
-      { id: 'veterano', name: 'Videolocadora Particular', target: 10, desc: 'Mantenha 10 filmes, séries ou animes no acervo.' },
-      { id: 'mestre', name: 'Curador de Cinemateca', target: 30, desc: 'Acumule 30 obras catalogadas com precisão.' },
+      { id: 'veterano', name: 'Videolocadora Particular', target: 10, desc: 'Mantenha 10 filmes, séries ou animes no catálogo.' },
+      { id: 'mestre', name: 'Curador de Catálogo', target: 30, desc: 'Acumule 30 obras catalogadas com precisão.' },
     ],
     measure: (stats) => stats.catalogedWorksCount,
   },
@@ -181,7 +181,7 @@ export const BADGE_RULES = [
     tiers: [
       { id: 'iniciante', name: 'Primeiras 10 Horas', target: 10, desc: 'Assista 10 horas acumuladas em filmes, séries e animes.' },
       { id: 'veterano', name: 'Maratonista 50h', target: 50, desc: 'Alcance 50 horas em tela registradas.' },
-      { id: 'mestre', name: 'Projeção Contínua 200h', target: 200, desc: 'Supere 200 horas acumuladas na cinemateca.' },
+      { id: 'mestre', name: 'Projeção Contínua 200h', target: 200, desc: 'Supere 200 horas acumuladas no catálogo.' },
     ],
     measure: (stats) => stats.totalHoursWatched,
   },
@@ -191,7 +191,7 @@ export const BADGE_RULES = [
     iconName: 'Tv',
     tiers: [
       { id: 'iniciante', name: 'Piloto Aprovado', target: 10, desc: 'Assista 10 episódios de séries ou animes.' },
-      { id: 'veterano', name: 'Temporada Completa', target: 50, desc: 'Conclua 50 episódios no acervo.' },
+      { id: 'veterano', name: 'Temporada Completa', target: 50, desc: 'Conclua 50 episódios no catálogo.' },
       { id: 'mestre', name: 'Sagas Sem Fim', target: 200, desc: 'Atinja 200 episódios assistidos.' },
     ],
     measure: (stats) => stats.totalEpisodesWatched,
@@ -202,7 +202,7 @@ export const BADGE_RULES = [
     iconName: 'Star',
     tiers: [
       { id: 'iniciante', name: 'Primeira Crítica', target: 1, desc: 'Avalie sua primeira obra com nota ou crítica.' },
-      { id: 'veterano', name: 'Crítico da Sala', target: 10, desc: 'Registre 10 avaliações no acervo.' },
+      { id: 'veterano', name: 'Crítico da Sala', target: 10, desc: 'Registre 10 avaliações no catálogo.' },
       { id: 'mestre', name: 'Curador Titular', target: 25, desc: 'Avalie 25 obras pelo DNA do Espectador.' },
     ],
     measure: (stats) => stats.reviewedWorksCount,
@@ -213,7 +213,7 @@ export const BADGE_RULES = [
     iconName: 'RotateCcw',
     tiers: [
       { id: 'iniciante', name: 'Sessão Nostalgia', target: 1, desc: 'Reassista uma obra pelo menos 1 vez (Rewatch #1).' },
-      { id: 'veterano', name: 'Clássico de Cabeceira', target: 5, desc: 'Acumule 5 reassistidas registradas no acervo.' },
+      { id: 'veterano', name: 'Clássico de Cabeceira', target: 5, desc: 'Acumule 5 reassistidas registradas no catálogo.' },
     ],
     measure: (stats) => stats.totalRewatches,
   },
