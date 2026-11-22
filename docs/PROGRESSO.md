@@ -10,7 +10,8 @@
   - Criados [`src/api/limits.js`](../src/api/limits.js), [`src/api/cacheDb.js`](../src/api/cacheDb.js), [`src/api/httpClient.js`](../src/api/httpClient.js), [`src/api/anilistBatch.js`](../src/api/anilistBatch.js), [`src/lib/ratings.js`](../src/lib/ratings.js) e [`src/lib/idBridge.js`](../src/lib/idBridge.js).
   - Estendido [`src/services/cinemaApi.js`](../src/services/cinemaApi.js) com OMDb, `external_ids` e `belongs_to_collection` do TMDB, `/lookup/shows?imdb=` da TVmaze, episódios Jikan (com flag `filler`), batch AniList por aliases e restrição de `import.meta.env.VITE_*` ao modo `DEV`.
   - Atualizado [`public/_headers`](../public/_headers) liberando `www.omdbapi.com` e hosts de imagem (`image.tmdb.org`, `s4.anilist.co`, `cdn.myanimelist.net`, `static.tvmaze.com`, `m.media-amazon.com`, `img.omdbapi.com`).
-  - Criada suíte [`tests/fase1a-api.test.mjs`](../tests/fase1a-api.test.mjs) (`22/22` testes passando no total, sem rede).
+  - Criada suíte [`tests/fase1a-api.test.mjs`](../tests/fase1a-api.test.mjs) (`24/24` testes passando no total, sem rede).
+  - Verificações extras da Fase 1A: remoção de `apikey`/`api_key` antes de gerar chaves de cache/deduplicação, mascaramento de chaves em mensagens de erro e proteção completa contra `IndexedDB` bloqueado (modo privado / `SecurityError` / cota cheia).
 - [ ] **Fase 1B — Dados, migração, chaves OMDb e Sobre/Créditos**
 - [ ] **Fase 2 — Onboarding e Configurações**
 - [ ] **Fase 3 — Notas externas e backdrops**
