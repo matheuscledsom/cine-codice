@@ -27,6 +27,7 @@ const ANILIST_MEDIA_SELECTION = `
   title { romaji english native }
   coverImage { extraLarge large medium }
   studios(isMain: true) { nodes { name } }
+  externalLinks { site type }
   nextAiringEpisode { episode airingAt timeUntilAiring }
   relations {
     edges {

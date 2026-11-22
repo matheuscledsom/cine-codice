@@ -1,6 +1,10 @@
 import { CheckCircle2, GitBranch, Link2, Plus, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { buildMissingFranchiseEntryDraft } from '../services/franchiseEngine';
+import {
+  buildDeterministicFranchiseOrUniverseModel,
+  fetchTmdbCollectionParts,
+} from '../services/franchiseService';
 import { StatusBadge } from './StatusBadge';
 
 const MANUAL_RELATION_OPTIONS = [
@@ -25,8 +29,42 @@ export function FranchiseRadarPanel({
   const [selectedTargetId, setSelectedTargetId] = useState('');
   const [manualTitle, setManualTitle] = useState('');
   const [relationType, setRelationType] = useState('SPIN_OFF');
+  const [remoteCollectionParts, setRemoteCollectionParts] = useState([]);
+  const [activeGroupTab, setActiveGroupTab] = useState('all');
 
-  if (!item) return null;
+  useEffect(() => {
+    setActiveGroupTab('all');
+    setRemoteCollectionParts([]);
+    const colId = item?.belongsToCollection?.id;
+    if (item?.workType === 'movie' && colId) {
+      let cancelled = false;
+      fetchTmdbCollectionParts(colId)
+        .then((parts) => {
+          if (!cancelled && Array.isArray(parts) && parts.length > 0) {
+            setRemoteCollectionParts(parts);
+          }
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }
+    return undefined;
+  }, [item?.id, item?.workType, item?.belongsToCollection?.id]);
+
+  const model = useMemo(
+    () =>
+      item
+        ? buildDeterministicFranchiseOrUniverseModel(
+            item,
+            allItems,
+            remoteCollectionParts
+          )
+        : null,
+    [item, allItems, remoteCollectionParts]
+  );
+
+  if (!item || !model) return null;
 
   const existingManualLinks = Array.isArray(item.franchiseLinks) ? item.franchiseLinks : [];
   const otherCatalogItems = (Array.isArray(allItems) ? allItems : []).filter(
@@ -55,7 +93,7 @@ export function FranchiseRadarPanel({
     setSelectedTargetId('');
     setManualTitle('');
     setLinkOpen(false);
-    onShowToast?.({ message: `Vínculo "${resolvedTitle}" adicionado à franquia.`, type: 'success' });
+    onShowToast?.({ message: `Vínculo "${resolvedTitle}" adicionado.`, type: 'success' });
   };
 
   const handleRemoveManualLink = (idx) => {
@@ -63,20 +101,17 @@ export function FranchiseRadarPanel({
     onUpdateItem?.(item.id, { franchiseLinks: nextLinks });
   };
 
-  const stats = franchise?.stats || null;
-  const breakdown = stats?.breakdown || null;
-  const breakdownPills = breakdown
-    ? [
-        breakdown.movies.total > 0 && `Filmes ${breakdown.movies.completed}/${breakdown.movies.total}`,
-        breakdown.ovas.total > 0 && `OVAs ${breakdown.ovas.completed}/${breakdown.ovas.total}`,
-        breakdown.specials.total > 0 && `Especiais ${breakdown.specials.completed}/${breakdown.specials.total}`,
-        breakdown.spinOffs.total > 0 && `Spin-offs ${breakdown.spinOffs.completed}/${breakdown.spinOffs.total}`,
-      ].filter(Boolean)
-    : [];
+  const effectiveFranchise = franchise || model.baseFranchise;
+  const stats = effectiveFranchise?.stats || null;
+
+  const visibleEntries =
+    model.mode === 'series-universe' && activeGroupTab !== 'all'
+      ? model.groups?.find((g) => g.id === activeGroupTab)?.entries || []
+      : model.entries;
 
   return (
     <section
-      aria-label="Radar de Franquias e Ordem Cronológica"
+      aria-label={model.sectionTitle}
       className="mt-4 rounded-xl border border-line bg-app p-3.5 space-y-3"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -84,18 +119,16 @@ export function FranchiseRadarPanel({
           <GitBranch className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
           <div className="min-w-0">
             <h4 className="truncate text-xs font-semibold text-ink">
-              {franchise ? `Saga: ${franchise.name}` : 'Franquia & Universos'}
+              {model.sectionTitle} · {model.sagaName}
             </h4>
-            {franchise && (
-              <p className="text-[10px] tabular-nums text-subtle">
-                Universo: {franchise.completedCount}/{franchise.totalCount} assistidas ({franchise.completionPct}%)
-              </p>
-            )}
+            <p className="text-[11px] font-medium tabular-nums text-accent">
+              {model.progressHeader}
+            </p>
           </div>
         </div>
 
         <div className="flex items-center gap-1.5">
-          {franchise && stats?.hasComparative && stats.rankLabel && (
+          {stats?.hasComparative && stats.rankLabel && (
             <span className="rounded-[4px] border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
               {stats.rankLabel}
               {stats.franchiseAverageRating !== null
@@ -114,15 +147,33 @@ export function FranchiseRadarPanel({
         </div>
       </div>
 
-      {breakdownPills.length > 0 && (
+      {/* Abas / Grupos para Séries & Animes ("Obras do Mesmo Universo") */}
+      {model.mode === 'series-universe' && Array.isArray(model.groups) && (
         <div className="flex flex-wrap gap-1.5">
-          {breakdownPills.map((text) => (
-            <span
-              key={text}
-              className="rounded-[4px] border border-line bg-card px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted"
+          <button
+            type="button"
+            onClick={() => setActiveGroupTab('all')}
+            className={`min-h-[36px] rounded-[4px] border px-2.5 py-1 text-[11px] font-semibold tabular-nums ${
+              activeGroupTab === 'all'
+                ? 'border-accent bg-accent/15 text-ink'
+                : 'border-line bg-card text-muted hover:text-ink'
+            }`}
+          >
+            Todas ({model.completedCount}/{model.totalCount})
+          </button>
+          {model.groups.map((grp) => (
+            <button
+              key={grp.id}
+              type="button"
+              onClick={() => setActiveGroupTab(grp.id)}
+              className={`min-h-[36px] rounded-[4px] border px-2.5 py-1 text-[11px] font-medium tabular-nums ${
+                activeGroupTab === grp.id
+                  ? 'border-accent bg-accent/15 text-ink'
+                  : 'border-line bg-card text-muted hover:text-ink'
+              }`}
             >
-              {text}
-            </span>
+              {grp.label} ({grp.completedCount}/{grp.totalCount})
+            </button>
           ))}
         </div>
       )}
@@ -208,9 +259,9 @@ export function FranchiseRadarPanel({
         </div>
       )}
 
-      {franchise && franchise.timeline.length > 0 && (
+      {visibleEntries.length > 0 && (
         <div className="space-y-1.5">
-          {franchise.timeline.map((node, idx) => {
+          {visibleEntries.map((node, idx) => {
             const isCurrent = node.id === item.id;
             return (
               <div
@@ -244,20 +295,35 @@ export function FranchiseRadarPanel({
                     )}
                   </div>
                   <p className="text-[10px] text-subtle tabular-nums">
-                    {[node.entryKind, node.releaseYear, node.totalEpisodes ? `${node.totalEpisodes} eps` : '']
+                    {[
+                      node.entryKind,
+                      node.releaseYear,
+                      node.totalEpisodes ? `${node.totalEpisodes} eps` : '',
+                      node.catalogStateLabel,
+                    ]
                       .filter(Boolean)
                       .join(' · ')}
                   </p>
                 </div>
 
                 {node.isCataloged ? (
-                  <StatusBadge statusId={node.status} size="xs" />
+                  <div className="flex items-center gap-1.5">
+                    {node.userRating !== null && (
+                      <span className="rounded-[4px] border border-accent/40 bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
+                        {node.userRating}/100
+                      </span>
+                    )}
+                    <StatusBadge statusId={node.status} size="xs" />
+                  </div>
                 ) : (
                   onQuickCatalogItem && (
                     <button
                       type="button"
                       onClick={() => {
-                        const draft = buildMissingFranchiseEntryDraft(franchise, node);
+                        const draft = buildMissingFranchiseEntryDraft(
+                          effectiveFranchise || { name: model.sagaName },
+                          node
+                        );
                         if (draft) {
                           onQuickCatalogItem(draft);
                           onShowToast?.({
@@ -269,7 +335,7 @@ export function FranchiseRadarPanel({
                       className="inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[4px] border border-accent bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
                     >
                       <Plus className="h-3 w-3" strokeWidth={1.5} />
-                      <span>+ Catalogar</span>
+                      <span>+ Adicionar</span>
                     </button>
                   )
                 )}

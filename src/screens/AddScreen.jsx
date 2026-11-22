@@ -27,9 +27,11 @@ import {
   CINEMA_SOURCE_PRESETS,
   enrichSeriesAndAnimeSeasons,
   enrichWorkWithExternalRatings,
+  formatWorkStructureBadge,
   getCachedCinemaSearch,
   getDefaultSourcesForFilter,
   loadActiveCinemaSources,
+  normalizeBrazilStreamingProviders,
   resolveCuratedSuggestions,
   saveActiveCinemaSources,
   searchCinemaMedia,
@@ -424,6 +426,10 @@ export function AddScreen({
       tmdbStatus: enriched.tmdbStatus || base.tmdbStatus || null,
       showStatus: enriched.showStatus || base.showStatus || null,
       animeStatus: enriched.animeStatus || base.animeStatus || null,
+      streamingProvidersBR: normalizeBrazilStreamingProviders(
+        enriched.streamingProvidersBR || [],
+        base.streamingProvidersBR || []
+      ),
       franchiseName: base.franchiseName || enriched.franchiseName || '',
       franchiseRelations:
         Array.isArray(enriched.franchiseRelations) && enriched.franchiseRelations.length > 0
@@ -948,6 +954,10 @@ export function AddScreen({
               const searchRatings = getPresentExternalRatingBadges(
                 candidate.externalRatings
               ).slice(0, 2);
+              const structureBadge = formatWorkStructureBadge(candidate);
+              const streamingBR = Array.isArray(candidate.streamingProvidersBR)
+                ? candidate.streamingProvidersBR
+                : [];
 
               return (
                 <article
@@ -1006,6 +1016,19 @@ export function AddScreen({
 
                     <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                       <div className="flex flex-wrap gap-1">
+                        {structureBadge && (
+                          <span className="rounded-[3px] border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
+                            {structureBadge}
+                          </span>
+                        )}
+                        {streamingBR.map((provider) => (
+                          <span
+                            key={provider}
+                            className="rounded-[3px] border border-line bg-elevated px-1.5 py-0.5 text-[10px] font-semibold text-ink"
+                          >
+                            {provider}
+                          </span>
+                        ))}
                         {(candidate.genres || []).slice(0, 3).map((g) => (
                           <span
                             key={g}
@@ -1102,6 +1125,42 @@ export function AddScreen({
               </button>
             </div>
 
+            {/* Estrutura e Streaming BR antes de Salvar */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {formatWorkStructureBadge(draftItem) && (
+                <span className="rounded-[4px] border border-accent/40 bg-accent/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">
+                  {formatWorkStructureBadge(draftItem)}
+                </span>
+              )}
+              {Array.isArray(draftItem.streamingProvidersBR) &&
+                draftItem.streamingProvidersBR.map((provider) => (
+                  <span
+                    key={provider}
+                    className="rounded-[4px] border border-line bg-app px-2 py-0.5 text-[11px] font-semibold text-ink"
+                  >
+                    BR · {provider}
+                  </span>
+                ))}
+            </div>
+
+            {Array.isArray(draftItem.genres) && draftItem.genres.length > 0 && (
+              <div className="space-y-1.5 rounded-[6px] border border-line bg-app p-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-subtle">
+                  Gêneros Oficiais (API)
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {draftItem.genres.map((g) => (
+                    <span
+                      key={g}
+                      className="rounded-[4px] border border-line bg-card px-2 py-0.5 text-[11px] font-medium text-ink"
+                    >
+                      {g}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {draftItem.synopsis && (
               <p className="line-clamp-3 rounded-xl border border-line bg-app px-3 py-2 text-xs leading-relaxed text-muted">
                 {draftItem.synopsis}
@@ -1197,13 +1256,18 @@ export function AddScreen({
               onOpenGeminiSettings={onOpenGeminiSettings}
             />
 
-            <TechnicalAtmosphereSection
-              key={`atmo-${draftItem.id}`}
-              item={draftItem}
-              compactAutoChips
-              defaultExpanded
-              onChange={(updates) => setDraftItem((curr) => ({ ...curr, ...updates }))}
-            />
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-subtle">
+                Clima &amp; Marcadores Pessoais
+              </p>
+              <TechnicalAtmosphereSection
+                key={`atmo-${draftItem.id}`}
+                item={draftItem}
+                compactAutoChips
+                defaultExpanded
+                onChange={(updates) => setDraftItem((curr) => ({ ...curr, ...updates }))}
+              />
+            </div>
 
             <div className="flex gap-2 border-t border-line pt-3">
               <button

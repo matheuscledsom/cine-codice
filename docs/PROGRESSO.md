@@ -2,8 +2,8 @@
 
 **Branch ativa:** `feat/v1.3.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.2.0 · Lumière` (merge na `main` `bbf099c` + tag `v1.2.0` + `git push origin main --tags`)
-**Última fase concluída (v1.3.0):** `3`
-**Próxima fase (v1.3.0):** `4` (Franquias de Filmes vs. Universos de Séries/Animes, Onde Assistir BR & Distinção Visual no Catálogo)
+**Última fase concluída (v1.3.0):** `4`
+**Próxima fase (v1.3.0):** `5` (Métricas Compactas "Zero-Scroll", Início Refinada & Perfil Editorial)
 
 ## Linha do Tempo das Fases — Ciclo v1.3.0 · Lumière
 - [x] **Fase 0 (v1.3.0) — Auditoria Técnica & Mapeamento de Impacto** — concluída sem alterações; roteiro salvo em [`docs/PROMPT_MESTRE_V1_3.md`](./PROMPT_MESTRE_V1_3.md).
@@ -22,7 +22,11 @@
   - Estendidos [`src/lib/episodeStats.js`](../src/lib/episodeStats.js) (`computeJikanEpisodeBlocks`, `resolveEpisodeJumpTarget`) e [`src/components/EpisodeListTab.jsx`](../src/components/EpisodeListTab.jsx) com paginação real da Jikan por blocos de 100 episódios (`1–100`, `101–200`, ..., `1001–1100` para *One Piece* `malId: 21`), título real, data, duração, resumo e badge `Filler` oficial, além de salto rápido **"Ir para o ep. #"** (ex.: `1015` abre direto o bloco `1001–1100` e destaca o episódio).
   - Criado [`src/lib/ratingBadges.js`](../src/lib/ratingBadges.js) (`computeCritiqueComparisonBadge`, `computeWorkCritiqueBadge`) exibindo selos comparativos (*Obra-Prima Consensual*, *Sintonia Total*, *Você Amou Mais que o Público*, *Mais Exigente que a Crítica*) em [`src/components/WorkDetailPage.jsx`](../src/components/WorkDetailPage.jsx) e [`src/components/ExternalRatingsPanel.jsx`](../src/components/ExternalRatingsPanel.jsx).
   - Criada suíte [`tests/fase3-v130-work-page-episodes-badges.test.mjs`](../tests/fase3-v130-work-page-episodes-badges.test.mjs) (`109/109` testes aprovados).
-- [ ] **Fase 4 (v1.3.0) — Franquias (Filmes) vs. Universos (Séries/Animes), Onde Assistir (BR) & Distinção Visual no Catálogo**
+- [x] **Fase 4 (v1.3.0) — Franquias (Filmes) vs. Universos (Séries/Animes), Onde Assistir (BR) & Distinção Visual no Catálogo** — concluída na branch `feat/v1.3.0-lumiere`.
+  - Criado [`src/services/franchiseService.js`](../src/services/franchiseService.js) (`buildDeterministicFranchiseOrUniverseModel`, `filterStrictlyCanonicalRelations`, `fetchTmdbCollectionParts`) e integrado a [`src/components/FranchiseRadarPanel.jsx`](../src/components/FranchiseRadarPanel.jsx): Filmes exibem **"Franquia & Sequências"** (`4/5 filmes · 80% concluído`) com cruzamento local (*Concluído com nota*, *Na fila*, *Não catalogado* `+ Adicionar`); Séries e Animes exibem **"Obras do Mesmo Universo"** (`5/6 obras · 83% do universo`), filtrando ruídos `CHARACTER`/`OTHER` e agrupando em **Série Principal**, **Filmes** e **OVAs / Especiais**.
+  - Estendidos [`src/services/cinemaApi.js`](../src/services/cinemaApi.js) (`normalizeBrazilStreamingProviders`, `fetchBrazilStreamingProviders`, `formatWorkStructureBadge`), [`src/api/anilistBatch.js`](../src/api/anilistBatch.js) e [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx) com badges de Streaming BR (`Netflix`, `Crunchyroll`, `Prime Video`, `Max`, `Disney+`, `Apple TV+`, `Globoplay`), badge de estrutura (`15 Temporadas · 327 Episódios`, `1.122+ Episódios · Em exibição`) e separação visual entre **Gêneros Oficiais (API)** e **Clima & Marcadores Pessoais**.
+  - Criado [`src/screens/CatalogScreen.jsx`](../src/screens/CatalogScreen.jsx) e atualizado [`src/screens/ListScreen.jsx`](../src/screens/ListScreen.jsx) com selos superiores diferenciados por formato (`Filme · 2h 28m`, `Série · T1 E12`, `Anime · DUB` / `Anime · LEG`) e filtros rápidos no topo com contadores (`Todos`, `Filmes`, `Séries`, `Animes`).
+  - Criada suíte [`tests/fase4-v130-universe-streaming-catalog.test.mjs`](../tests/fase4-v130-universe-streaming-catalog.test.mjs) (`113/113` testes aprovados).
 - [ ] **Fase 5 (v1.3.0) — Métricas Compactas ("Zero-Scroll"), Início Refinada & Perfil Editorial**
 - [ ] **Fase 6 (v1.3.0) — Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0**
 
