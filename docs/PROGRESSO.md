@@ -2,8 +2,8 @@
 
 **Branch ativa:** `feat/v1.3.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.2.0 · Lumière` (merge na `main` `bbf099c` + tag `v1.2.0` + `git push origin main --tags`)
-**Última fase concluída (v1.3.0):** `4`
-**Próxima fase (v1.3.0):** `5` (Métricas Compactas "Zero-Scroll", Início Refinada & Perfil Editorial)
+**Última fase concluída (v1.3.0):** `5` (Métricas Compactas "Zero-Scroll", Início Refinada & Perfil Editorial)
+**Próxima fase (v1.3.0):** `6` (Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0)
 
 ## Linha do Tempo das Fases — Ciclo v1.3.0 · Lumière
 - [x] **Fase 0 (v1.3.0) — Auditoria Técnica & Mapeamento de Impacto** — concluída sem alterações; roteiro salvo em [`docs/PROMPT_MESTRE_V1_3.md`](./PROMPT_MESTRE_V1_3.md).
@@ -27,7 +27,12 @@
   - Estendidos [`src/services/cinemaApi.js`](../src/services/cinemaApi.js) (`normalizeBrazilStreamingProviders`, `fetchBrazilStreamingProviders`, `formatWorkStructureBadge`), [`src/api/anilistBatch.js`](../src/api/anilistBatch.js) e [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx) com badges de Streaming BR (`Netflix`, `Crunchyroll`, `Prime Video`, `Max`, `Disney+`, `Apple TV+`, `Globoplay`), badge de estrutura (`15 Temporadas · 327 Episódios`, `1.122+ Episódios · Em exibição`) e separação visual entre **Gêneros Oficiais (API)** e **Clima & Marcadores Pessoais**.
   - Criado [`src/screens/CatalogScreen.jsx`](../src/screens/CatalogScreen.jsx) e atualizado [`src/screens/ListScreen.jsx`](../src/screens/ListScreen.jsx) com selos superiores diferenciados por formato (`Filme · 2h 28m`, `Série · T1 E12`, `Anime · DUB` / `Anime · LEG`) e filtros rápidos no topo com contadores (`Todos`, `Filmes`, `Séries`, `Animes`).
   - Criada suíte [`tests/fase4-v130-universe-streaming-catalog.test.mjs`](../tests/fase4-v130-universe-streaming-catalog.test.mjs) (`113/113` testes aprovados).
-- [ ] **Fase 5 (v1.3.0) — Métricas Compactas ("Zero-Scroll"), Início Refinada & Perfil Editorial**
+- [x] **Fase 5 (v1.3.0) — Métricas Compactas ("Zero-Scroll"), Início Refinada & Perfil Editorial** — concluída na branch `feat/v1.3.0-lumiere`.
+  - Reorganizado [`src/screens/StatsScreen.jsx`](../src/screens/StatsScreen.jsx) em dashboard denso de 2 dobras máximas: Linha 1 com 4 KPIs horizontais compactos (*Horas em Tela*, *Episódios Vistos*, *Obras Concluídas*, *Média Geral*), Linha 2 com Coluna A (*Horas por Formato + Décadas* com alternância por abas) e Coluna B (*Top 5 Diretores / Estúdios / Gêneros*), e Linha 3 com Mapa de Sessões compacto e botão Cine Wrapped.
+  - Refinada [`src/screens/HomeScreen.jsx`](../src/screens/HomeScreen.jsx) e [`src/lib/homeEngine.js`](../src/lib/homeEngine.js) com saudação contextual e resumo vivo em 1 linha (*"3 obras em andamento · 142h acumuladas"*), título do próximo episódio no Hero (`resolveHeroNextEpisodeTitle`) e barra de atalhos rápidos (*Sortear da fila Quero Ver* e *Continuar última sessão*).
+  - Redenhado [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx) e [`src/lib/profileMetrics.js`](../src/lib/profileMetrics.js) com estética editorial Letterboxd/Serializd: avatar quadrado arredondado (`rounded-2xl`), 4 métricas diretas (*Obras · Horas · Episódios · Média*), vitrine *Favoritos da Vida · Top 4* limpa, grade visual de pôsteres *Atividade Recente* com notas confirmadas, marcadores de cena/anotação e selos comparativos de crítica, e *Histograma de Notas (0–100)* em gráfico minimalista de barras.
+  - Criada suíte [`tests/fase5-v130-home-metrics-profile.test.mjs`](../tests/fase5-v130-home-metrics-profile.test.mjs) (`117/117` testes aprovados).
+- [ ] **Fase 6 (v1.3.0) — Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0**
 - [ ] **Fase 6 (v1.3.0) — Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0**
 
 ## Linha do Tempo das Fases — Ciclo v1.2.0 · Lumière (Concluído)

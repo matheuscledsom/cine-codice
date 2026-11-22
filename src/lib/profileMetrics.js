@@ -17,6 +17,7 @@ import {
   getWatchedEpisodesCount,
   isEpisodicWork,
 } from '../utils/backlogHelpers.js';
+import { computeWorkCritiqueBadge } from './ratingBadges.js';
 import { isConfirmedUserRating } from './ratings.js';
 
 function getMovieKnownTotalMinutes(work) {
@@ -261,4 +262,87 @@ export function buildProfilePersonalFeed(items = [], posts = [], { limit = 16 } 
   return entries
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, Math.max(1, Number(limit) || 16));
+}
+
+/**
+ * Histograma de Notas (0–100) inspirado no Letterboxd / Serializd.
+ * Agrupa notas confirmadas pelo usuário em 10 intervalos (0–10, 11–20, ..., 91–100).
+ */
+export function computeRatingHistogram(items = []) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false && isConfirmedUserRating(item)
+  );
+
+  const BUCKETS = [
+    { key: '0-10', label: '10', min: 0, max: 10, count: 0 },
+    { key: '11-20', label: '20', min: 11, max: 20, count: 0 },
+    { key: '21-30', label: '30', min: 21, max: 30, count: 0 },
+    { key: '31-40', label: '40', min: 31, max: 40, count: 0 },
+    { key: '41-50', label: '50', min: 41, max: 50, count: 0 },
+    { key: '51-60', label: '60', min: 51, max: 60, count: 0 },
+    { key: '61-70', label: '70', min: 61, max: 70, count: 0 },
+    { key: '71-80', label: '80', min: 71, max: 80, count: 0 },
+    { key: '81-90', label: '90', min: 81, max: 90, count: 0 },
+    { key: '91-100', label: '100', min: 91, max: 100, count: 0 },
+  ];
+
+  let maxCount = 0;
+  for (const work of backlog) {
+    const score = Number(work.rating);
+    if (!Number.isFinite(score)) continue;
+    const bucket = BUCKETS.find((b) => score >= b.min && score <= b.max);
+    if (bucket) {
+      bucket.count += 1;
+      if (bucket.count > maxCount) maxCount = bucket.count;
+    }
+  }
+
+  return {
+    totalRated: backlog.length,
+    maxCount,
+    buckets: BUCKETS.map((b) => ({
+      ...b,
+      percentage: maxCount > 0 ? Math.round((b.count / maxCount) * 100) : 0,
+    })),
+  };
+}
+
+/**
+ * Monta lista de obras recentes para a vitrine "Atividade Recente" do perfil editorial:
+ * Retorna as obras recentemente assistidas, avaliadas ou anotadas com selos comparativos.
+ */
+export function computeRecentActivityWorks(items = [], limit = 8) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false
+  );
+
+  return backlog
+    .filter((w) => {
+      const hasRating = isConfirmedUserRating(w);
+      const isWatchedOrActive =
+        w.status === 'completed' || w.status === 'playing' || w.status === 'rewatching';
+      const hasNotes = Boolean(String(w.notes || w.fichamento || '').trim());
+      const hasScene = Boolean(String(w.favoriteScene || '').trim());
+      return hasRating || isWatchedOrActive || hasNotes || hasScene;
+    })
+    .sort((a, b) => {
+      const tA = Date.parse(a.updatedAt || a.completedDate || a.createdAt || '') || 0;
+      const tB = Date.parse(b.updatedAt || b.completedDate || b.createdAt || '') || 0;
+      return tB - tA;
+    })
+    .slice(0, Math.max(1, limit))
+    .map((work) => {
+      const confirmedScore = isConfirmedUserRating(work) ? Number(work.rating) : null;
+      const critiqueBadge = computeWorkCritiqueBadge(work);
+      const hasNotes = Boolean(String(work.notes || work.fichamento || '').trim());
+      const hasScene = Boolean(String(work.favoriteScene || '').trim());
+      return {
+        id: work.id,
+        work,
+        rating: confirmedScore,
+        critiqueBadge,
+        hasNotes,
+        hasScene,
+      };
+    });
 }

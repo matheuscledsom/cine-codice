@@ -11,6 +11,7 @@ import {
   calculateWorkProgress,
   formatFlexibleProgressMetric,
   getHypeMeta,
+  getWatchedMinutes,
   isEpisodicWork,
 } from '../utils/backlogHelpers.js';
 import { buildTimeCapsuleEntries } from '../utils/timeCapsule.js';
@@ -444,3 +445,59 @@ export function buildCompactStreakChip(streakProps = null) {
     ctaLabel: loggedToday ? 'Sessão de hoje salva' : 'Registrar Sessão Hoje',
   };
 }
+
+export function buildHomeLiveSummary(items = []) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (i) => i && i.inBacklog !== false
+  );
+  const inProgressCount = backlog.filter(
+    (i) =>
+      i.status === 'playing' ||
+      i.status === 'in-progress' ||
+      i.status === 'rewatching'
+  ).length;
+  const totalMinutes = backlog.reduce(
+    (acc, w) => acc + (Number(getWatchedMinutes(w)) || 0),
+    0
+  );
+  const totalHours = Math.round(totalMinutes / 60);
+  const noun = inProgressCount === 1 ? 'obra em andamento' : 'obras em andamento';
+  return `${inProgressCount} ${noun} · ${totalHours}h acumuladas`;
+}
+
+export function resolveHeroNextEpisodeTitle(work) {
+  if (!work || !isEpisodicWork(work)) return '';
+  if (work.nextEpisode?.name || work.nextEpisode?.title) {
+    return String(work.nextEpisode.name || work.nextEpisode.title).trim();
+  }
+  if (work.nextEpisodeToAir?.name || work.nextEpisodeToAir?.title) {
+    return String(work.nextEpisodeToAir.name || work.nextEpisodeToAir.title).trim();
+  }
+  const curSeason = Math.max(1, Number(work.currentSeason) || 1);
+  const nextEpNum = Math.max(1, (Number(work.currentEpisode) || 0) + 1);
+  const list = Array.isArray(work.episodeList)
+    ? work.episodeList
+    : Array.isArray(work.episodesList)
+      ? work.episodesList
+      : Array.isArray(work.episodes)
+        ? work.episodes
+        : null;
+
+  if (list) {
+    const found =
+      list.find((ep) => {
+        const s = Number(ep.seasonNumber ?? ep.season ?? 1);
+        const n = Number(ep.episodeNumber ?? ep.number ?? ep.epNumber ?? 0);
+        return s === curSeason && n === nextEpNum;
+      }) ||
+      list.find((ep) => {
+        const n = Number(ep.episodeNumber ?? ep.number ?? ep.epNumber ?? 0);
+        return n === nextEpNum;
+      });
+    if (found?.name || found?.title) {
+      return String(found.name || found.title).trim();
+    }
+  }
+  return '';
+}
+

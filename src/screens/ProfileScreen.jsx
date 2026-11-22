@@ -1,5 +1,6 @@
 import {
   Award,
+  BarChart2,
   Camera,
   Clapperboard,
   Film,
@@ -35,6 +36,8 @@ import { useAiConfig } from '../hooks/useAiConfig';
 import {
   buildProfilePersonalFeed,
   computeProfileMetrics,
+  computeRatingHistogram,
+  computeRecentActivityWorks,
   resolveProfileHeroBackdrop,
   resolveTop4Favorites,
 } from '../lib/profileMetrics';
@@ -190,6 +193,11 @@ export function ProfileScreen({
   const personalFeed = useMemo(
     () => buildProfilePersonalFeed(items, posts, { limit: 18 }),
     [items, posts]
+  );
+  const ratingHistogram = useMemo(() => computeRatingHistogram(items), [items]);
+  const recentActivityWorks = useMemo(
+    () => computeRecentActivityWorks(items, 8),
+    [items]
   );
 
   const statsData = useMemo(() => {
@@ -420,7 +428,7 @@ export function ProfileScreen({
               type="button"
               onClick={() => setEditModalOpen(true)}
               aria-label="Personalizar avatar e perfil"
-              className="-mt-10 relative z-10 flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 bg-card text-accent transition-transform hover:scale-105"
+              className="-mt-10 relative z-10 flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl border-2 bg-card text-accent transition-transform hover:scale-105 shadow-md"
               style={{ borderColor: 'var(--bg-app)' }}
             >
               {profile?.avatarUrl ? (
@@ -569,8 +577,8 @@ export function ProfileScreen({
             </div>
           </section>
 
-          {/* Resumo Acumulado do Catálogo */}
-          <div className="grid grid-cols-1 gap-2 border-y border-line py-2.5 sm:grid-cols-3 tabular-nums">
+          {/* 4 Métricas Diretas (Letterboxd / Serializd): Obras · Horas · Episódios · Média */}
+          <div className="grid grid-cols-2 gap-2 border-y border-line py-2.5 sm:grid-cols-4 tabular-nums">
             <button
               type="button"
               onClick={() => setActiveTab('shelf')}
@@ -635,7 +643,170 @@ export function ProfileScreen({
                   : 'Sem notas confirmadas'}
               </span>
             </div>
+
+            <div className="flex min-h-[44px] flex-col justify-center rounded-xl border border-line bg-app px-3 py-2">
+              <span
+                className="text-[11px] font-medium uppercase tracking-wider"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Avaliações
+              </span>
+              <span className="text-sm font-semibold text-ink">
+                {profileMetrics.ratedWorksCount} / {profileMetrics.totalWorks}
+              </span>
+              <span
+                className="text-[11px]"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {profileMetrics.totalWorks > 0
+                  ? `${Math.round((profileMetrics.ratedWorksCount / profileMetrics.totalWorks) * 100)}% do catálogo`
+                  : 'Nenhuma obra'}
+              </span>
+            </div>
           </div>
+
+          {/* ATIVIDADE RECENTE (Letterboxd / Serializd — Pôsteres 2:3 com Nota & Selo) */}
+          {recentActivityWorks.length > 0 && (
+            <section
+              aria-label="Atividade Recente do Espectador"
+              className="rounded-2xl border border-line bg-card p-4 space-y-3"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Film className="h-4 w-4 text-accent" strokeWidth={1.5} />
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-ink">
+                    Atividade Recente
+                  </h2>
+                </div>
+                <span className="text-[11px] tabular-nums text-subtle">
+                  Últimas {recentActivityWorks.length} sessões
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+                {recentActivityWorks.map(({ id, work, rating, critiqueBadge, hasNotes, hasScene }) => (
+                  <button
+                    key={`recent-${id}`}
+                    type="button"
+                    onClick={() => onSelectItem?.(work)}
+                    className="group relative flex flex-col text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-xl"
+                  >
+                    <div className="relative aspect-[2/3] w-full overflow-hidden rounded-xl border border-line bg-app transition-colors group-hover:border-accent">
+                      <CoverArt
+                        item={work}
+                        compact
+                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      />
+
+                      {/* Nota do Espectador */}
+                      {rating !== null && (
+                        <span className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-md border border-accent/60 bg-black/85 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-accent shadow-sm">
+                          <Star className="h-2.5 w-2.5 fill-current" />
+                          <span>{rating}</span>
+                        </span>
+                      )}
+
+                      {/* Marcadores de Cena / Anotação */}
+                      <div className="absolute right-1.5 top-1.5 flex items-center gap-1">
+                        {hasScene && (
+                          <span
+                            title="Possui cena favorita registrada"
+                            className="flex h-5 w-5 items-center justify-center rounded-md bg-black/80 text-[10px] text-accent backdrop-blur-sm"
+                          >
+                            <Quote className="h-2.5 w-2.5" />
+                          </span>
+                        )}
+                        {hasNotes && (
+                          <span
+                            title="Possui anotação/fichamento pessoal"
+                            className="flex h-5 w-5 items-center justify-center rounded-md bg-black/80 text-[10px] text-ink backdrop-blur-sm"
+                          >
+                            <PenLine className="h-2.5 w-2.5" />
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Selo Comparativo (Você vs Público) */}
+                      {critiqueBadge && (
+                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent p-1.5 pt-4">
+                          <p className="truncate text-[9px] font-semibold text-accent leading-tight">
+                            {critiqueBadge.label}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    <p className="mt-1.5 truncate text-[11px] font-semibold text-ink group-hover:text-accent">
+                      {work.title}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* HISTOGRAMA DE NOTAS (0–100) — Visual Letterboxd / Serializd */}
+          <section
+            aria-label="Histograma de Distribuição de Notas"
+            className="rounded-2xl border border-line bg-card p-4 space-y-3"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <BarChart2 className="h-4 w-4 text-accent" strokeWidth={1.5} />
+                <h2 className="text-xs font-bold uppercase tracking-wider text-ink">
+                  Histograma de Notas (0–100)
+                </h2>
+              </div>
+              <span className="text-[11px] tabular-nums text-subtle">
+                {ratingHistogram.totalRated > 0
+                  ? `${ratingHistogram.totalRated} notas registradas`
+                  : 'Nenhuma nota registrada'}
+              </span>
+            </div>
+
+            {ratingHistogram.totalRated > 0 ? (
+              <div className="space-y-2 pt-2">
+                {/* Barras Verticais do Histograma */}
+                <div className="flex h-24 items-end gap-1 sm:gap-2 px-1">
+                  {ratingHistogram.buckets.map((b) => (
+                    <div
+                      key={`hist-${b.key}`}
+                      className="group relative flex flex-1 flex-col items-center h-full justify-end"
+                    >
+                      {/* Tooltip com contagem */}
+                      <span className="pointer-events-none absolute -top-6 hidden rounded bg-black/90 px-1.5 py-0.5 text-[10px] font-semibold text-white group-hover:block z-10 whitespace-nowrap tabular-nums">
+                        {b.count} {b.count === 1 ? 'obra' : 'obras'} ({b.key})
+                      </span>
+
+                      <div
+                        className="w-full rounded-t transition-all duration-300"
+                        style={{
+                          height: `${Math.max(4, b.percentage)}%`,
+                          background:
+                            b.count > 0
+                              ? 'linear-gradient(180deg, var(--accent-color), color-mix(in srgb, var(--accent-color) 70%, var(--bg-card)))'
+                              : 'color-mix(in srgb, var(--border-color) 40%, transparent)',
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {/* Eixo Horizontal (10 a 100) */}
+                <div className="flex items-center justify-between border-t border-line pt-1.5 px-1 text-[10px] font-medium tabular-nums text-muted">
+                  {ratingHistogram.buckets.map((b) => (
+                    <span key={`lbl-${b.key}`} className="flex-1 text-center">
+                      {b.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="py-4 text-center text-xs text-muted">
+                Avalie obras no catálogo para visualizar seu histograma de notas cinematográficas.
+              </p>
+            )}
+          </section>
         </div>
       </header>
 
