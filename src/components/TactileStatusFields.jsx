@@ -674,6 +674,7 @@ export function TactileStatusFields({
     onChange({
       reviewCriteria: nextCriteria,
       rating: nextRating,
+      ratingSource: 'manual',
       ...(nextVerdict ? { verdict: nextVerdict } : {}),
     });
   };
@@ -978,8 +979,15 @@ export function TactileStatusFields({
             <Star className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
             <span>Avaliação DNA (8 Dimensões)</span>
             {typeof item.rating === 'number' && (
-              <span className="rounded-[4px] border border-accent/40 bg-accent/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">
+              <span
+                className={`rounded-[4px] border px-2 py-0.5 text-[11px] font-semibold tabular-nums ${
+                  item.ratingSource === 'legacy-default'
+                    ? 'border-dashed border-line bg-card text-muted opacity-75'
+                    : 'border-accent/40 bg-accent/15 text-accent'
+                }`}
+              >
                 {item.rating}/100
+                {item.ratingSource === 'legacy-default' ? ' · nota padrão' : ''}
               </span>
             )}
           </span>
@@ -992,6 +1000,26 @@ export function TactileStatusFields({
 
         {dnaReviewOpen && (
           <div className="space-y-3 border-t border-line p-3.5">
+            {item.ratingSource === 'legacy-default' && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-dashed border-line bg-card px-3 py-2 text-[11px] text-muted">
+                <span>
+                  Esta nota 80 foi herdada automaticamente como padrão e não entra nas suas médias.
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChange({
+                      rating: item.rating ?? 80,
+                      ratingSource: 'manual',
+                      verdict: item.verdict || getVerdictForScore(item.rating ?? 80),
+                    })
+                  }
+                  className="min-h-[44px] rounded-[4px] border border-accent bg-accent/10 px-3 text-[11px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+                >
+                  Confirmar nota {item.rating ?? 80}
+                </button>
+              </div>
+            )}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] text-muted">
                 Ajuste os 8 critérios para calcular a nota ponderada pelo seu DNA:
@@ -1010,7 +1038,8 @@ export function TactileStatusFields({
                   const verdict = val !== null ? getVerdictForScore(val) : null;
                   onChange({
                     rating: val,
-                    ...(verdict ? { verdict } : {}),
+                    ratingSource: val !== null ? 'manual' : null,
+                    ...(verdict ? { verdict } : { verdict: null }),
                   });
                 }}
                 placeholder="0–100"

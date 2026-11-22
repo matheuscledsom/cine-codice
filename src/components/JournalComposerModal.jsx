@@ -271,14 +271,14 @@ export function JournalComposerModal({
 
               <label className="block">
                 <span className="mb-1 flex items-center gap-1 text-xs font-medium text-muted">
-                  <Bookmark className="h-3 w-3 text-accent" />
-                  Página ou Capítulo
+                  <Bookmark className="h-3 w-3 text-accent" strokeWidth={1.5} />
+                  Temporada, Episódio ou Minuto
                 </span>
                 <input
                   type="text"
                   value={progressMarker}
                   onChange={(e) => setProgressMarker(e.target.value)}
-                  placeholder="Ex: Pág. 142 ou Cap. 8"
+                  placeholder="Ex: Temp. 2 Ep. 4 ou 01:14:00"
                   className="w-full rounded-xl border border-line bg-app px-3 py-2.5 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
                 />
               </label>

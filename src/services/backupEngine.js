@@ -93,6 +93,9 @@ export function countDatabaseEntities(db, snapshot) {
     readingSessions: Array.isArray(tables.reading_sessions)
       ? tables.reading_sessions.length
       : (snapshot?.readingSessions || []).length,
+    episodeEvaluations: Array.isArray(tables.episode_evaluations)
+      ? tables.episode_evaluations.length
+      : (snapshot?.episodeEvaluations || []).length,
   };
 }
 
@@ -252,6 +255,32 @@ export function mergeSnapshots(currentSnapshot = {}, incomingSnapshot = {}) {
   const latestLastDate =
     [currStreak.lastDate, incStreak.lastDate].filter(Boolean).sort().pop() || null;
 
+  const currEvalList = Array.isArray(currentSnapshot.episodeEvaluations)
+    ? currentSnapshot.episodeEvaluations
+    : [];
+  const incEvalList = Array.isArray(incomingSnapshot.episodeEvaluations)
+    ? incomingSnapshot.episodeEvaluations
+    : [];
+  const evalMap = new Map();
+  const buildEvalKey = (r) =>
+    r?.evalKey || (r?.workId ? `${r.workId}:s${Number(r.season) || 1}:e${Number(r.episode) || 1}` : null);
+  for (const row of currEvalList) {
+    const k = buildEvalKey(row);
+    if (k) evalMap.set(k, row);
+  }
+  for (const row of incEvalList) {
+    const k = buildEvalKey(row);
+    if (!k) continue;
+    const existing = evalMap.get(k);
+    if (!existing) {
+      evalMap.set(k, row);
+    } else {
+      const incT = Date.parse(row.updatedAt || '') || 0;
+      const curT = Date.parse(existing.updatedAt || '') || 0;
+      if (incT > curT) evalMap.set(k, row);
+    }
+  }
+
   return {
     items: Array.from(itemMap.values()),
     posts: mergeById(currentSnapshot.posts, incomingSnapshot.posts),
@@ -263,6 +292,7 @@ export function mergeSnapshots(currentSnapshot = {}, incomingSnapshot = {}) {
       ...(currentSnapshot.collections || []),
       ...(incomingSnapshot.collections || []),
     ]),
+    episodeEvaluations: Array.from(evalMap.values()),
     profile: mergedProfile,
     streak: {
       count: Math.max(Number(currStreak.count) || 0, Number(incStreak.count) || 0),
@@ -349,6 +379,7 @@ export async function saveAutoSnapshot(
           streak: workspaceData.streak || null,
           readingSessions: workspaceData.readingSessions || [],
           collections: workspaceData.collections || [],
+          episodeEvaluations: workspaceData.episodeEvaluations || [],
         });
 
   const snapshot = hydrateAppSnapshotFromDatabase(db);
@@ -412,9 +443,68 @@ export async function saveAutoSnapshot(
       idb.close();
       reject(tx.error || new Error('Erro ao gravar auto-snapshot'));
     };
+    tx.onabort = () => {
+      idb.close();
+      reject(tx.error || new Error('Gravação de auto-snapshot abortada'));
+    };
   });
 
   return { saved: true, deduplicated: false, snapshot: record };
+}
+
+/**
+ * Lê um snapshot gravado de volta diretamente do storage (IndexedDB ou store em testes)
+ * e confirma existência, digest SHA-256 válido e consistência das contagens (Regra extra 1).
+ */
+export async function verifyAutoSnapshotIntegrity(snapshotId, expectedWorkspace = null) {
+  if (!snapshotId) {
+    return { ok: false, reason: 'Identificador do snapshot ausente.' };
+  }
+
+  let found = null;
+  if (!hasIndexedDb()) {
+    found = memorySnapshotStore.get(snapshotId) || null;
+  } else {
+    try {
+      const db = await openSnapshotDb();
+      found = await new Promise((resolve) => {
+        const tx = db.transaction(AUTO_SNAPSHOT_STORE_NAME, 'readonly');
+        const req = tx.objectStore(AUTO_SNAPSHOT_STORE_NAME).get(snapshotId);
+        req.onsuccess = () => {
+          try { db.close(); } catch { /* silencioso */ }
+          resolve(req.result || null);
+        };
+        req.onerror = () => {
+          try { db.close(); } catch { /* silencioso */ }
+          resolve(null);
+        };
+      });
+    } catch {
+      return { ok: false, reason: 'Não foi possível reler o snapshot no IndexedDB.' };
+    }
+  }
+
+  if (!found?.payload) {
+    return { ok: false, reason: 'Snapshot não encontrado ao tentar relê-lo.' };
+  }
+
+  const verified = await inspectBackupPayload(JSON.stringify(found.payload));
+  if (!verified.ok) {
+    return { ok: false, reason: verified.error || 'Payload do snapshot inválido.' };
+  }
+  if (verified.checksumStatus !== 'valid') {
+    return { ok: false, reason: 'Checksum SHA-256 do snapshot divergente.' };
+  }
+  if (expectedWorkspace && Array.isArray(expectedWorkspace.items)) {
+    if (verified.counts.works !== expectedWorkspace.items.length) {
+      return {
+        ok: false,
+        reason: `Contagem divergente no snapshot (${verified.counts.works} vs ${expectedWorkspace.items.length}).`,
+      };
+    }
+  }
+
+  return { ok: true, snapshot: found, verified };
 }
 
 export async function deleteAutoSnapshot(snapshotId) {
@@ -619,6 +709,19 @@ const MIRROR_ITEM_ALLOWED_KEYS = [
   'language',
   'franchiseName',
   'chronologicalOrder',
+  'tmdbMediaType',
+  'tmdbStatus',
+  'belongsToCollection',
+  'ids',
+  'backdropUrl',
+  'backdropCheckedAt',
+  'favoriteScene',
+  'externalRatings',
+  'ratingSource',
+  'franchiseRelations',
+  'franchiseLinks',
+  'animeFormat',
+  'animeStatus',
   'anilistId',
   'malId',
   'tvmazeId',
@@ -704,11 +807,57 @@ export async function requestPersistentStorage() {
   }
 }
 
+function compactMirrorProfile(profile) {
+  if (!profile || typeof profile !== 'object') return null;
+  const clean = stripDataUrls({
+    id: profile.id || null,
+    displayName: profile.displayName || '',
+    handle: profile.handle || '',
+    avatarInitials: profile.avatarInitials || '',
+    bio: profile.bio || '',
+    viewerFocus: Array.isArray(profile.viewerFocus) ? profile.viewerFocus : [],
+    readerFocus: profile.readerFocus || '',
+    favoriteGenres: Array.isArray(profile.favoriteGenres) ? profile.favoriteGenres : [],
+    preferredCriteria: Array.isArray(profile.preferredCriteria) ? profile.preferredCriteria : [],
+    preferredAtmosphere: profile.preferredAtmosphere || '',
+    readerDna: profile.readerDna || null,
+    onboardingCompleted: Boolean(profile.onboardingCompleted),
+    annualGoal: Number(profile.annualGoal) || 24,
+    preferredFormat: profile.preferredFormat || 'Streaming',
+    privacyLevel: profile.privacyLevel || 'private',
+    gamificationEnabled:
+      profile.gamificationEnabled !== undefined ? Boolean(profile.gamificationEnabled) : true,
+    calmMode: Boolean(profile.calmMode),
+  });
+  return clean && typeof clean === 'object' ? clean : null;
+}
+
+function compactMirrorEpisodeEvaluations(list = []) {
+  if (!Array.isArray(list) || list.length === 0) return [];
+  return list
+    .filter((ev) => ev && ev.workId)
+    .map((ev) => ({
+      evalKey: ev.evalKey || `${ev.workId}:${ev.season || 1}:${ev.episode || 1}`,
+      workId: String(ev.workId),
+      season: Math.max(1, Math.round(Number(ev.season) || 1)),
+      episode: Math.max(1, Math.round(Number(ev.episode) || 1)),
+      rating:
+        ev.rating !== null && ev.rating !== undefined && ev.rating !== ''
+          ? Math.max(0, Math.min(100, Math.round(Number(ev.rating))))
+          : null,
+      tag: ev.tag || null,
+      reaction: String(ev.reaction || '').slice(0, 280),
+      updatedAt: ev.updatedAt || null,
+    }));
+}
+
 export function saveEmergencyMirror({
   items = [],
+  profile = null,
   collections = [],
   streak = null,
   readingSessions = [],
+  episodeEvaluations = [],
   updatedAt = null,
 } = {}) {
   try {
@@ -718,9 +867,10 @@ export function saveEmergencyMirror({
       .filter(Boolean);
 
     const payload = {
-      v: 1,
+      v: 2,
       updatedAt: updatedAt || new Date().toISOString(),
       items: compactItems,
+      profile: compactMirrorProfile(profile),
       collections: normalizeCollectionList(collections),
       streak:
         streak && typeof streak === 'object'
@@ -737,6 +887,7 @@ export function saveEmergencyMirror({
       readingSessions: Array.isArray(readingSessions)
         ? readingSessions.slice(0, 200)
         : [],
+      episodeEvaluations: compactMirrorEpisodeEvaluations(episodeEvaluations),
     };
 
     const encoded = compressMirrorText(JSON.stringify(payload));
@@ -754,29 +905,33 @@ export function saveEmergencyMirror({
 export function loadEmergencyMirror() {
   try {
     if (typeof localStorage === 'undefined') {
-      return { ok: false, items: [] };
+      return { ok: false, items: [], profile: null, episodeEvaluations: [] };
     }
     const raw = localStorage.getItem(EMERGENCY_MIRROR_KEY);
-    if (!raw) return { ok: false, items: [] };
+    if (!raw) return { ok: false, items: [], profile: null, episodeEvaluations: [] };
     const jsonText = decompressMirrorText(raw);
-    if (!jsonText) return { ok: false, items: [] };
+    if (!jsonText) return { ok: false, items: [], profile: null, episodeEvaluations: [] };
     const parsed = JSON.parse(jsonText);
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.items)) {
-      return { ok: false, items: [] };
+      return { ok: false, items: [], profile: null, episodeEvaluations: [] };
     }
 
     return {
       ok: true,
       updatedAt: parsed.updatedAt || null,
       items: parsed.items,
+      profile: parsed.profile || null,
       collections: normalizeCollectionList(parsed.collections),
       streak: parsed.streak || null,
       readingSessions: Array.isArray(parsed.readingSessions)
         ? parsed.readingSessions
         : [],
+      episodeEvaluations: Array.isArray(parsed.episodeEvaluations)
+        ? parsed.episodeEvaluations
+        : [],
     };
   } catch {
-    return { ok: false, items: [] };
+    return { ok: false, items: [], profile: null, episodeEvaluations: [] };
   }
 }
 

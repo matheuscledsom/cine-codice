@@ -1,3 +1,13 @@
+import {
+  extractFavoriteGenreLabels,
+  getOrderedGenreGroups,
+  getStructuredGenresByGroup,
+  migrateFavoriteGenresToObjects,
+  toggleStructuredGenre,
+  toggleViewerFocusInList,
+} from '../lib/genreCatalog.js';
+import { normalizeViewerFocusList } from '../lib/migrations.js';
+
 export const FOCUS_OPTIONS_META = [
   { id: 'Cinéfilo Curador', iconName: 'Film' },
   { id: 'Maratonista de Séries', iconName: 'Tv' },
@@ -80,23 +90,20 @@ export function normalizePreferredCriteria(
 }
 
 export function normalizeFavoriteGenres(rawGenres) {
-  if (!Array.isArray(rawGenres)) {
-    if (typeof rawGenres === 'string' && rawGenres.trim()) {
-      return Array.from(
-        new Set(
-          rawGenres
-            .split(/[,;]/)
-            .map((g) => g.trim())
-            .filter(Boolean)
-        )
-      );
-    }
-    return [];
-  }
-  return Array.from(
-    new Set(rawGenres.map((g) => String(g || '').trim()).filter(Boolean))
-  );
+  return extractFavoriteGenreLabels(rawGenres);
 }
+
+export function normalizeFavoriteGenreObjects(rawGenres) {
+  return migrateFavoriteGenresToObjects(rawGenres);
+}
+
+export {
+  getOrderedGenreGroups,
+  getStructuredGenresByGroup,
+  normalizeViewerFocusList,
+  toggleStructuredGenre,
+  toggleViewerFocusInList,
+};
 
 export function toggleCriterionInList(currentList, criterion) {
   const list = normalizePreferredCriteria(currentList, null, DEFAULT_PREFERRED_CRITERIA);

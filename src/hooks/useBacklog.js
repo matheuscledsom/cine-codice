@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  getAllEpisodeEvaluations,
+  importEpisodeEvaluations,
+} from '../api/cacheDb';
+import {
   domainConfig,
   normalizeCinemaStatus,
   normalizeCinemaWorkType,
 } from '../config/domainConfig';
 import { initialItems } from '../data/mockData';
+import { applyCanonicalIdsToWork } from '../lib/idBridge';
+import { classifyLegacyRatingSource } from '../lib/migrations';
+import { normalizeExternalRatings } from '../lib/ratings';
+import { safeSetLocalStorageJson } from '../lib/storagePersistence';
 import {
   exportSignedBackupPayload,
   loadEmergencyMirror,
@@ -22,7 +30,6 @@ import {
 import {
   calculateSmartRating,
   calculateWorkProgress,
-  createDefaultReviewCriteria,
   getTodayLocalISO,
   getVerdictForScore,
   isEpisodicWork,
@@ -94,11 +101,18 @@ function normalizeItem(rawItem, spectatorDna = null) {
   const rawCurrentSeconds = normalizeNonNegativeInt(rawItem.currentSeconds);
   const currentSeconds = isCompleted && totalSeconds ? totalSeconds : rawCurrentSeconds;
 
-  const episodeDurationMinutes =
-    normalizeNullablePositiveInt(rawItem.episodeDurationMinutes) ||
-    (workType === 'anime' ? 24 : workType === 'series' ? 45 : null);
+  const episodeDurationMinutes = normalizeNullablePositiveInt(
+    rawItem.episodeDurationMinutes
+  );
 
   const episodeFields = syncCinemaEpisodeFields(rawItem, isCompleted);
+  const withIds = applyCanonicalIdsToWork(rawItem);
+  const ratingSource = classifyLegacyRatingSource({
+    ...rawItem,
+    rating,
+    reviewCriteria,
+  });
+  const externalRatings = normalizeExternalRatings(rawItem.externalRatings);
 
   const normalized = {
     ...rawItem,
@@ -114,6 +128,7 @@ function normalizeItem(rawItem, spectatorDna = null) {
     audioFormat: rawItem.audioFormat || domainConfig.audioFormatTags[0],
     animeFormat: rawItem.animeFormat || (workType === 'anime' ? 'TV' : ''),
     coverUrl: rawItem.coverUrl || null,
+    backdropUrl: rawItem.backdropUrl || null,
     coverSources: Array.isArray(rawItem.coverSources)
       ? rawItem.coverSources.filter(Boolean)
       : rawItem.coverUrl
@@ -137,19 +152,25 @@ function normalizeItem(rawItem, spectatorDna = null) {
     franchiseRelations: Array.isArray(rawItem.franchiseRelations)
       ? rawItem.franchiseRelations
       : [],
+    franchiseLinks: Array.isArray(rawItem.franchiseLinks) ? rawItem.franchiseLinks : [],
+    belongsToCollection: rawItem.belongsToCollection || null,
+    tmdbStatus: rawItem.tmdbStatus || null,
     chronologicalOrder: normalizeNullablePositiveInt(rawItem.chronologicalOrder),
-    anilistId: rawItem.anilistId || null,
-    malId: rawItem.malId || null,
-    tvmazeId: rawItem.tvmazeId || null,
-    tmdbId: rawItem.tmdbId || null,
+    ids: withIds.ids,
+    anilistId: withIds.anilistId,
+    malId: withIds.malId,
+    tvmazeId: withIds.tvmazeId,
+    tmdbId: withIds.tmdbId,
     tmdbMediaType: rawItem.tmdbMediaType || null,
-    imdbId: String(rawItem.imdbId || '').trim(),
+    imdbId: withIds.imdbId ? String(withIds.imdbId).trim() : '',
     sourceBadge: String(rawItem.sourceBadge || '').trim(),
     mergedSources: Array.isArray(rawItem.mergedSources) ? rawItem.mergedSources : [],
     openAccessUrl: String(rawItem.openAccessUrl || '').trim(),
     releaseYear: rawItem.releaseYear ?? rawItem.publicationYear ?? null,
     language: String(rawItem.language || '').trim(),
     tags: normalizeTagsList(rawItem.tags),
+    favoriteScene: String(rawItem.favoriteScene || '').trim().slice(0, 200),
+    backdropCheckedAt: Number(rawItem.backdropCheckedAt) || null,
     recommended: rawItem.recommended !== undefined ? Boolean(rawItem.recommended) : false,
     synopsis: String(rawItem.synopsis || '').trim(),
     atmosphere: Array.isArray(rawItem.atmosphere) ? rawItem.atmosphere : [],
@@ -161,8 +182,10 @@ function normalizeItem(rawItem, spectatorDna = null) {
       ? rawItem.quotes.filter((q) => q && typeof q === 'object' && q.text)
       : [],
     rating,
+    ratingSource,
+    externalRatings,
     reviewCriteria,
-    verdict: rawItem.verdict || getVerdictForScore(rating),
+    verdict: rating !== null ? (rawItem.verdict || getVerdictForScore(rating)) : (rawItem.verdict || null),
     checkpoint: String(rawItem.checkpoint || '').trim(),
     hype: rawItem.hype || null,
     isPlatinum: Boolean(rawItem.isPlatinum),
@@ -222,11 +245,17 @@ function applyStatusTransitionDefaults(merged, nextStatus, prevItem, spectatorDn
       merged.currentSeconds = merged.totalSeconds;
     }
 
-    if (!merged.reviewCriteria) {
-      merged.reviewCriteria = createDefaultReviewCriteria(merged.rating ?? 80);
+    if (merged.reviewCriteria) {
+      merged.rating = calculateSmartRating(merged.reviewCriteria, spectatorDna);
+      merged.ratingSource = 'manual';
+    } else if (merged.rating !== null && merged.rating !== undefined && merged.rating !== '') {
+      merged.ratingSource = classifyLegacyRatingSource(merged);
+    } else {
+      merged.rating = null;
+      merged.ratingSource = null;
     }
-    merged.rating = calculateSmartRating(merged.reviewCriteria, spectatorDna);
-    merged.verdict = merged.verdict || getVerdictForScore(merged.rating);
+    merged.verdict =
+      merged.rating !== null ? (merged.verdict || getVerdictForScore(merged.rating)) : null;
   }
 
   if (nextStatus === 'dropped') {
@@ -241,6 +270,40 @@ function applyStatusTransitionDefaults(merged, nextStatus, prevItem, spectatorDn
   }
 
   return merged;
+}
+
+export function readRawBacklogStorageState() {
+  try {
+    if (typeof localStorage === 'undefined') {
+      return { hasStoredItems: false, items: [] };
+    }
+    const rawLegacy = localStorage.getItem(STORAGE_KEY);
+    if (rawLegacy !== null) {
+      const parsed = JSON.parse(rawLegacy);
+      if (Array.isArray(parsed)) {
+        return { hasStoredItems: true, items: parsed };
+      }
+    }
+    const storedDb = loadStoredCodiceDatabase();
+    if (storedDb) {
+      const hydrated = hydrateAppSnapshotFromDatabase(storedDb);
+      return {
+        hasStoredItems: true,
+        items: hydrated.items,
+        storedDb,
+      };
+    }
+    const mirror = loadEmergencyMirror();
+    if (mirror.ok && mirror.items.length > 0) {
+      return {
+        hasStoredItems: true,
+        items: mirror.items,
+      };
+    }
+    return { hasStoredItems: false, items: [] };
+  } catch {
+    return { hasStoredItems: false, items: [] };
+  }
 }
 
 function loadInitialBacklog() {
@@ -306,17 +369,37 @@ function loadInitialCollections() {
   }
 }
 
-export function useBacklog(spectatorDna = null) {
+export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}) {
   const [items, setItems] = useState(loadInitialBacklog);
   const [readingSessions, setReadingSessions] = useState(loadInitialSessions);
   const [collections, setCollections] = useState(loadInitialCollections);
+  const [storageError, setStorageError] = useState(null);
+
+  const retryPersistStorage = useCallback(() => {
+    const resItems = safeSetLocalStorageJson(STORAGE_KEY, items, { label: 'catálogo' });
+    if (!resItems.persisted) {
+      setStorageError(resItems);
+      return resItems;
+    }
+    const resSessions = safeSetLocalStorageJson(SESSIONS_STORAGE_KEY, readingSessions, {
+      label: 'sessões',
+    });
+    if (!resSessions.persisted) {
+      setStorageError(resSessions);
+      return resSessions;
+    }
+    setStorageError(null);
+    return { persisted: true, provisional: false, quotaExceeded: false, warning: null };
+  }, [items, readingSessions]);
 
   useEffect(() => {
+    if (migrationLocked) return undefined;
     const flush = () => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-      } catch {
-        // Quota indisponível
+      const res = safeSetLocalStorageJson(STORAGE_KEY, items, { label: 'catálogo' });
+      if (!res.persisted) {
+        setStorageError(res);
+      } else {
+        setStorageError((prev) => (prev ? null : prev));
       }
     };
     const timer = setTimeout(flush, 180);
@@ -325,14 +408,16 @@ export function useBacklog(spectatorDna = null) {
       clearTimeout(timer);
       if (typeof window !== 'undefined') window.removeEventListener('pagehide', flush);
     };
-  }, [items]);
+  }, [items, migrationLocked]);
 
   useEffect(() => {
+    if (migrationLocked) return undefined;
     const flushSessions = () => {
-      try {
-        localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(readingSessions));
-      } catch {
-        // Quota indisponível
+      const res = safeSetLocalStorageJson(SESSIONS_STORAGE_KEY, readingSessions, {
+        label: 'sessões',
+      });
+      if (!res.persisted) {
+        setStorageError(res);
       }
     };
     const timer = setTimeout(flushSessions, 180);
@@ -341,11 +426,12 @@ export function useBacklog(spectatorDna = null) {
       clearTimeout(timer);
       if (typeof window !== 'undefined') window.removeEventListener('pagehide', flushSessions);
     };
-  }, [readingSessions]);
+  }, [readingSessions, migrationLocked]);
 
   useEffect(() => {
+    if (migrationLocked) return;
     saveCollections(collections);
-  }, [collections]);
+  }, [collections, migrationLocked]);
 
   const addItem = useCallback(
     (newItem) => {
@@ -355,7 +441,12 @@ export function useBacklog(spectatorDna = null) {
         normalizeItem(
           {
             ...newItem,
-            rating: status === 'completed' ? newItem.rating ?? 80 : null,
+            rating: newItem.rating ?? null,
+            ratingSource:
+              newItem.ratingSource ??
+              (newItem.rating !== null && newItem.rating !== undefined && newItem.rating !== ''
+                ? 'manual'
+                : null),
             inBacklog: true,
             createdAt: nowIso,
             updatedAt: nowIso,
@@ -437,25 +528,34 @@ export function useBacklog(spectatorDna = null) {
             ? normalizeCinemaStatus(updates.status)
             : item.status;
           const statusChanged = Boolean(updates.status && nextStatus !== item.status);
+          const preserveUpdatedAt = Boolean(updates.preserveUpdatedAt);
+          const cleanUpdates = { ...updates };
+          delete cleanUpdates.preserveUpdatedAt;
 
           let merged = normalizeItem(
             {
               ...item,
-              ...updates,
+              ...cleanUpdates,
               status: nextStatus,
-              updatedAt: nowIso,
+              updatedAt: preserveUpdatedAt
+                ? item.updatedAt || nowIso
+                : cleanUpdates.updatedAt || nowIso,
             },
             spectatorDna
           );
 
           if (Object.prototype.hasOwnProperty.call(updates, 'rating')) {
             merged.rating = normalizeRating(updates.rating);
+            merged.ratingSource =
+              updates.ratingSource ?? (merged.rating !== null ? 'manual' : null);
             if (!Object.prototype.hasOwnProperty.call(updates, 'verdict')) {
               merged.verdict = getVerdictForScore(merged.rating);
             }
           } else if (Object.prototype.hasOwnProperty.call(updates, 'reviewCriteria')) {
             const score = calculateSmartRating(updates.reviewCriteria, spectatorDna);
             merged.rating = score;
+            merged.ratingSource =
+              updates.ratingSource ?? (score !== null ? 'manual' : null);
             merged.verdict = getVerdictForScore(score);
           }
 
@@ -635,6 +735,10 @@ export function useBacklog(spectatorDna = null) {
 
   const exportBackup = useCallback(
     async (extra = {}) => {
+      const episodeEvaluations =
+        Array.isArray(extra.episodeEvaluations)
+          ? extra.episodeEvaluations
+          : await getAllEpisodeEvaluations().catch(() => []);
       const db = buildCodiceDatabase({
         items,
         profile: extra.profile || null,
@@ -642,6 +746,7 @@ export function useBacklog(spectatorDna = null) {
         streak: extra.streak || null,
         readingSessions,
         collections,
+        episodeEvaluations,
         follows: extra.follows || [],
         wallPosts: extra.wallPosts || [],
         directMessages: extra.directMessages || [],
@@ -704,6 +809,9 @@ export function useBacklog(spectatorDna = null) {
         if (Array.isArray(result.collections)) {
           setCollections(normalizeCollectionList(result.collections));
         }
+        if (Array.isArray(result.episodeEvaluations) && result.episodeEvaluations.length > 0) {
+          await importEpisodeEvaluations(result.episodeEvaluations).catch(() => {});
+        }
         return {
           ok: true,
           count: validItems.length,
@@ -711,6 +819,7 @@ export function useBacklog(spectatorDna = null) {
           posts: Array.isArray(result.posts) ? result.posts : null,
           streak: result.streak || null,
           collections: result.collections || null,
+          episodeEvaluations: result.episodeEvaluations || [],
           integrity: result.integrity,
           detectedSchemaVersion: result.detectedSchemaVersion,
         };
@@ -758,5 +867,7 @@ export function useBacklog(spectatorDna = null) {
     exportCatalogCsv,
     exportCatalogMarkdown,
     importBackup,
+    storageError,
+    retryPersistStorage,
   };
 }

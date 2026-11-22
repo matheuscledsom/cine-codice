@@ -106,8 +106,8 @@ export function ReadingStreakWidget({
               </>
             ) : (
               <>
-                <CalendarCheck className="h-3.5 w-3.5" />
-                Registrar Leitura Hoje
+                <CalendarCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
+                Registrar Sessão Hoje
               </>
             )}
           </button>

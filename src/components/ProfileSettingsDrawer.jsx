@@ -9,6 +9,7 @@ import {
   Film,
   Globe,
   HardDrive,
+  Info,
   Keyboard,
   Lock,
   MessageSquare,
@@ -29,6 +30,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { domainConfig } from '../config/domainConfig';
+import { SOCIAL_ENABLED } from '../config/flags';
 import { CODICE_RELEASE } from '../config/versioning';
 import { SPECIAL_THEMES } from '../data/themePresets';
 import { FONT_SCALE_OPTIONS } from '../design/themeEngine';
@@ -43,25 +45,34 @@ import {
 import {
   CRITERION_OPTIONS,
   FOCUS_OPTIONS_META,
-  GENRE_OPTIONS,
-  normalizeFavoriteGenres,
+  getOrderedGenreGroups,
+  getStructuredGenresByGroup,
+  normalizeFavoriteGenreObjects,
   normalizePreferredCriteria,
+  normalizeViewerFocusList,
   toggleCriterionInList,
+  toggleStructuredGenre,
+  toggleViewerFocusInList,
 } from '../utils/readerPreferences';
 import { PastelPaletteCustomizer } from './ThemeModal';
 
 export const SETTINGS_TABS = [
   { id: 'appearance', hash: '#settings-appearance', label: 'Aparência', icon: Palette },
   { id: 'dna', hash: '#settings-dna', label: 'DNA Espectador', icon: SlidersHorizontal },
-  { id: 'privacy', hash: '#settings-privacy', label: 'Privacidade', icon: Shield },
-  { id: 'data', hash: '#settings-data', label: 'Dados & IA', icon: Database },
+  {
+    id: 'privacy',
+    hash: '#settings-privacy',
+    label: SOCIAL_ENABLED ? 'Privacidade' : 'Modo Calmo',
+    icon: Shield,
+  },
+  { id: 'data', hash: '#settings-data', label: 'Dados & APIs', icon: Database },
 ];
 
 const VISIBILITY_OPTIONS = [
   {
     id: 'public',
     label: 'Público',
-    description: 'Qualquer espectador no Cine Códice pode ver seu perfil e estante.',
+    description: 'Qualquer espectador no Cine Códice pode ver seu perfil e acervo.',
     icon: Globe,
   },
   {
@@ -143,6 +154,7 @@ export function ProfileSettingsDrawer({
   onOpenBackupModal,
   onOpenImportCatalog,
   onOpenShortcuts,
+  onOpenAboutCredits,
   aiPanelSlot = null,
 }) {
   const drawerRef = useRef(null);
@@ -165,8 +177,16 @@ export function ProfileSettingsDrawer({
     profile?.preferredCriteria ?? profile?.preferred_criteria,
     profile?.preferredCriterion ?? profile?.preferred_criterion
   );
-  const selectedGenres = normalizeFavoriteGenres(profile?.favoriteGenres);
-  const selectedFocus = profile?.readerFocus || 'Cinéfilo Curador';
+  const selectedGenreObjects = normalizeFavoriteGenreObjects(
+    profile?.favoriteGenres ?? profile?.favorite_genres
+  );
+  const selectedGenreIds = new Set(selectedGenreObjects.map((g) => g.id));
+  const selectedFocusList = normalizeViewerFocusList(
+    profile?.viewerFocus ?? profile?.viewer_focus,
+    profile?.readerFocus ?? profile?.reader_focus
+  );
+  const orderedGenreGroups = getOrderedGenreGroups(selectedFocusList);
+  const outrosGenreObjects = selectedGenreObjects.filter((g) => g.group === 'outros');
   const readerDna = normalizeReaderDna(profile?.readerDna ?? profile?.reader_dna);
 
   const selectTab = (tabId) => {
@@ -195,10 +215,18 @@ export function ProfileSettingsDrawer({
     });
   };
 
-  const handleToggleGenre = (genre) => {
-    const next = selectedGenres.includes(genre)
-      ? selectedGenres.filter((g) => g !== genre)
-      : [...selectedGenres, genre];
+  const handleToggleFocus = (focusId) => {
+    const nextFocus = toggleViewerFocusInList(selectedFocusList, focusId, {
+      allowEmpty: false,
+    });
+    onUpdateProfile?.({
+      viewerFocus: nextFocus,
+      readerFocus: nextFocus[0] || 'Cinéfilo Curador',
+    });
+  };
+
+  const handleToggleGenre = (entry) => {
+    const next = toggleStructuredGenre(selectedGenreObjects, entry);
     onUpdateProfile?.({ favoriteGenres: next });
   };
 
@@ -675,18 +703,26 @@ export function ProfileSettingsDrawer({
                   Preferências de Sessão &amp; Gêneros
                 </h3>
                 <div>
-                  <p className="mb-1.5 text-[11px] font-medium text-muted">
-                    Foco principal
-                  </p>
+                  <div className="mb-1.5 flex items-baseline justify-between gap-2">
+                    <p className="text-[11px] font-medium text-muted">
+                      Focos de visualização
+                    </p>
+                    <span
+                      className="text-[10px]"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      1 ou mais
+                    </span>
+                  </div>
                   <div className="flex flex-wrap gap-1.5">
                     {FOCUS_OPTIONS_META.map((opt) => {
-                      const isSelected = selectedFocus === opt.id;
+                      const isSelected = selectedFocusList.includes(opt.id);
                       return (
                         <button
                           key={opt.id}
                           type="button"
                           aria-pressed={isSelected}
-                          onClick={() => onUpdateProfile?.({ readerFocus: opt.id })}
+                          onClick={() => handleToggleFocus(opt.id)}
                           className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-left text-[11px] font-medium transition-colors ${
                             isSelected
                               ? 'border-accent bg-accent/15 text-ink'
@@ -742,40 +778,101 @@ export function ProfileSettingsDrawer({
                   </div>
                 </div>
 
-                <div>
-                  <p className="mb-1.5 text-[11px] font-medium text-muted">
-                    Gêneros Favoritos ({selectedGenres.length})
+                <div className="space-y-3">
+                  <p className="text-[11px] font-medium tabular-nums text-muted">
+                    Gêneros Favoritos ({selectedGenreObjects.length})
                   </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {GENRE_OPTIONS.map((genre) => {
-                      const isSelected = selectedGenres.includes(genre);
-                      return (
-                        <button
-                          key={genre}
-                          type="button"
-                          aria-pressed={isSelected}
-                          onClick={() => handleToggleGenre(genre)}
-                          className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                            isSelected
-                              ? 'border-accent bg-accent/15 text-ink'
-                              : 'border-line bg-app hover:text-ink'
-                          }`}
-                          style={!isSelected ? { color: 'var(--text-secondary)' } : undefined}
-                        >
-                          {isSelected && (
+                  {orderedGenreGroups.map((group) => {
+                    const { genres, tags } = getStructuredGenresByGroup(group.id);
+                    return (
+                      <div key={group.id} className="space-y-1.5 rounded-[4px] border border-line bg-app p-2.5">
+                        <p className="text-[11px] font-semibold text-ink">{group.label}</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {genres.map((entry) => {
+                            const isSelected = selectedGenreIds.has(entry.id);
+                            return (
+                              <button
+                                key={entry.id}
+                                type="button"
+                                aria-pressed={isSelected}
+                                onClick={() => handleToggleGenre(entry)}
+                                className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                                  isSelected
+                                    ? 'border-accent bg-accent/15 text-ink'
+                                    : 'border-line bg-card hover:text-ink'
+                                }`}
+                                style={!isSelected ? { color: 'var(--text-secondary)' } : undefined}
+                              >
+                                {isSelected && (
+                                  <Check className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.5} />
+                                )}
+                                <span>{entry.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {tags.length > 0 && (
+                          <div className="space-y-1 pt-1.5 border-t border-line/60">
+                            <p className="text-[10px] font-medium uppercase tracking-wider text-subtle">
+                              Tags de Anime (Demografias &amp; Temas)
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {tags.map((entry) => {
+                                const isSelected = selectedGenreIds.has(entry.id);
+                                return (
+                                  <button
+                                    key={entry.id}
+                                    type="button"
+                                    aria-pressed={isSelected}
+                                    onClick={() => handleToggleGenre(entry)}
+                                    className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                                      isSelected
+                                        ? 'border-accent bg-accent/15 text-ink'
+                                        : 'border-line bg-card hover:text-ink'
+                                    }`}
+                                    style={!isSelected ? { color: 'var(--text-secondary)' } : undefined}
+                                  >
+                                    {isSelected && (
+                                      <Check className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.5} />
+                                    )}
+                                    <span>{entry.label}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {outrosGenreObjects.length > 0 && (
+                    <div className="space-y-1.5 rounded-[4px] border border-dashed border-line bg-app p-2.5">
+                      <p className="text-[11px] font-semibold text-muted">
+                        Outros (preservados do perfil anterior)
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {outrosGenreObjects.map((entry) => (
+                          <button
+                            key={entry.id}
+                            type="button"
+                            aria-pressed={true}
+                            onClick={() => handleToggleGenre(entry)}
+                            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent/15 px-2.5 py-1.5 text-[11px] font-medium text-ink"
+                          >
                             <Check className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.5} />
-                          )}
-                          <span>{genre}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                            <span>{entry.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
             </div>
           )}
 
-          {/* ABA 3: PRIVACIDADE & CONTA */}
+          {/* ABA 3: EXPERIÊNCIA & CONTA */}
           {activeTab === 'privacy' && (
             <div
               role="tabpanel"
@@ -783,132 +880,142 @@ export function ProfileSettingsDrawer({
               aria-labelledby="settings-tab-privacy"
               className="divide-y divide-line"
             >
-              <section className="space-y-2.5 p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    {isSupabaseMode ? (
-                      <Cloud className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
-                    ) : (
-                      <HardDrive className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
-                    )}
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-ink">
-                      Sincronização em Tempo Real (Avançado)
-                    </h3>
+              {SOCIAL_ENABLED && (
+                <section className="space-y-2.5 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {isSupabaseMode ? (
+                        <Cloud className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                      ) : (
+                        <HardDrive className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                      )}
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-ink">
+                        Sincronização em Tempo Real (Avançado)
+                      </h3>
+                    </div>
+                    <span className="rounded-[4px] border border-line bg-app px-2 py-0.5 text-[10px] font-medium text-accent">
+                      {isSupabaseMode ? 'Supabase Ativo' : 'Local / Sem Servidor'}
+                    </span>
                   </div>
-                  <span className="rounded-[4px] border border-line bg-app px-2 py-0.5 text-[10px] font-medium text-accent">
-                    {isSupabaseMode ? 'Supabase Ativo' : 'Local / Sem Servidor'}
-                  </span>
-                </div>
 
-                <p className="text-[11px] leading-relaxed text-muted">
-                  {isSupabaseMode
-                    ? 'Sincronização automática em tempo real e rede na nuvem ativas entre dispositivos.'
-                    : 'Seus filmes, séries e animes ficam protegidos no aparelho e você já pode trocar perfis por Link ou QR Code sem conta. Conecte o Supabase apenas se quiser sincronização automática em tempo real.'}
-                </p>
+                  <p className="text-[11px] leading-relaxed text-muted">
+                    {isSupabaseMode
+                      ? 'Sincronização automática em tempo real e rede na nuvem ativas entre dispositivos.'
+                      : 'Seus filmes, séries e animes ficam protegidos no aparelho e você já pode trocar perfis por Link ou QR Code sem conta. Conecte o Supabase apenas se quiser sincronização automática em tempo real.'}
+                  </p>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    onClose?.();
-                    onOpenAuthModal?.();
-                  }}
-                  className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-[4px] border border-line bg-app px-3 py-2 text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
-                >
-                  {isSupabaseMode ? (
-                    <>
-                      <Cloud className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                      <span>Gerenciar Sincronização Supabase</span>
-                    </>
-                  ) : (
-                    <>
-                      <Users className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                      <span>Perfis Locais / Sincronização Supabase</span>
-                    </>
-                  )}
-                </button>
-              </section>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose?.();
+                      onOpenAuthModal?.();
+                    }}
+                    className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-[4px] border border-line bg-app px-3 py-2 text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+                  >
+                    {isSupabaseMode ? (
+                      <>
+                        <Cloud className="h-4 w-4 text-accent" strokeWidth={1.5} />
+                        <span>Gerenciar Sincronização Supabase</span>
+                      </>
+                    ) : (
+                      <>
+                        <Users className="h-4 w-4 text-accent" strokeWidth={1.5} />
+                        <span>Perfis Locais / Sincronização Supabase</span>
+                      </>
+                    )}
+                  </button>
+                </section>
+              )}
 
               <section className="space-y-3 p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink">
-                    <Shield className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                    <span>Privacidade &amp; Gamificação</span>
-                  </span>
-                  <span className="text-[11px] text-muted">
-                    {activeVisibilityMeta.label}
-                  </span>
-                </div>
+                {SOCIAL_ENABLED && (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink">
+                        <Shield className="h-4 w-4 text-accent" strokeWidth={1.5} />
+                        <span>Privacidade &amp; Gamificação</span>
+                      </span>
+                      <span className="text-[11px] text-muted">
+                        {activeVisibilityMeta.label}
+                      </span>
+                    </div>
 
-                <div
-                  role="radiogroup"
-                  aria-label="Visibilidade do perfil"
-                  className="grid grid-cols-3 gap-1.5"
-                >
-                  {VISIBILITY_OPTIONS.map((option) => {
-                    const Icon = option.icon;
-                    const isSelected = privacyLevel === option.id;
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={isSelected}
-                        onClick={() => onUpdateProfile?.({ privacyLevel: option.id })}
-                        className={`flex min-h-[44px] items-center justify-center gap-1.5 rounded-[4px] border px-2 py-2 text-[11px] font-medium transition-colors ${
-                          isSelected
-                            ? 'border-accent bg-accent/15 text-ink'
-                            : 'border-line bg-app text-muted hover:text-ink'
-                        }`}
-                      >
-                        <Icon
-                          className={`h-3.5 w-3.5 shrink-0 ${
-                            isSelected ? 'text-accent' : 'text-subtle'
-                          }`}
-                          strokeWidth={1.5}
-                        />
-                        <span className="truncate">{option.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-[11px] text-subtle">
-                  {activeVisibilityMeta.description}
-                </p>
+                    <div
+                      role="radiogroup"
+                      aria-label="Visibilidade do perfil"
+                      className="grid grid-cols-3 gap-1.5"
+                    >
+                      {VISIBILITY_OPTIONS.map((option) => {
+                        const Icon = option.icon;
+                        const isSelected = privacyLevel === option.id;
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            role="radio"
+                            aria-checked={isSelected}
+                            onClick={() => onUpdateProfile?.({ privacyLevel: option.id })}
+                            className={`flex min-h-[44px] items-center justify-center gap-1.5 rounded-[4px] border px-2 py-2 text-[11px] font-medium transition-colors ${
+                              isSelected
+                                ? 'border-accent bg-accent/15 text-ink'
+                                : 'border-line bg-app text-muted hover:text-ink'
+                            }`}
+                          >
+                            <Icon
+                              className={`h-3.5 w-3.5 shrink-0 ${
+                                isSelected ? 'text-accent' : 'text-subtle'
+                              }`}
+                              strokeWidth={1.5}
+                            />
+                            <span className="truncate">{option.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[11px] text-subtle">
+                      {activeVisibilityMeta.description}
+                    </p>
+                  </>
+                )}
 
                 <div className="space-y-2">
-                  <PrivacySwitchRow
-                    icon={PenLine}
-                    label="Permitir recados no mural"
-                    description="Outros leitores podem deixar mensagens públicas no seu perfil."
-                    checked={profile?.allowWallPosts !== false}
-                    onToggle={() =>
-                      onUpdateProfile?.({
-                        allowWallPosts: !(profile?.allowWallPosts !== false),
-                      })
-                    }
-                  />
-                  <PrivacySwitchRow
-                    icon={MessageSquare}
-                    label="Permitir comentários"
-                    description="Habilita comentários nas suas notas e mural."
-                    checked={profile?.allowComments !== false}
-                    onToggle={() =>
-                      onUpdateProfile?.({
-                        allowComments: !(profile?.allowComments !== false),
-                      })
-                    }
-                  />
-                  <PrivacySwitchRow
-                    icon={MessagesSquare}
-                    label="Receber mensagens no chat"
-                    description="Permite iniciar conversas diretas com você."
-                    checked={profile?.allowDms !== false}
-                    onToggle={() =>
-                      onUpdateProfile?.({
-                        allowDms: !(profile?.allowDms !== false),
-                      })
-                    }
-                  />
+                  {SOCIAL_ENABLED && (
+                    <>
+                      <PrivacySwitchRow
+                        icon={PenLine}
+                        label="Permitir recados no mural"
+                        description="Outros espectadores podem deixar mensagens públicas no seu perfil."
+                        checked={profile?.allowWallPosts !== false}
+                        onToggle={() =>
+                          onUpdateProfile?.({
+                            allowWallPosts: !(profile?.allowWallPosts !== false),
+                          })
+                        }
+                      />
+                      <PrivacySwitchRow
+                        icon={MessageSquare}
+                        label="Permitir comentários"
+                        description="Habilita comentários nas suas notas e mural."
+                        checked={profile?.allowComments !== false}
+                        onToggle={() =>
+                          onUpdateProfile?.({
+                            allowComments: !(profile?.allowComments !== false),
+                          })
+                        }
+                      />
+                      <PrivacySwitchRow
+                        icon={MessagesSquare}
+                        label="Receber mensagens no chat"
+                        description="Permite iniciar conversas diretas com você."
+                        checked={profile?.allowDms !== false}
+                        onToggle={() =>
+                          onUpdateProfile?.({
+                            allowDms: !(profile?.allowDms !== false),
+                          })
+                        }
+                      />
+                    </>
+                  )}
                   <PrivacySwitchRow
                     icon={Zap}
                     label="Ativar Gamificação (XP, Níveis e Insígnias)"
@@ -1030,6 +1137,19 @@ export function ProfileSettingsDrawer({
                       <span>Atalhos de Teclado (?)</span>
                     </button>
                   )}
+                  {onOpenAboutCredits && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose?.();
+                        onOpenAboutCredits();
+                      }}
+                      className="flex min-h-[44px] w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-card"
+                    >
+                      <Info className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                      <span>Sobre, Créditos &amp; Fontes (TMDB, OMDb, AniList...)</span>
+                    </button>
+                  )}
                 </div>
               </section>
 
@@ -1037,7 +1157,7 @@ export function ProfileSettingsDrawer({
                 <div className="flex items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink">
                     <Cpu className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                    <span>Provedor de IA (Opcional)</span>
+                    <span>Chaves de API (TMDB, OMDb &amp; IA)</span>
                   </span>
                   {onOpenGeminiSettings && (
                     <button

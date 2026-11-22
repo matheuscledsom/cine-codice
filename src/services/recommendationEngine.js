@@ -1,4 +1,10 @@
 import { catalogItems } from '../data/mockData.js';
+import {
+  extractFavoriteGenreLabels,
+  migrateFavoriteGenresToObjects,
+} from '../lib/genreCatalog.js';
+import { normalizeViewerFocusList } from '../lib/migrations.js';
+import { isConfirmedUserRating } from '../lib/ratings.js';
 import { normalizePreferredCriteria } from '../utils/readerPreferences.js';
 import {
   computeDnaWeightedScore,
@@ -72,16 +78,15 @@ export function buildSpectatorTasteProfile(items = [], profile = null) {
     ? items.filter((i) => i && i.inBacklog !== false)
     : [];
   const highRated = backlog
-    .filter((item) => Number(item.rating) >= 80 || Boolean(item.isPlatinum))
+    .filter((item) => (isConfirmedUserRating(item) && Number(item.rating) >= 80) || Boolean(item.isPlatinum))
     .sort((a, b) => {
       const timeB = Date.parse(b.completedDate || b.updatedAt || '') || 0;
       const timeA = Date.parse(a.completedDate || a.updatedAt || '') || 0;
       return timeB - timeA || (Number(b.rating) || 0) - (Number(a.rating) || 0);
     });
 
-  const onboardingGenreLabels = Array.isArray(profile?.favoriteGenres)
-    ? profile.favoriteGenres.map((g) => String(g || '').trim()).filter(Boolean)
-    : [];
+  const structuredFavoriteGenres = migrateFavoriteGenresToObjects(profile?.favoriteGenres);
+  const onboardingGenreLabels = extractFavoriteGenreLabels(structuredFavoriteGenres);
 
   const onboardingGenres = new Set(onboardingGenreLabels.map(normalizeToken).filter(Boolean));
   const onboardingCanonicalTags = new Set();
@@ -111,7 +116,12 @@ export function buildSpectatorTasteProfile(items = [], profile = null) {
     }
   }
 
-  const readerFocus = normalizeToken(profile?.readerFocus || '');
+  const viewerFocus = normalizeViewerFocusList(
+    profile?.viewerFocus ?? profile?.viewer_focus,
+    profile?.readerFocus ?? profile?.reader_focus
+  );
+  const viewerFocusTokens = viewerFocus.map(normalizeToken).filter(Boolean);
+  const readerFocus = viewerFocusTokens[0] || '';
   const preferredCriteria = normalizePreferredCriteria(
     profile?.preferredCriteria ?? profile?.preferred_criteria,
     profile?.preferredCriterion ?? profile?.preferred_criterion
@@ -147,13 +157,17 @@ export function buildSpectatorTasteProfile(items = [], profile = null) {
     onboardingGenres,
     onboardingCanonicalTags,
     onboardingTagToLabel,
+    structuredFavoriteGenres,
     libraryCanonicalTags,
     libraryTagToLabel,
     allowedCanonicalTags,
     allowsAnime:
-      ANIME_TEXT_RE.test(readerFocus) ||
+      viewerFocusTokens.some((f) => ANIME_TEXT_RE.test(f)) ||
+      structuredFavoriteGenres.some((g) => g.group === 'animes') ||
       onboardingGenreLabels.some((g) => ANIME_TEXT_RE.test(normalizeToken(g))) ||
       backlog.some((i) => i.workType === 'anime'),
+    viewerFocus,
+    viewerFocusTokens,
     readerFocus,
     preferredCriteria,
     readerDna: normalizeReaderDna(profile?.readerDna ?? profile?.reader_dna),

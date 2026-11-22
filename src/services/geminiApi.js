@@ -1,4 +1,5 @@
 import { domainConfig } from '../config/domainConfig.js';
+import { formatSecondsToHms, isEpisodicWork } from '../utils/backlogHelpers.js';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/';
 const MODEL_CACHE_KEY = 'codice_gemini_resolved_model_v1';
@@ -673,31 +674,26 @@ export async function testGeminiConnection(apiKey, { signal } = {}) {
 
 export async function runSmartCataloging(apiKey, item, { signal } = {}) {
   const allowedAtmospheres = domainConfig.atmosphereOptions.map((a) => a.id);
-  const workType = item?.workType || 'book';
+  const workType = item?.workType || 'movie';
 
   const systemInstruction =
-    'Você é um catalogador editorial especialista em literatura, mangás/light novels e normas bibliográficas ABNT NBR 6023. Responda sempre em português do Brasil, em JSON estrito, sem inventar dados que contradigam o usuário e sem spoilers.';
+    'Você é um catalogador especialista em cinema, séries e animes. Responda sempre em português do Brasil, em JSON estrito, sem inventar dados que contradigam o usuário e sem spoilers.';
 
-  const prompt = `Analise a obra abaixo e complete a catalogação em JSON estrito com estas chaves:
+  const prompt = `Analise a obra audiovisual abaixo e complete a catalogação em JSON estrito com estas chaves:
 {
   "synopsis": "Sinopse envolvente em 2 a 3 frases, estritamente SEM SPOILERS",
-  "genres": ["até 3 gêneros ou áreas temáticas em português"],
+  "genres": ["até 3 gêneros em português"],
   "atmosphere": ["selecione 1 a 3 dentre exatamente: ${allowedAtmospheres.join(', ')}"],
-  "seriesVolume": "nome da série e volume se aplicável, ou string vazia",
-  "publisher": "editora provável se ausente e conhecida, ou string vazia",
-  "translator": "tradutor famoso no Brasil se aplicável, ou string vazia",
-  "demographicOrigin": "apenas para manga: Mangá | Manhwa | Light Novel | HQ, senão string vazia",
-  "abntReference": "apenas para workType=academic: referência bibliográfica completa formatada nas normas ABNT NBR 6023, senão string vazia",
-  "keywords": "apenas para workType=academic: 3 a 5 palavras-chave separadas por vírgula, senão string vazia"
+  "franchiseName": "nome da franquia ou saga se aplicável, ou string vazia",
+  "studio": "estúdio ou produtora provável se ausente e conhecida, ou string vazia",
+  "director": "direção ou criador principal se conhecido, ou string vazia"
 }
 
 Dados atuais da obra:
 - Título: ${item?.title || ''}
-- Autor(es): ${item?.author || 'Não informado'}
-- Natureza da Obra (workType): ${workType}
+- Direção / Estúdio: ${item?.director || item?.studio || 'Não informado'}
+- Formato (workType): ${workType}
 - Ano: ${item?.releaseYear || 'Não informado'}
-- Editora / Instituição: ${item?.institution || item?.publisher || 'Não informada'}
-- ISBN: ${item?.isbn || 'Não informado'}
 - Gêneros atuais: ${(item?.genres || []).join(', ') || 'Nenhum'}`;
 
   const raw = await callGemini({
@@ -720,20 +716,10 @@ Dados atuais da obra:
       ? parsed.genres.map((g) => String(g).trim()).filter(Boolean).slice(0, 4)
       : [],
     atmosphere: validAtmospheres,
-    seriesVolume:
-      typeof parsed.seriesVolume === 'string' ? parsed.seriesVolume.trim() : '',
-    publisher:
-      typeof parsed.publisher === 'string' ? parsed.publisher.trim() : '',
-    translator:
-      typeof parsed.translator === 'string' ? parsed.translator.trim() : '',
-    demographicOrigin:
-      typeof parsed.demographicOrigin === 'string'
-        ? parsed.demographicOrigin.trim()
-        : '',
-    abntReference:
-      typeof parsed.abntReference === 'string' ? parsed.abntReference.trim() : '',
-    keywords:
-      typeof parsed.keywords === 'string' ? parsed.keywords.trim() : '',
+    franchiseName:
+      typeof parsed.franchiseName === 'string' ? parsed.franchiseName.trim() : '',
+    studio: typeof parsed.studio === 'string' ? parsed.studio.trim() : '',
+    director: typeof parsed.director === 'string' ? parsed.director.trim() : '',
   };
 }
 
@@ -744,6 +730,7 @@ export async function runCollectionOracle(
     queuedItems = [],
     completedItems = [],
     favoriteGenres = [],
+    viewerFocus = [],
     readerFocus = '',
     preferredCriterion = '',
   },
@@ -752,10 +739,10 @@ export async function runCollectionOracle(
   const shelfSummary = queuedItems.slice(0, 40).map((item) => ({
     id: item.id,
     title: item.title,
-    author: item.author || 'Desconhecido',
-    workType: item.workType || 'book',
-    pages: item.totalPages || null,
-    chapters: item.totalChapters || null,
+    director: item.director || item.studio || 'Desconhecido',
+    workType: item.workType || 'movie',
+    durationMinutes: item.durationMinutes || null,
+    episodes: item.totalEpisodes || null,
     hype: item.hype || null,
     genres: item.genres || [],
     atmosphere: item.atmosphere || [],
@@ -768,7 +755,7 @@ export async function runCollectionOracle(
     .slice(0, 15)
     .map((item) => ({
       title: item.title,
-      author: item.author || '',
+      director: item.director || item.studio || '',
       rating: item.rating,
       verdict: item.verdict || '',
       fiveStars: Boolean(item.isPlatinum),
@@ -776,16 +763,26 @@ export async function runCollectionOracle(
       atmosphere: item.atmosphere || [],
     }));
 
+  const focusLabels = (Array.isArray(viewerFocus) ? viewerFocus : [])
+    .map((f) => String(f || '').trim())
+    .filter(Boolean);
+  const focusSummary =
+    focusLabels.length > 0 ? focusLabels.join(', ') : readerFocus || 'Geral';
+
   const systemInstruction =
-    'Você é o Oráculo do Acervo de um aplicativo literário. Recomende exclusivamente obras presentes na lista "Na Estante" fornecida pelo usuário. Não invente títulos fora do acervo. Responda em JSON estrito e em português do Brasil.';
+    'Você é o Curador de Sessões da Cinemateca. Recomende exclusivamente obras presentes na lista "Quero Ver" fornecida pelo usuário. Não invente títulos fora do acervo. Responda em JSON estrito e em português do Brasil.';
 
-  const prompt = `Cruze o humor/objetivo atual do leitor com as obras em "Na Estante", suas preferências do perfil e o histórico de notas das obras "Concluídas" para indicar a próxima leitura ideal.
+  const prompt = `Cruze o humor/objetivo atual do espectador com as obras em "Quero Ver", suas preferências do perfil e o histórico de notas das obras "Concluídas" para indicar a próxima sessão ideal.
 
-Humor / Objetivo atual do leitor: ${mood || 'Surpreenda-me com a melhor escolha do meu acervo'}
-Perfil do leitor: ${readerFocus || 'Geral'} | Critério valorizado: ${preferredCriterion || 'Equilibrado'}
-Gêneros favoritos do perfil: ${favoriteGenres.length ? favoriteGenres.join(', ') : 'Diversos'}
+Humor / Objetivo atual do espectador: ${mood || 'Surpreenda-me com a melhor escolha do meu acervo'}
+Perfil do espectador: ${focusSummary} | Critério valorizado: ${preferredCriterion || 'Equilibrado'}
+Gêneros favoritos do perfil: ${
+        Array.isArray(favoriteGenres) && favoriteGenres.length
+          ? favoriteGenres.map((g) => (typeof g === 'string' ? g : g?.label || '')).filter(Boolean).join(', ')
+          : 'Diversos'
+      }
 
-Obras em Na Estante (escolha SOMENTE dentre estes IDs):
+Obras em Quero Ver (escolha SOMENTE dentre estes IDs):
 ${JSON.stringify(shelfSummary)}
 
 Histórico de gosto (Obras Concluídas e notas):
@@ -793,11 +790,11 @@ ${JSON.stringify(tasteHistory)}
 
 Retorne JSON estrito neste formato:
 {
-  "primaryId": "id exato da obra principal recomendada da lista Na Estante",
+  "primaryId": "id exato da obra principal recomendada da lista Quero Ver",
   "headline": "Frase curta de chamada editorial (máx 10 palavras)",
-  "reason": "Explicação concisa (2-3 frases) conectando o humor/objetivo e o histórico de gostos do leitor sem spoilers",
+  "reason": "Explicação concisa (2-3 frases) conectando o humor/objetivo e o histórico de gostos do espectador sem spoilers",
   "alternatives": [
-    { "id": "id exato de outra obra da estante", "why": "motivo curto em 1 frase" }
+    { "id": "id exato de outra obra da fila", "why": "motivo curto em 1 frase" }
   ]
 }`;
 
@@ -824,7 +821,7 @@ Retorne JSON estrito neste formato:
 
   return {
     primaryId,
-    headline: String(parsed.headline || 'Leitura recomendada para este momento').trim(),
+    headline: String(parsed.headline || 'Sessão recomendada para hoje').trim(),
     reason: String(parsed.reason || '').trim(),
     alternatives,
   };
@@ -835,10 +832,9 @@ export async function runSpoilerFreeRecap(
   { item, linkedPosts = [] },
   { signal } = {}
 ) {
-  const positionLabel =
-    item.workType === 'manga'
-      ? `Volume ${item.currentVolume || 0}, Capítulo ${item.currentChapter || 0}`
-      : `Página ${item.currentPage || 0}${item.totalPages ? ` de ${item.totalPages}` : ''}`;
+  const positionLabel = isEpisodicWork(item)
+    ? `Temp. ${item.currentSeason || 1}, Ep. ${item.currentEpisode || 0}${item.totalEpisodes ? ` de ${item.totalEpisodes}` : ''}`
+    : `Minutagem ${formatSecondsToHms(item?.currentSeconds || 0)}${item?.totalSeconds ? ` / ${formatSecondsToHms(item.totalSeconds)}` : ''}`;
 
   const records = linkedPosts.map((post) => ({
     date: post.createdAt,
@@ -855,27 +851,27 @@ export async function runSpoilerFreeRecap(
   }));
 
   const systemInstruction =
-    'Você é um assistente editorial de memória de leitura. Sua regra ABSOLUTA é ZERO SPOILERS: nunca revele, antecipe ou insinue eventos posteriores ao ponto atual informado pelo leitor. Baseie-se prioritariamente nos registros, citações e anotações fornecidas pelo próprio usuário.';
+    'Você é um assistente de memória de sessões audiovisuais. Sua regra ABSOLUTA é ZERO SPOILERS: nunca revele, antecipe ou insinue acontecimentos posteriores ao episódio ou minutagem atual informada pelo espectador. Baseie-se prioritariamente nos registros, falas e anotações fornecidas pelo próprio usuário.';
 
-  const prompt = `Gere uma recapitulação estruturada e concisa de onde o leitor parou, estritamente SEM SPOILERS além do marcador atual.
+  const prompt = `Gere uma recapitulação estruturada e concisa de onde o espectador parou, estritamente SEM SPOILERS além do marcador atual.
 
-Obra: ${item.title} (${item.author || 'Autor não informado'})
-Natureza: ${item.workType || 'book'}
+Obra: ${item.title} (${item.director || item.studio || 'Direção não informada'})
+Formato: ${item.workType || 'movie'}
 Posição atual exata: ${positionLabel}
-Checkpoint / Seção: ${item.checkpoint || 'Não informado'}
+Ponto de parada: ${item.checkpoint || 'Não informado'}
 Sinopse base (sem spoilers): ${item.synopsis || 'Não informada'}
 Anotações pessoais: ${item.notes || 'Nenhuma'}
 
-Registros no Diário & Storyline:
+Registros no Diário de Sessões:
 ${JSON.stringify(records)}
 
-Citações salvas no Cofre:
+Falas e cenas salvas:
 ${JSON.stringify(quotes)}
 
 Estruture em texto limpo (sem markdown excessivo e SEM EMOJIS) com:
 1. Ponto de Parada (onde você está)
 2. Síntese até aqui (baseada nos registros e contexto seguro até a posição atual)
-3. Ganchos / Pontos para retomar a leitura`;
+3. Ganchos / Pontos para retomar a sessão`;
 
   return callGemini({
     apiKey,
@@ -889,14 +885,9 @@ Estruture em texto limpo (sem markdown excessivo e SEM EMOJIS) com:
 
 export async function runReviewOrAbstractSynthesis(
   apiKey,
-  { item, linkedPosts = [], mode = 'auto' },
+  { item, linkedPosts = [] },
   { signal } = {}
 ) {
-  const targetMode =
-    mode === 'academic' || (mode === 'auto' && item.workType === 'academic')
-      ? 'academic'
-      : 'literary';
-
   const quotes = (item.quotes || []).map((q) => ({
     location: q.location,
     text: q.text,
@@ -911,37 +902,26 @@ export async function runReviewOrAbstractSynthesis(
   }));
 
   const systemInstruction =
-    targetMode === 'academic'
-      ? 'Você é um orientador de pesquisa acadêmica e redator científico (padrão TCC/ABNT). Escreva em português formal, objetivo, crítico e rigoroso, sem emojis.'
-      : 'Você é um crítico literário editorial. Escreva uma resenha literária estruturada, elegante e sem emojis em português do Brasil, integrando as citações e impressões do leitor.';
+    'Você é um crítico de cinema e séries. Escreva uma crítica audiovisual estruturada, elegante e sem emojis em português do Brasil, integrando as falas salvas e impressões do espectador.';
 
-  const taskInstruction =
-    targetMode === 'academic'
-      ? `Transforme as citações, fichamento e anotações abaixo em um RESUMO ACADÊMICO CRÍTICO (pronto para uso em TCC/Artigo), contendo:
-- Tema e Tese Central
-- Desenvolvimento Metodológico / Argumentos-Chave
-- Síntese das Citações e Notas Analíticas
-- Contribuição Crítica e Aplicabilidade`
-      : `Transforme as citações, nota e anotações abaixo em uma RESENHA LITERÁRIA ESTRUTURADA, contendo:
+  const taskInstruction = `Transforme as anotações, falas e nota abaixo em uma CRÍTICA AUDIOVISUAL ESTRUTURADA, contendo:
 - Apresentação da Obra (sem spoilers pesados)
-- Análise de Estilo, Ritmo e Profundidade
-- Destaques das Citações Salvas
-- Impressão Final & Veredito (${item.rating !== null ? `${item.rating}/100` : 'sem nota'}${item.verdict ? ` — ${item.verdict}` : ''})`;
+- Análise de Direção, Ritmo, Fotografia e Montagem
+- Destaques das Falas & Cenas Marcantes
+- Impressão Final & Veredito (${item.rating !== null && item.rating !== undefined ? `${item.rating}/100` : 'sem nota'}${item.verdict ? ` — ${item.verdict}` : ''})`;
 
   const prompt = `${taskInstruction}
 
 Obra: ${item.title}
-Autor(es): ${item.author || 'Não informado'}
+Direção / Estúdio: ${item.director || item.studio || 'Não informado'}
 Ano: ${item.releaseYear || 'Não informado'}
-Instituição / Editora: ${item.institution || item.publisher || 'Não informada'}
-Nota: ${item.rating ?? 'N/A'}/100 | Veredito: ${item.verdict || 'N/A'} | Favorito 5 Estrelas: ${item.isPlatinum ? 'Sim' : 'Não'}
+Nota: ${item.rating ?? 'sem nota'}/100 | Veredito: ${item.verdict || 'sem veredito'} | Obra-Prima 5 Estrelas: ${item.isPlatinum ? 'Sim' : 'Não'}
 Anotações pessoais: ${item.notes || 'Nenhuma'}
-Fichamento prévio: ${item.fichamento || 'Nenhum'}
 
-Citações salvas no Cofre:
+Falas e cenas salvas:
 ${JSON.stringify(quotes)}
 
-Registros no Diário / Storyline:
+Registros no Diário de Sessões:
 ${JSON.stringify(records)}`;
 
   return callGemini({

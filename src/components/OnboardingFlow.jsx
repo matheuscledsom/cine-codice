@@ -1,26 +1,22 @@
 import {
   ArrowLeft,
   ArrowRight,
-  Camera,
   Check,
   CheckCircle2,
   Clapperboard,
   Compass,
-  Disc,
   Download,
   ExternalLink,
   Eye,
   EyeOff,
   Film,
   KeyRound,
-  MonitorPlay,
   Moon,
   Palette,
   Play,
   Quote,
   Sparkles,
   Sun,
-  Target,
   Tv,
   Upload,
   User,
@@ -30,10 +26,14 @@ import { useEffect, useRef, useState } from 'react';
 import { domainConfig } from '../config/domainConfig';
 import {
   CRITERION_OPTIONS,
-  GENRE_OPTIONS,
-  normalizeFavoriteGenres,
+  getOrderedGenreGroups,
+  getStructuredGenresByGroup,
+  normalizeFavoriteGenreObjects,
   normalizePreferredCriteria,
+  normalizeViewerFocusList,
   toggleCriterionInList,
+  toggleStructuredGenre,
+  toggleViewerFocusInList,
 } from '../utils/readerPreferences';
 
 const FOCUS_OPTIONS = [
@@ -42,15 +42,6 @@ const FOCUS_OPTIONS = [
   { id: 'Curador de Animes', icon: Clapperboard },
   { id: 'Pesquisador de Cinema', icon: Compass },
   { id: 'Espectador Casual', icon: Play },
-];
-
-const GOAL_PRESETS = [12, 24, 52, 100];
-
-const FORMAT_OPTIONS = [
-  { id: 'Streaming', icon: MonitorPlay },
-  { id: 'Cinema', icon: Film },
-  { id: 'Blu-ray / 4K', icon: Disc },
-  { id: 'VHS / DVD', icon: Tv },
 ];
 
 const ATMOSPHERE_OPTIONS = [
@@ -109,9 +100,7 @@ export function OnboardingFlow({
   const [step, setStep] = useState(1);
   const [displayName, setDisplayName] = useState('');
   const [age, setAge] = useState('');
-  const [readerFocus, setReaderFocus] = useState('Cinéfilo Curador');
-  const [annualGoal, setAnnualGoal] = useState(24);
-  const [preferredFormat, setPreferredFormat] = useState('Streaming');
+  const [viewerFocus, setViewerFocus] = useState(['Cinéfilo Curador']);
   const [preferredCriteria, setPreferredCriteria] = useState(['Roteiro & Ritmo']);
   const [preferredAtmosphere, setPreferredAtmosphere] = useState('Cinema OLED');
   const [favoriteGenres, setFavoriteGenres] = useState([]);
@@ -135,9 +124,12 @@ export function OnboardingFlow({
         : ''
     );
     setAge(currentProfile?.age ? String(currentProfile.age) : '');
-    setReaderFocus(currentProfile?.readerFocus || 'Cinéfilo Curador');
-    setAnnualGoal(Number(currentProfile?.annualGoal) || 24);
-    setPreferredFormat(currentProfile?.preferredFormat || 'Streaming');
+    setViewerFocus(
+      normalizeViewerFocusList(
+        currentProfile?.viewerFocus ?? currentProfile?.viewer_focus,
+        currentProfile?.readerFocus ?? currentProfile?.reader_focus
+      )
+    );
     setPreferredCriteria(
       normalizePreferredCriteria(
         currentProfile?.preferredCriteria ?? currentProfile?.preferred_criteria,
@@ -147,7 +139,11 @@ export function OnboardingFlow({
     setPreferredAtmosphere(
       currentProfile?.preferredAtmosphere || 'Cinema OLED'
     );
-    setFavoriteGenres(normalizeFavoriteGenres(currentProfile?.favoriteGenres));
+    setFavoriteGenres(
+      normalizeFavoriteGenreObjects(
+        currentProfile?.favoriteGenres ?? currentProfile?.favorite_genres
+      )
+    );
     setDraftGeminiKey(currentKey || '');
     setShowKey(false);
     setBackupError('');
@@ -167,6 +163,10 @@ export function OnboardingFlow({
   if (!isOpen) return null;
 
   const progressPct = (step / 5) * 100;
+  const isStep2Blocked = step === 2 && viewerFocus.length === 0;
+  const orderedGenreGroups = getOrderedGenreGroups(viewerFocus);
+  const selectedGenreIds = new Set(favoriteGenres.map((g) => g.id));
+  const outrosGenres = favoriteGenres.filter((g) => g.group === 'outros');
 
   const handleSelectAtmosphere = (opt) => {
     setPreferredAtmosphere(opt.id);
@@ -180,10 +180,14 @@ export function OnboardingFlow({
     }
   };
 
-  const toggleGenre = (genre) => {
-    setFavoriteGenres((prev) =>
-      prev.includes(genre) ? prev.filter((g) => g !== genre) : [...prev, genre]
+  const toggleFocus = (focusId) => {
+    setViewerFocus((prev) =>
+      toggleViewerFocusInList(prev, focusId, { allowEmpty: true })
     );
+  };
+
+  const toggleGenre = (genreEntry) => {
+    setFavoriteGenres((prev) => toggleStructuredGenre(prev, genreEntry));
   };
 
   const toggleCriterion = (criterion) => {
@@ -216,13 +220,13 @@ export function OnboardingFlow({
     if (draftGeminiKey.trim() && draftGeminiKey.trim() !== geminiKey) {
       onSaveGeminiKey?.(draftGeminiKey.trim());
     }
+    const safeFocus = viewerFocus.length > 0 ? viewerFocus : ['Cinéfilo Curador'];
 
     onComplete({
       ...(cleanName ? { displayName: cleanName } : {}),
       age: age.trim(),
-      readerFocus,
-      annualGoal: Math.max(1, Number(annualGoal) || 24),
-      preferredFormat,
+      viewerFocus: safeFocus,
+      readerFocus: safeFocus[0],
       preferredCriteria,
       preferredCriterion: preferredCriteria.join(', '),
       preferredAtmosphere,
@@ -253,8 +257,9 @@ export function OnboardingFlow({
               {step < 5 && (
                 <button
                   type="button"
+                  disabled={isStep2Blocked}
                   onClick={() => setStep((prev) => Math.min(5, prev + 1))}
-                  className="rounded-lg px-2 py-1 text-[11px] font-medium text-muted hover:text-ink"
+                  className="min-h-[44px] rounded-lg px-2.5 py-1 text-[11px] font-medium text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Pular etapa
                 </button>
@@ -264,7 +269,7 @@ export function OnboardingFlow({
                   type="button"
                   onClick={onDismiss}
                   aria-label="Fechar tutorial"
-                  className="rounded-full p-1 text-muted hover:bg-card hover:text-ink"
+                  className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full text-muted hover:bg-card hover:text-ink"
                 >
                   <X className="h-4 w-4" strokeWidth={1.5} />
                 </button>
@@ -357,115 +362,69 @@ export function OnboardingFlow({
                   Perfil do Espectador
                 </h2>
                 <p className="mt-1 text-xs text-muted">
-                  Personalize metas, mídia favorita e atmosfera visual inicial.
+                  Personalize seus focos, critérios valorizados e atmosfera visual inicial.
                 </p>
-              </div>
-
-              <div>
-                <p className="mb-2 text-xs font-medium text-muted">
-                  1. Qual é o seu foco principal?
-                </p>
-                <div className="grid grid-cols-1 gap-2">
-                  {FOCUS_OPTIONS.map((opt) => {
-                    const Icon = opt.icon;
-                    const isSelected = readerFocus === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => setReaderFocus(opt.id)}
-                        className={`flex min-h-[44px] items-center gap-3 rounded-2xl border px-3.5 py-2.5 text-left text-xs font-medium transition-colors ${
-                          isSelected
-                            ? 'border-accent bg-accent/15 text-ink'
-                            : 'border-line bg-card text-muted hover:text-ink'
-                        }`}
-                      >
-                        <Icon
-                          className={`h-4 w-4 shrink-0 ${
-                            isSelected ? 'text-accent' : 'text-subtle'
-                          }`}
-                          strokeWidth={1.5}
-                        />
-                        <span>{opt.id}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <p className="flex items-center gap-1.5 text-xs font-medium text-muted">
-                    <Target className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                    2. Meta anual de obras
-                  </p>
-                  <input
-                    type="number"
-                    min="1"
-                    max="999"
-                    value={annualGoal}
-                    onChange={(e) => setAnnualGoal(e.target.value)}
-                    aria-label="Meta anual personalizada"
-                    className="w-16 rounded-lg border border-line bg-card px-2 py-1 text-right text-xs font-semibold tabular-nums text-ink focus:border-accent focus:outline-none"
-                  />
-                </div>
-                <div className="grid grid-cols-4 gap-2">
-                  {GOAL_PRESETS.map((goal) => {
-                    const isSelected = Number(annualGoal) === goal;
-                    return (
-                      <button
-                        key={goal}
-                        type="button"
-                        onClick={() => setAnnualGoal(goal)}
-                        className={`min-h-[44px] rounded-xl border py-2.5 text-xs font-semibold tabular-nums transition-colors ${
-                          isSelected
-                            ? 'border-accent bg-accent/15 text-ink'
-                            : 'border-line bg-card text-muted hover:text-ink'
-                        }`}
-                      >
-                        {goal}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <p className="mb-2 text-xs font-medium text-muted">
-                  3. Onde você mais assiste
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {FORMAT_OPTIONS.map((opt) => {
-                    const Icon = opt.icon;
-                    const isSelected = preferredFormat === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => setPreferredFormat(opt.id)}
-                        className={`flex min-h-[44px] items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-[11px] font-medium transition-colors ${
-                          isSelected
-                            ? 'border-accent bg-accent/15 text-ink'
-                            : 'border-line bg-card text-muted hover:text-ink'
-                        }`}
-                      >
-                        <Icon
-                          className={`h-3.5 w-3.5 shrink-0 ${
-                            isSelected ? 'text-accent' : 'text-subtle'
-                          }`}
-                          strokeWidth={1.5}
-                        />
-                        <span className="truncate">{opt.id}</span>
-                      </button>
-                    );
-                  })}
-                </div>
               </div>
 
               <div>
                 <div className="mb-2 flex flex-wrap items-baseline justify-between gap-1.5">
                   <p className="text-xs font-medium text-muted">
-                    4. Critério que você mais valoriza
+                    1. Qual é o seu foco?
+                  </p>
+                  <span
+                    className="text-[11px]"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    Selecione um ou mais
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {FOCUS_OPTIONS.map((opt) => {
+                    const Icon = opt.icon;
+                    const isSelected = viewerFocus.includes(opt.id);
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        aria-pressed={isSelected}
+                        onClick={() => toggleFocus(opt.id)}
+                        className={`flex min-h-[44px] items-center justify-between gap-3 rounded-2xl border px-3.5 py-2.5 text-left text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                          isSelected
+                            ? 'border-accent bg-accent/15 text-ink'
+                            : 'border-line bg-card text-muted hover:text-ink'
+                        }`}
+                      >
+                        <span className="flex items-center gap-3">
+                          <Icon
+                            className={`h-4 w-4 shrink-0 ${
+                              isSelected ? 'text-accent' : 'text-subtle'
+                            }`}
+                            strokeWidth={1.5}
+                          />
+                          <span>{opt.id}</span>
+                        </span>
+                        {isSelected && (
+                          <Check className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {isStep2Blocked && (
+                  <p
+                    id="onboarding-focus-requirement"
+                    role="status"
+                    className="mt-2 rounded-[4px] border border-accent/50 bg-accent/10 px-3 py-2 text-xs font-medium text-ink"
+                  >
+                    Selecione pelo menos 1 foco acima para avançar para os gêneros.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <div className="mb-2 flex flex-wrap items-baseline justify-between gap-1.5">
+                  <p className="text-xs font-medium text-muted">
+                    2. Critério que você mais valoriza
                   </p>
                   <span
                     className="text-[11px]"
@@ -483,7 +442,7 @@ export function OnboardingFlow({
                         type="button"
                         aria-pressed={isSelected}
                         onClick={() => toggleCriterion(criterion)}
-                        className={`flex min-h-[44px] items-center gap-2 rounded-[4px] border px-3 py-2 text-left text-[11px] font-medium transition-colors ${
+                        className={`flex min-h-[44px] items-center gap-2 rounded-[4px] border px-3 py-2 text-left text-[11px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                           isSelected
                             ? 'border-accent bg-accent/15 text-ink'
                             : 'border-line bg-card hover:text-ink'
@@ -502,7 +461,7 @@ export function OnboardingFlow({
 
               <div>
                 <p className="mb-2 text-xs font-medium text-muted">
-                  5. Atmosfera visual inicial (aplica ao vivo)
+                  3. Atmosfera visual inicial (aplica ao vivo)
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   {ATMOSPHERE_OPTIONS.map((opt) => {
@@ -512,8 +471,9 @@ export function OnboardingFlow({
                       <button
                         key={opt.id}
                         type="button"
+                        aria-pressed={isSelected}
                         onClick={() => handleSelectAtmosphere(opt)}
-                        className={`flex min-h-[44px] items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left text-[11px] font-medium transition-colors ${
+                        className={`flex min-h-[44px] items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left text-[11px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                           isSelected
                             ? 'border-accent bg-accent/15 text-ink'
                             : 'border-line bg-card text-muted hover:text-ink'
@@ -550,31 +510,113 @@ export function OnboardingFlow({
                   Gêneros Favoritos
                 </h2>
                 <p className="mt-1 text-xs text-muted">
-                  Selecione quantos preferir para afinar o Curador da Sessão e sua Roleta.
+                  Escolha por Cinema, Séries ou Animes (os grupos ligados aos seus focos vêm primeiro).
                 </p>
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                {GENRE_OPTIONS.map((genre) => {
-                  const isSelected = favoriteGenres.includes(genre);
+              <div className="space-y-3">
+                {orderedGenreGroups.map((group) => {
+                  const { genres, tags } = getStructuredGenresByGroup(group.id);
+                  const countInGroup = [...genres, ...tags].filter((entry) =>
+                    selectedGenreIds.has(entry.id)
+                  ).length;
                   return (
-                    <button
-                      key={genre}
-                      type="button"
-                      aria-pressed={isSelected}
-                      onClick={() => toggleGenre(genre)}
-                      className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-3 py-2 text-xs font-medium transition-colors ${
-                        isSelected
-                          ? 'border-accent bg-accent/15 text-ink'
-                          : 'border-line bg-card hover:text-ink'
-                      }`}
-                      style={!isSelected ? { color: 'var(--text-secondary)' } : undefined}
+                    <section
+                      key={group.id}
+                      aria-label={group.label}
+                      className="space-y-2 rounded-2xl border border-line bg-card p-3.5"
                     >
-                      {isSelected && <Check className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />}
-                      {genre}
-                    </button>
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-xs font-semibold text-ink">{group.label}</h3>
+                        <span className="text-[11px] tabular-nums text-muted">
+                          {countInGroup} selecionado(s)
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        {genres.map((entry) => {
+                          const isSelected = selectedGenreIds.has(entry.id);
+                          return (
+                            <button
+                              key={entry.id}
+                              type="button"
+                              aria-pressed={isSelected}
+                              onClick={() => toggleGenre(entry)}
+                              className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-3 py-2 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                                isSelected
+                                  ? 'border-accent bg-accent/15 text-ink'
+                                  : 'border-line bg-app hover:text-ink'
+                              }`}
+                              style={!isSelected ? { color: 'var(--text-secondary)' } : undefined}
+                            >
+                              {isSelected && (
+                                <Check className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                              )}
+                              <span>{entry.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {tags.length > 0 && (
+                        <div className="space-y-1.5 border-t border-line pt-2.5">
+                          <p className="text-[11px] font-medium text-muted">
+                            Subgêneros &amp; Tags (exclusivo de Animes)
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {tags.map((entry) => {
+                              const isSelected = selectedGenreIds.has(entry.id);
+                              return (
+                                <button
+                                  key={entry.id}
+                                  type="button"
+                                  aria-pressed={isSelected}
+                                  onClick={() => toggleGenre(entry)}
+                                  className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-3 py-2 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                                    isSelected
+                                      ? 'border-accent bg-accent/15 text-ink'
+                                      : 'border-line bg-app hover:text-ink'
+                                  }`}
+                                  style={!isSelected ? { color: 'var(--text-secondary)' } : undefined}
+                                >
+                                  {isSelected && (
+                                    <Check className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                                  )}
+                                  <span>{entry.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </section>
                   );
                 })}
+
+                {outrosGenres.length > 0 && (
+                  <section
+                    aria-label="Outros gêneros preservados"
+                    className="space-y-2 rounded-2xl border border-dashed border-line bg-card p-3.5"
+                  >
+                    <h3 className="text-xs font-semibold text-muted">
+                      Outros (preservados do seu perfil anterior)
+                    </h3>
+                    <div className="flex flex-wrap gap-2">
+                      {outrosGenres.map((entry) => (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          aria-pressed={true}
+                          onClick={() => toggleGenre(entry)}
+                          className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent/15 px-3 py-2 text-xs font-medium text-ink"
+                        >
+                          <Check className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                          <span>{entry.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
               </div>
             </div>
           )}
@@ -630,7 +672,7 @@ export function OnboardingFlow({
                     type="button"
                     onClick={() => setShowKey((prev) => !prev)}
                     aria-label={showKey ? 'Ocultar chave' : 'Mostrar chave'}
-                    className="absolute right-2.5 rounded p-1 text-subtle hover:text-ink"
+                    className="absolute right-1 flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-subtle hover:text-ink"
                   >
                     {showKey ? (
                       <EyeOff className="h-4 w-4" strokeWidth={1.5} />
@@ -705,12 +747,14 @@ export function OnboardingFlow({
             {step < 5 ? (
               <button
                 type="button"
+                disabled={isStep2Blocked}
+                aria-describedby={isStep2Blocked ? 'onboarding-focus-requirement' : undefined}
                 onClick={() =>
                   step === 4
                     ? handleSaveKeyAndContinue()
                     : setStep((prev) => Math.min(5, prev + 1))
                 }
-                className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-2xl bg-accent py-3 text-sm font-semibold text-accent-ink transition-opacity hover:opacity-90"
+                className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-2xl bg-accent py-3 text-sm font-semibold text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <span>{step === 4 && draftGeminiKey.trim() ? 'Salvar e Continuar' : 'Continuar'}</span>
                 <ArrowRight className="h-4 w-4" strokeWidth={1.5} />

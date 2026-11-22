@@ -1,5 +1,10 @@
 export const FLAGS_STORAGE_KEY = 'codice_flags';
 
+/**
+ * Decisão v1.1.0 (Fase 6): recursos sociais herdados ficam ocultos sem apagar dados locais.
+ */
+export const SOCIAL_ENABLED = false;
+
 export const DEFAULT_FLAGS = {
   spineShelf: true,
   viewTransitions: true,

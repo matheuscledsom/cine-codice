@@ -1,23 +1,36 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { UserCheck, UserPlus, X } from 'lucide-react';
+import { AlertTriangle, Download, RefreshCw, UserCheck, UserPlus, X } from 'lucide-react';
+import { getAllEpisodeEvaluations, importEpisodeEvaluations } from './api/cacheDb';
 import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SkeletonScreen } from './components/SkeletonScreen';
+import { domainConfig } from './config/domainConfig';
+import { SOCIAL_ENABLED } from './config/flags';
 import { useToast } from './context/ToastContext';
 import { GraphicFilters } from './design/GraphicFilters';
 import { useAiConfig } from './hooks/useAiConfig';
-import { useBacklog } from './hooks/useBacklog';
+import { readRawBacklogStorageState, useBacklog } from './hooks/useBacklog';
 import { useReadingStreak } from './hooks/useReadingStreak';
 import { useSocialProfile } from './hooks/useSocialProfile';
 import { useTheme } from './hooks/useTheme';
 import {
+  CURRENT_MIGRATION_VERSION,
+  MIGRATION_VERSION_KEY,
+  executeAtomicWorkspaceMigration,
+  migrateProfileData,
+  migrateWorkItem,
+  needsWorkspaceMigration,
+} from './lib/migrations';
+import {
   getBackupReminderStatus,
   listAutoSnapshots,
+  loadEmergencyMirror,
   mergeSnapshots,
   requestPersistentStorage,
   saveAutoSnapshot,
   saveEmergencyMirror,
   shareOrDownloadSignedBackup,
+  verifyAutoSnapshotIntegrity,
 } from './services/backupEngine';
 import {
   bootstrapBackend,
@@ -34,6 +47,7 @@ import {
   updateActiveProfileInBackend,
 } from './services/codiceBackend';
 import {
+  CODICE_DB_STORAGE_KEY,
   buildCodiceDatabase,
   createUuid,
   persistCodiceDatabase,
@@ -149,6 +163,85 @@ const OfflineBookPickerModal = lazy(() =>
     default: m.OfflineBookPickerModal,
   }))
 );
+const AboutCreditsModal = lazy(() =>
+  import('./components/AboutCreditsModal').then((m) => ({
+    default: m.AboutCreditsModal,
+  }))
+);
+
+function readRawWorkspaceSnapshotForMigration() {
+  if (typeof localStorage === 'undefined') {
+    return { hasExistingUserData: false, storedMigrationVersion: CURRENT_MIGRATION_VERSION, rawWorkspace: null };
+  }
+  try {
+    const storedMigrationVersion =
+      Number(localStorage.getItem(MIGRATION_VERSION_KEY) || 0) || 0;
+    const rawBacklog = readRawBacklogStorageState();
+    let rawProfile = null;
+    try {
+      const profileStr = localStorage.getItem(domainConfig.profileStorageKey);
+      if (profileStr) rawProfile = JSON.parse(profileStr);
+    } catch {
+      rawProfile = null;
+    }
+    if (!rawProfile && rawBacklog.storedDb?.tables?.user_profile) {
+      const dbProfile = rawBacklog.storedDb.tables.user_profile;
+      rawProfile = Array.isArray(dbProfile) ? (dbProfile[0] || null) : dbProfile;
+    }
+
+    let rawPosts = [];
+    try {
+      const postsStr = localStorage.getItem(domainConfig.postsStorageKey);
+      if (postsStr) {
+        const parsed = JSON.parse(postsStr);
+        if (Array.isArray(parsed)) rawPosts = parsed;
+      }
+    } catch {
+      rawPosts = [];
+    }
+
+    const hasExistingUserData = Boolean(rawBacklog.hasStoredItems || rawProfile);
+    if (!hasExistingUserData) {
+      return {
+        hasExistingUserData: false,
+        storedMigrationVersion,
+        rawWorkspace: null,
+      };
+    }
+
+    return {
+      hasExistingUserData: true,
+      storedMigrationVersion,
+      rawWorkspace: {
+        items: rawBacklog.items || [],
+        profile: rawProfile,
+        posts: rawPosts,
+      },
+    };
+  } catch {
+    return {
+      hasExistingUserData: false,
+      storedMigrationVersion: 0,
+      rawWorkspace: null,
+    };
+  }
+}
+
+function initBootMigrationState() {
+  const probe = readRawWorkspaceSnapshotForMigration();
+  if (!probe.hasExistingUserData || !probe.rawWorkspace) {
+    return { locked: false, warning: null, status: 'up-to-date' };
+  }
+  const needed = needsWorkspaceMigration(
+    probe.rawWorkspace,
+    probe.storedMigrationVersion
+  );
+  return {
+    locked: needed,
+    warning: null,
+    status: needed ? 'pending' : 'up-to-date',
+  };
+}
 
 export function App() {
   const [activeTab, setActiveTab] = useState('home');
@@ -162,7 +255,11 @@ export function App() {
   const [importCatalogOpen, setImportCatalogOpen] = useState(false);
   const [wrappedOpen, setWrappedOpen] = useState(false);
   const [globalRouletteOpen, setGlobalRouletteOpen] = useState(false);
+  const [aboutCreditsOpen, setAboutCreditsOpen] = useState(false);
+  const [migrationState, setMigrationState] = useState(initBootMigrationState);
+  const bootMigrationPromiseRef = useRef(null);
   const [requestedCollectionId, setRequestedCollectionId] = useState(null);
+  const [requestedCreatorQuery, setRequestedCreatorQuery] = useState('');
   const [privateStorageMode, setPrivateStorageMode] = useState(false);
   const [onboardingReopened, setOnboardingReopened] = useState(false);
   const [backendReady, setBackendReady] = useState(false);
@@ -252,7 +349,7 @@ export function App() {
     addPostComment,
     deletePostComment,
     restoreSocialBackup,
-  } = useSocialProfile();
+  } = useSocialProfile({ migrationLocked: migrationState.locked });
 
   const {
     items,
@@ -275,7 +372,12 @@ export function App() {
     exportCatalogCsv,
     exportCatalogMarkdown,
     importBackup,
-  } = useBacklog(profile?.readerDna || null);
+    storageError,
+    retryPersistStorage,
+  } = useBacklog(profile?.readerDna || null, {
+    migrationLocked: migrationState.locked,
+  });
+  const [secondaryStorageWarning, setSecondaryStorageWarning] = useState('');
 
   const {
     streakData,
@@ -363,7 +465,123 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!backendReady) return undefined;
+    if (migrationState.status !== 'pending') return undefined;
+    let active = true;
+
+    const runMigration = async () => {
+      if (!bootMigrationPromiseRef.current) {
+        bootMigrationPromiseRef.current = (async () => {
+          const probe = readRawWorkspaceSnapshotForMigration();
+          if (!probe.hasExistingUserData || !probe.rawWorkspace) {
+            return { status: 'up-to-date', workspace: null };
+          }
+          const episodeEvaluations = await getAllEpisodeEvaluations().catch(() => []);
+          const rawWorkspace = {
+            ...probe.rawWorkspace,
+            streak: streakData,
+            readingSessions,
+            collections,
+            episodeEvaluations,
+          };
+
+          return executeAtomicWorkspaceMigration({
+            rawWorkspace,
+            storedMigrationVersion: probe.storedMigrationVersion,
+            saveSnapshotFn: saveAutoSnapshot,
+            verifySnapshotFn: verifyAutoSnapshotIntegrity,
+            commitFn: async (migrated) => {
+              if (typeof localStorage === 'undefined') return;
+              const prevStorage = localStorage.getItem(domainConfig.storageKey);
+              const prevProfile = localStorage.getItem(domainConfig.profileStorageKey);
+              const prevDb = localStorage.getItem(CODICE_DB_STORAGE_KEY);
+              const prevVersion = localStorage.getItem(MIGRATION_VERSION_KEY);
+
+              try {
+                localStorage.setItem(
+                  domainConfig.storageKey,
+                  JSON.stringify(migrated.items)
+                );
+                if (migrated.profile) {
+                  localStorage.setItem(
+                    domainConfig.profileStorageKey,
+                    JSON.stringify(migrated.profile)
+                  );
+                }
+                const db = buildCodiceDatabase({
+                  items: migrated.items,
+                  profile: migrated.profile || null,
+                  posts: migrated.posts || [],
+                  streak: migrated.streak || null,
+                  readingSessions: migrated.readingSessions || [],
+                  collections: migrated.collections || [],
+                  episodeEvaluations: migrated.episodeEvaluations || [],
+                });
+                localStorage.setItem(CODICE_DB_STORAGE_KEY, JSON.stringify(db));
+                localStorage.setItem(
+                  MIGRATION_VERSION_KEY,
+                  String(CURRENT_MIGRATION_VERSION)
+                );
+              } catch (err) {
+                const restoreKey = (k, prevVal) => {
+                  if (prevVal === null) localStorage.removeItem(k);
+                  else localStorage.setItem(k, prevVal);
+                };
+                try {
+                  restoreKey(domainConfig.storageKey, prevStorage);
+                  restoreKey(domainConfig.profileStorageKey, prevProfile);
+                  restoreKey(CODICE_DB_STORAGE_KEY, prevDb);
+                  restoreKey(MIGRATION_VERSION_KEY, prevVersion);
+                } catch {
+                  // Silencioso
+                }
+                throw err;
+              }
+            },
+          });
+        })();
+      }
+
+      const result = await bootMigrationPromiseRef.current;
+      if (!active) return;
+
+      if (result.status === 'migrated' || result.status === 'up-to-date') {
+        if (result.workspace?.items) {
+          replaceWorkspaceData({ items: result.workspace.items });
+        }
+        if (result.workspace?.profile) {
+          restoreSocialBackup({ profile: result.workspace.profile });
+        }
+        setMigrationState({
+          locked: false,
+          warning: null,
+          status: result.status,
+        });
+      } else {
+        setMigrationState({
+          locked: true,
+          warning:
+            result.warning ||
+            'Não foi possível validar o snapshot antes da migração. Seus dados antigos permanecem intactos.',
+          status: 'aborted',
+        });
+      }
+    };
+
+    runMigration();
+    return () => {
+      active = false;
+    };
+  }, [
+    migrationState.status,
+    streakData,
+    readingSessions,
+    collections,
+    replaceWorkspaceData,
+    restoreSocialBackup,
+  ]);
+
+  useEffect(() => {
+    if (!backendReady || migrationState.locked) return undefined;
     const timer = setTimeout(() => {
       syncActiveWorkspaceToBackend({
         profile,
@@ -374,7 +592,15 @@ export function App() {
       }).catch(() => {});
     }, 300);
     return () => clearTimeout(timer);
-  }, [backendReady, profile, items, posts, streakData, readingSessions]);
+  }, [
+    backendReady,
+    migrationState.locked,
+    profile,
+    items,
+    posts,
+    streakData,
+    readingSessions,
+  ]);
 
   const handleUpdateProfileWithSync = useCallback(
     (updates, toastMessage = 'Perfil atualizado') => {
@@ -595,47 +821,87 @@ export function App() {
   const handleApplyRestoreSnapshot = useCallback(
     async (incomingSnapshot, modeArg = 'merge') => {
       if (!incomingSnapshot) return;
+      const currentEvals = await getAllEpisodeEvaluations().catch(() => []);
+
       if (modeArg === 'replace') {
         await saveAutoSnapshot(
-          { items, profile, posts, streak: streakData, readingSessions },
+          {
+            items,
+            profile,
+            posts,
+            streak: streakData,
+            readingSessions,
+            collections,
+            episodeEvaluations: currentEvals,
+          },
           { reason: 'pre-restore', label: 'Pré-restauração automática', force: true }
         ).catch(() => {});
 
+        const migratedItems = (incomingSnapshot.items || []).map((entry) =>
+          migrateWorkItem(entry)
+        );
+        const migratedProfile = incomingSnapshot.profile
+          ? migrateProfileData(incomingSnapshot.profile)
+          : undefined;
+
         replaceWorkspaceData({
-          items: incomingSnapshot.items || [],
+          items: migratedItems,
           readingSessions: incomingSnapshot.readingSessions || [],
           collections: incomingSnapshot.collections || [],
         });
         restoreSocialBackup({
-          profile: incomingSnapshot.profile,
+          profile: migratedProfile,
           posts: incomingSnapshot.posts || [],
         });
         restoreStreakBackup(
           incomingSnapshot.streak || { count: 0, lastDate: null, history: [] }
         );
+        if (
+          Array.isArray(incomingSnapshot.episodeEvaluations) &&
+          incomingSnapshot.episodeEvaluations.length > 0
+        ) {
+          await importEpisodeEvaluations(incomingSnapshot.episodeEvaluations).catch(() => {});
+        }
         showToast({
-          message: `Cinemateca restaurada (${incomingSnapshot.items?.length || 0} obras)`,
+          message: `Cinemateca restaurada (${migratedItems.length} obras)`,
           type: 'success',
         });
         return;
       }
 
       const merged = mergeSnapshots(
-        { items, profile, posts, streak: streakData, readingSessions, collections },
+        {
+          items,
+          profile,
+          posts,
+          streak: streakData,
+          readingSessions,
+          collections,
+          episodeEvaluations: currentEvals,
+        },
         incomingSnapshot
       );
+      const migratedMergedItems = (merged.items || []).map((entry) =>
+        migrateWorkItem(entry)
+      );
       replaceWorkspaceData({
-        items: merged.items,
+        items: migratedMergedItems,
         readingSessions: merged.readingSessions,
         collections: merged.collections || [],
       });
       restoreSocialBackup({
-        profile: merged.profile,
+        profile: merged.profile ? migrateProfileData(merged.profile) : merged.profile,
         posts: merged.posts,
       });
       restoreStreakBackup(merged.streak);
+      if (
+        Array.isArray(merged.episodeEvaluations) &&
+        merged.episodeEvaluations.length > 0
+      ) {
+        await importEpisodeEvaluations(merged.episodeEvaluations).catch(() => {});
+      }
       showToast({
-        message: `Backup mesclado com sucesso (${merged.items.length} obras no acervo)`,
+        message: `Backup mesclado com sucesso (${migratedMergedItems.length} obras no acervo)`,
         type: 'success',
       });
     },
@@ -653,35 +919,85 @@ export function App() {
     ]
   );
 
+  const mirrorRecoveryDoneRef = useRef(false);
+
   useEffect(() => {
-    const db = buildCodiceDatabase({
-      items,
-      profile,
-      posts,
-      streak: streakData,
-      readingSessions,
-      collections,
-    });
-    persistCodiceDatabase(db);
-    saveEmergencyMirror({
-      items,
-      collections,
-      streak: streakData,
-      readingSessions,
-    });
-  }, [items, profile, posts, streakData, readingSessions, collections]);
+    if (migrationState.locked) return undefined;
+    let cancelled = false;
+
+    const syncLocalMirrors = async () => {
+      let episodeEvaluations = await getAllEpisodeEvaluations().catch(() => []);
+      if (!mirrorRecoveryDoneRef.current) {
+        mirrorRecoveryDoneRef.current = true;
+        if (episodeEvaluations.length === 0) {
+          const mirror = loadEmergencyMirror();
+          if (mirror.ok && Array.isArray(mirror.episodeEvaluations) && mirror.episodeEvaluations.length > 0) {
+            await importEpisodeEvaluations(mirror.episodeEvaluations).catch(() => {});
+            episodeEvaluations = mirror.episodeEvaluations;
+          }
+        }
+      }
+      if (cancelled) return;
+
+      const db = buildCodiceDatabase({
+        items,
+        profile,
+        posts,
+        streak: streakData,
+        readingSessions,
+        collections,
+        episodeEvaluations,
+      });
+      const dbRes = persistCodiceDatabase(db);
+      if (!dbRes?.persisted) {
+        setSecondaryStorageWarning(
+          dbRes?.warning ||
+            'Falha ao gravar cópia relacional no localStorage: alterações recentes estão provisórias até liberar espaço ou exportar backup.'
+        );
+      } else {
+        setSecondaryStorageWarning((prev) => (prev ? '' : prev));
+      }
+
+      const mirrorOk = saveEmergencyMirror({
+        items,
+        profile,
+        collections,
+        streak: streakData,
+        readingSessions,
+        episodeEvaluations,
+      });
+      if (!mirrorOk && dbRes?.persisted) {
+        setSecondaryStorageWarning(
+          'Cota do localStorage atingida ao atualizar o espelho de emergência LZW. Exporte um backup (.json) por segurança.'
+        );
+      }
+    };
+
+    syncLocalMirrors();
+    return () => {
+      cancelled = true;
+    };
+  }, [migrationState.locked, items, profile, posts, streakData, readingSessions, collections]);
 
   useEffect(() => {
     requestPersistentStorage().catch(() => {});
   }, []);
 
   useEffect(() => {
-    if (!items || items.length === 0) return undefined;
-    listAutoSnapshots()
-      .then((snaps) => {
+    if (migrationState.locked || !items || items.length === 0) return undefined;
+    Promise.all([listAutoSnapshots(), getAllEpisodeEvaluations().catch(() => [])])
+      .then(([snaps, episodeEvaluations]) => {
         if (!Array.isArray(snaps) || snaps.length === 0) {
           return saveAutoSnapshot(
-            { items, profile, posts, streak: streakData, readingSessions, collections },
+            {
+              items,
+              profile,
+              posts,
+              streak: streakData,
+              readingSessions,
+              collections,
+              episodeEvaluations,
+            },
             { reason: 'auto', label: 'Recuperação automática do espelho local' }
           );
         }
@@ -690,18 +1006,35 @@ export function App() {
       .catch(() => {});
     return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [migrationState.locked]);
 
   useEffect(() => {
-    if (!items || items.length === 0) return undefined;
-    const timer = setTimeout(() => {
+    if (migrationState.locked || !items || items.length === 0) return undefined;
+    const timer = setTimeout(async () => {
+      const episodeEvaluations = await getAllEpisodeEvaluations().catch(() => []);
       saveAutoSnapshot(
-        { items, profile, posts, streak: streakData, readingSessions, collections },
+        {
+          items,
+          profile,
+          posts,
+          streak: streakData,
+          readingSessions,
+          collections,
+          episodeEvaluations,
+        },
         { reason: 'auto', label: 'Auto-snapshot automático' }
       ).catch(() => {});
     }, 8000);
     return () => clearTimeout(timer);
-  }, [items, profile, posts, streakData, readingSessions, collections]);
+  }, [
+    migrationState.locked,
+    items,
+    profile,
+    posts,
+    streakData,
+    readingSessions,
+    collections,
+  ]);
 
   const handleRegisterToday = () => {
     registerToday();
@@ -709,7 +1042,13 @@ export function App() {
   };
 
   const handleQuickReadingCheckIn = useCallback(
-    ({ workId = null, minutes = 0, episodes = 0, note = '' } = {}) => {
+    ({
+      workId = null,
+      minutes = 0,
+      episodes = 0,
+      note = '',
+      allowCompletion = true,
+    } = {}) => {
       const cleanMinutes = Math.max(0, Math.round(Number(minutes) || 0));
       const cleanEpisodes = Math.max(0, Math.round(Number(episodes) || 0));
       const cleanNote = String(note || '').trim();
@@ -717,11 +1056,27 @@ export function App() {
 
       const targetWork = workId ? items.find((entry) => entry.id === workId) : null;
 
+      let prevSnapshot = null;
       if (targetWork) {
+        prevSnapshot = {
+          status: targetWork.status,
+          startDate: targetWork.startDate || null,
+          completedDate: targetWork.completedDate || null,
+          currentSeason: targetWork.currentSeason ?? 1,
+          currentEpisode: targetWork.currentEpisode ?? 0,
+          watchedEpisodes: targetWork.watchedEpisodes || {},
+          currentSeconds: targetWork.currentSeconds ?? 0,
+          totalSeconds: targetWork.totalSeconds ?? null,
+          progress: targetWork.progress ?? 0,
+          updatedAt: targetWork.updatedAt || targetWork.createdAt || null,
+        };
+
         const episodic = isEpisodicWork(targetWork);
         const updates = {
           updatedAt: new Date().toISOString(),
-          ...(targetWork.status === 'queued' ? { status: 'playing', startDate: getTodayLocalISO() } : {}),
+          ...(targetWork.status === 'queued'
+            ? { status: 'playing', startDate: targetWork.startDate || getTodayLocalISO() }
+            : {}),
         };
 
         if (cleanEpisodes > 0 && episodic) {
@@ -730,7 +1085,7 @@ export function App() {
           updates.currentEpisode = next.currentEpisode;
           updates.watchedEpisodes = next.watchedEpisodes;
           updates.progress = next.progress;
-          if (targetWork.totalEpisodes > 0 && next.progress >= 100) {
+          if (allowCompletion && targetWork.totalEpisodes > 0 && next.progress >= 100) {
             updates.status = 'completed';
             updates.completedDate = getTodayLocalISO();
           }
@@ -739,7 +1094,7 @@ export function App() {
           updates.currentSeconds = next.currentSeconds;
           if (next.totalSeconds) updates.totalSeconds = next.totalSeconds;
           updates.progress = next.progress;
-          if (next.totalSeconds && next.currentSeconds >= next.totalSeconds) {
+          if (allowCompletion && next.totalSeconds && next.currentSeconds >= next.totalSeconds) {
             updates.status = 'completed';
             updates.completedDate = getTodayLocalISO();
           }
@@ -774,19 +1129,39 @@ export function App() {
               ? `+${cleanMinutes} min registrados hoje`
               : 'Impressão de sessão salva',
         type: 'success',
+        duration: 6000,
+        action:
+          targetWork && prevSnapshot
+            ? {
+                label: 'Desfazer',
+                onClick: () => {
+                  updateItem(targetWork.id, prevSnapshot);
+                },
+              }
+            : null,
       });
     },
     [items, updateItem, addReadingSession, registerToday, showToast]
   );
 
   const handleQuickAdvanceWork = useCallback(
-    (work) => {
+    (work, options = {}) => {
       if (!work?.id) return;
+      const { allowCompletion = true } = options || {};
       if (isEpisodicWork(work)) {
         const dur = Number(work.episodeDurationMinutes) || (work.workType === 'anime' ? 24 : 45);
-        handleQuickReadingCheckIn({ workId: work.id, episodes: 1, minutes: dur });
+        handleQuickReadingCheckIn({
+          workId: work.id,
+          episodes: 1,
+          minutes: dur,
+          allowCompletion,
+        });
       } else {
-        handleQuickReadingCheckIn({ workId: work.id, minutes: 15 });
+        handleQuickReadingCheckIn({
+          workId: work.id,
+          minutes: 20,
+          allowCompletion,
+        });
       }
     },
     [handleQuickReadingCheckIn]
@@ -876,6 +1251,12 @@ export function App() {
   }, [backendReady, titleEvaluation?.stalePinnedCleared, updateProfile]);
 
   useEffect(() => {
+    if (!SOCIAL_ENABLED && activeTab === 'community') {
+      setActiveTab('profile');
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search || '');
     const hasInvite = params.has('invite');
@@ -893,6 +1274,8 @@ export function App() {
     if (typeof window.history?.replaceState === 'function') {
       window.history.replaceState({}, '', cleanUrl);
     }
+
+    if (!SOCIAL_ENABLED) return;
 
     if (rawCard) {
       const decoded = decodePublicProfileCard(rawCard);
@@ -924,6 +1307,7 @@ export function App() {
 
   const handleSaveBackupCopyNow = useCallback(async () => {
     try {
+      const episodeEvaluations = await getAllEpisodeEvaluations().catch(() => []);
       const res = await shareOrDownloadSignedBackup({
         items,
         profile,
@@ -931,6 +1315,7 @@ export function App() {
         streak: streakData,
         readingSessions,
         collections,
+        episodeEvaluations,
       });
       setBackupReminderTick((t) => t + 1);
       if (res.method === 'share') {
@@ -1154,6 +1539,24 @@ export function App() {
             }[activeTab] || activeTab
           }
         </div>
+        {migrationState.warning && (
+          <div
+            role="alert"
+            className="mx-4 sm:mx-6 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-accent bg-card px-3 py-2.5 text-xs text-ink"
+          >
+            <span className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+              <span>{migrationState.warning}</span>
+            </span>
+            <button
+              type="button"
+              onClick={handleSaveBackupCopyNow}
+              className="min-h-[44px] rounded-[4px] border border-accent bg-accent/10 px-3 text-[11px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+            >
+              Salvar Cópia
+            </button>
+          </div>
+        )}
         {privateStorageMode && (
           <div
             role="status"
@@ -1165,7 +1568,7 @@ export function App() {
             <button
               type="button"
               onClick={handleSaveBackupCopyNow}
-              className="min-h-[36px] rounded-[4px] border border-accent bg-accent/10 px-2.5 text-[11px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+              className="min-h-[44px] rounded-[4px] border border-accent bg-accent/10 px-3 text-[11px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
             >
               Salvar Cópia
             </button>
@@ -1174,8 +1577,75 @@ export function App() {
         <main
           id="main-content"
           tabIndex={-1}
-          className="px-4 sm:px-6 pt-4 pb-[env(safe-area-inset-bottom)] focus:outline-none"
+          className="px-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] sm:px-6 pt-[max(1rem,env(safe-area-inset-top))] pb-[calc(6rem+env(safe-area-inset-bottom))] focus:outline-none"
         >
+          {(storageError?.warning || secondaryStorageWarning) && (
+            <div
+              role="alert"
+              data-testid="storage-quota-alert"
+              className="mb-4 flex w-full flex-col gap-2.5 rounded-[4px] border border-accent bg-card p-3 text-xs text-ink sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="flex min-w-0 flex-1 items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                <div className="min-w-0 break-words">
+                  <p className="font-semibold">
+                    Atenção: Provisório (não salvo no localStorage)
+                  </p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
+                    {storageError?.warning || secondaryStorageWarning}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const primaryRes = retryPersistStorage();
+                    const epEvals = await getAllEpisodeEvaluations().catch(() => []);
+                    const db = buildCodiceDatabase({
+                      items,
+                      profile,
+                      posts,
+                      streak: streakData,
+                      readingSessions,
+                      collections,
+                      episodeEvaluations: epEvals,
+                    });
+                    const dbRes = persistCodiceDatabase(db);
+                    const mirrorOk = saveEmergencyMirror({
+                      items,
+                      profile,
+                      collections,
+                      streak: streakData,
+                      readingSessions,
+                      episodeEvaluations: epEvals,
+                    });
+                    if (primaryRes.persisted && dbRes.persisted && mirrorOk) {
+                      setSecondaryStorageWarning('');
+                      showToast({
+                        message: 'Acervo gravado no aparelho com sucesso.',
+                        type: 'success',
+                      });
+                    } else if (!dbRes.persisted) {
+                      setSecondaryStorageWarning(dbRes.warning || 'Falha ao gravar cópia relacional.');
+                    }
+                  }}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent px-3 text-xs font-semibold text-accent-ink"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  <span>Tentar de novo</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveBackupCopyNow}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-app px-3 text-xs font-semibold text-ink hover:border-accent"
+                >
+                  <Download className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                  <span>Baixar cópia (.json)</span>
+                </button>
+              </div>
+            </div>
+          )}
           <ErrorBoundary
             key={activeTab}
             screenName={
@@ -1199,13 +1669,13 @@ export function App() {
                   readingSessions={readingSessions}
                   dailyLogs={dailyLogs}
                   resolvedBadgeName={resolvedTitleBadge}
-                  viewerId={activeViewerId}
+                  tmdbKey={aiConfig.tmdbKey}
                   geminiKey={geminiKey}
                   backupReminder={backupReminder}
                   onSaveBackupNow={handleSaveBackupCopyNow}
                   onDismissBackupReminder={() => setBackupReminderDismissed(true)}
-                  onQuickCheckIn={handleQuickReadingCheckIn}
                   onQuickAdvanceWork={handleQuickAdvanceWork}
+                  onUpdateItem={handleUpdateItem}
                   onStartPickedWork={handleStartPickedWork}
                   onSelectItem={handleSelectOrAddFromRecommendation}
                   onAddToWishlist={handleCopyWorkToWishlist}
@@ -1230,7 +1700,9 @@ export function App() {
                   items={items}
                   geminiKey={geminiKey}
                   tmdbKey={aiConfig.tmdbKey}
+                  omdbKey={aiConfig.omdbKey}
                   onAddItem={handleAddItem}
+                  onUpdateItem={handleUpdateItem}
                   onSelectExisting={(item) => setSelectedItemId(item.id)}
                   onOpenGeminiSettings={() => setGeminiModalOpen(true)}
                   onOpenImportCatalog={() => setImportCatalogOpen(true)}
@@ -1254,9 +1726,13 @@ export function App() {
                   onNavigateAdd={() => setActiveTab('add')}
                   requestedCollectionId={requestedCollectionId}
                   onConsumeRequestedCollection={() => setRequestedCollectionId(null)}
+                  requestedCreatorQuery={requestedCreatorQuery}
+                  onConsumeRequestedCreatorQuery={() => setRequestedCreatorQuery('')}
+                  tmdbKey={aiConfig.tmdbKey}
+                  onAddItem={handleAddItem}
                 />
               )}
-              {activeTab === 'community' && (
+              {SOCIAL_ENABLED && activeTab === 'community' && (
                 <CommunityScreen
                   viewerId={activeViewerId}
                   myProfile={profile}
@@ -1291,9 +1767,15 @@ export function App() {
                   backupReminder={backupReminder}
                   onSaveBackupNow={handleSaveBackupCopyNow}
                   onDismissBackupReminder={() => setBackupReminderDismissed(true)}
-                  onOpenShareProfileCard={() => setShareProfileModalOpen(true)}
-                  onOpenCommunity={() => setActiveTab('community')}
-                  onOpenAuthModal={() => setAuthModalOpen(true)}
+                  onOpenShareProfileCard={
+                    SOCIAL_ENABLED ? () => setShareProfileModalOpen(true) : undefined
+                  }
+                  onOpenCommunity={
+                    SOCIAL_ENABLED ? () => setActiveTab('community') : undefined
+                  }
+                  onOpenAuthModal={
+                    SOCIAL_ENABLED ? () => setAuthModalOpen(true) : undefined
+                  }
                   onOpenGeminiSettings={() => setGeminiModalOpen(true)}
                   onOpenThemeStudio={() => setThemeModalOpen(true)}
                   onOpenImportCatalog={() => setImportCatalogOpen(true)}
@@ -1349,6 +1831,7 @@ export function App() {
                   onExportBibtex={handleExportMarkdown}
                   onImportBackup={handleImportBackup}
                   onOpenBackupModal={() => setBackupModalOpen(true)}
+                  onOpenAboutCredits={() => setAboutCreditsOpen(true)}
                   onWallMutated={refreshSocialSignals}
                   onSelectPeerProfile={(id) => setViewingUserProfileId(id)}
                 />
@@ -1360,7 +1843,7 @@ export function App() {
         <BottomNav
           activeTab={activeTab === 'community' ? 'profile' : activeTab}
           onChangeTab={setActiveTab}
-          unreadDmCount={unreadDmCount}
+          unreadDmCount={SOCIAL_ENABLED ? unreadDmCount : 0}
         />
 
         <Suspense fallback={null}>
@@ -1372,6 +1855,8 @@ export function App() {
               posts={posts}
               collections={collections}
               geminiKey={geminiKey}
+              tmdbKey={aiConfig.tmdbKey}
+              omdbKey={aiConfig.omdbKey}
               viewerId={activeViewerId}
               onClose={() => setSelectedItemId(null)}
               onUpdateItem={handleUpdateItem}
@@ -1386,6 +1871,11 @@ export function App() {
               onOpenGeminiSettings={() => setGeminiModalOpen(true)}
               onRecommendToFeed={handleRecommendWorkToFeed}
               onSocialActivityChanged={refreshSocialSignals}
+              onFilterByCreator={(creatorName) => {
+                setSelectedItemId(null);
+                setRequestedCreatorQuery(String(creatorName || '').trim());
+                setActiveTab('list');
+              }}
             />
           )}
 
@@ -1448,6 +1938,7 @@ export function App() {
                 posts,
                 streak: streakData,
                 readingSessions,
+                collections,
               }}
               onExportBackup={handleExportBackup}
               onExportCsv={handleExportCsv}
@@ -1456,7 +1947,7 @@ export function App() {
             />
           )}
 
-          {authModalOpen && (
+          {SOCIAL_ENABLED && authModalOpen && (
             <AuthModal
               isOpen={authModalOpen}
               onClose={() => setAuthModalOpen(false)}
@@ -1472,7 +1963,7 @@ export function App() {
             />
           )}
 
-          {Boolean(viewingUserProfileId) && (
+          {SOCIAL_ENABLED && Boolean(viewingUserProfileId) && (
             <UserProfileModal
               isOpen={Boolean(viewingUserProfileId)}
               profileId={viewingUserProfileId}
@@ -1488,7 +1979,7 @@ export function App() {
             />
           )}
 
-          {chatOpen && (
+          {SOCIAL_ENABLED && chatOpen && (
             <DirectChatDrawer
               isOpen={chatOpen}
               onClose={() => setChatOpen(false)}
@@ -1502,7 +1993,7 @@ export function App() {
             />
           )}
 
-          {shareProfileModalOpen && (
+          {SOCIAL_ENABLED && shareProfileModalOpen && (
             <ShareProfileCardModal
               isOpen={shareProfileModalOpen}
               onClose={() => setShareProfileModalOpen(false)}
@@ -1513,7 +2004,7 @@ export function App() {
             />
           )}
 
-          {Boolean(friendCardModal) && (
+          {SOCIAL_ENABLED && Boolean(friendCardModal) && (
             <FriendProfileCardModal
               isOpen={Boolean(friendCardModal)}
               card={friendCardModal}
@@ -1635,10 +2126,17 @@ export function App() {
             />
           )}
 
+          {aboutCreditsOpen && (
+            <AboutCreditsModal
+              isOpen={aboutCreditsOpen}
+              onClose={() => setAboutCreditsOpen(false)}
+            />
+          )}
+
           {perfDebugEnabled && <PerfOverlay />}
         </Suspense>
 
-        {inviteCandidate && (
+        {SOCIAL_ENABLED && inviteCandidate && (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"
             onClick={() => setInviteCandidate(null)}

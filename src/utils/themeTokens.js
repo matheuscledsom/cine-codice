@@ -159,14 +159,14 @@ export const THEME_MODES = [
 export const FONT_PRESETS = [
   {
     id: 'lora',
-    label: 'Editorial / Livro (Lora)',
+    label: 'Editorial / Roteiro (Lora)',
     shortLabel: 'Lora',
     fontName: 'Lora',
     cssValue: '"Lora", Georgia, serif',
   },
   {
     id: 'merriweather',
-    label: 'Clássico Literário (Merriweather)',
+    label: 'Clássico de Cinema (Merriweather)',
     shortLabel: 'Merriweather',
     fontName: 'Merriweather',
     cssValue: '"Merriweather", Georgia, serif',

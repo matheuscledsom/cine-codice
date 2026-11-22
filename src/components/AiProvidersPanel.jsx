@@ -19,14 +19,26 @@ import {
   normalizeProviderOrder,
   testProviderConnection,
 } from '../services/aiProvider';
-import { testTmdbConnection } from '../services/cinemaApi';
+import { testOmdbConnection, testTmdbConnection, getOmdbDailyUsage } from '../services/cinemaApi';
 
 const SEARCH_KEY_ENTRY = {
   id: 'tmdb',
   label: 'TMDB (Filmes & Séries opcional)',
   host: 'api.themoviedb.org',
   placeholder: 'Chave v3 (32 caracteres)...',
-  hint: 'Opcional: amplia pôsteres HD e sinopses em PT-BR para filmes e séries.',
+  hint: 'Opcional: amplia pôsteres HD, coleções e backdrops. Sem chave, AniList, Jikan e TVmaze continuam funcionando.',
+  docsUrl: 'https://www.themoviedb.org/settings/api',
+  docsLabel: 'themoviedb.org',
+};
+
+const OMDB_KEY_ENTRY = {
+  id: 'omdb',
+  label: 'OMDb API (Notas IMDb / Rotten Tomatoes / Metacritic)',
+  host: 'www.omdbapi.com',
+  placeholder: 'Chave OMDb gratuita (8 caracteres)...',
+  hint: 'Opcional: exibe notas públicas agregadas com cota de 1.000/dia e proteção automática aos 90%.',
+  docsUrl: 'https://www.omdbapi.com/apikey.aspx',
+  docsLabel: 'omdbapi.com',
 };
 
 function ApiKeyRow({
@@ -203,10 +215,15 @@ export function AiProvidersPanel({
   onUpdatePreferences,
   compact = false,
 }) {
+  const [omdbUsage, setOmdbUsage] = useState(() => getOmdbDailyUsage());
   const ordered = normalizeProviderOrder(
     preferences?.preferredProvider,
     preferences?.fallbackOrder
   );
+
+  const refreshOmdbUsage = () => {
+    setOmdbUsage(getOmdbDailyUsage());
+  };
 
   const handleMoveFallback = (index, direction) => {
     const nextIdx = index + direction;
@@ -231,6 +248,55 @@ export function AiProvidersPanel({
           As chaves ficam apenas no armazenamento local (<code className="text-ink">localStorage</code>).
           Nunca vão para backups JSON, URL ou nuvem; cada chave só é enviada ao host do seu próprio provedor.
         </p>
+      </div>
+
+      {/* Chaves de Catálogo Audiovisual (TMDB & OMDb) */}
+      <div className="space-y-2.5 rounded-[4px] border border-line bg-app p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-ink">
+            <Search className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+            <span>Busca &amp; Notas Audiovisuais (TMDB / OMDb)</span>
+          </div>
+          <span
+            className={`rounded-[4px] border px-2 py-0.5 text-[10px] tabular-nums ${
+              omdbUsage.autoStopped
+                ? 'border-accent/60 bg-accent/15 font-semibold text-accent'
+                : 'border-line text-muted'
+            }`}
+          >
+            Uso OMDb hoje: {omdbUsage.count}/{omdbUsage.limit}
+          </span>
+        </div>
+
+        <p className="text-[11px] leading-relaxed text-muted">
+          Fontes abertas (AniList, MyAnimeList/Jikan, TVmaze, Wikidata e Archive) funcionam sem chave.
+          TMDB e OMDb são opcionais; se não preenchidas, o catálogo segue completo.
+        </p>
+
+        <ApiKeyRow
+          entry={SEARCH_KEY_ENTRY}
+          savedKey={keys.tmdb || ''}
+          onSave={(val) => onSaveKey?.('tmdb', val)}
+          onClear={() => onClearKey?.('tmdb')}
+          onTest={(val) => testTmdbConnection(val)}
+        />
+
+        <ApiKeyRow
+          entry={OMDB_KEY_ENTRY}
+          savedKey={keys.omdb || ''}
+          modelNote={
+            omdbUsage.autoStopped
+              ? `Pausa preventiva ativada (${omdbUsage.count}/${omdbUsage.limit} requisições hoje; reinicia amanhã).`
+              : `Cota diária gratuita: ${omdbUsage.count} de ${omdbUsage.limit} utilizadas hoje.`
+          }
+          onSave={(val) => onSaveKey?.('omdb', val)}
+          onClear={() => onClearKey?.('omdb')}
+          onTest={async (val) => {
+            const res = await testOmdbConnection(val);
+            refreshOmdbUsage();
+            return res;
+          }}
+        />
       </div>
 
       {/* Seleção do provedor preferido e ordem de fallback */}
@@ -347,22 +413,6 @@ export function AiProvidersPanel({
           onClear={() => onClearKey?.('openrouter')}
           onTest={(val) => testProviderConnection('openrouter', val)}
         />
-
-        {!compact && (
-          <div className="space-y-1 pt-1">
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted">
-              <Search className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-              <span>Busca Audiovisual (TMDB)</span>
-            </div>
-            <ApiKeyRow
-              entry={SEARCH_KEY_ENTRY}
-              savedKey={keys.tmdb || ''}
-              onSave={(val) => onSaveKey?.('tmdb', val)}
-              onClear={() => onClearKey?.('tmdb')}
-              onTest={(val) => testTmdbConnection(val)}
-            />
-          </div>
-        )}
       </div>
     </div>
   );

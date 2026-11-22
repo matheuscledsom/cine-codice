@@ -1,55 +1,134 @@
 import {
   ArrowRight,
   CalendarClock,
-  Dices,
+  CheckCircle2,
   Film,
+  Flame,
   GitBranch,
   Palette,
+  PauseCircle,
   Play,
   Plus,
   Sparkles,
   Star,
-  Target,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { BackupReminderBanner } from '../components/BackupReminderBanner';
 import { CoverArt } from '../components/CoverArt';
+import { HomeRail } from '../components/HomeRail';
 import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
-import { OracleWidget } from '../components/OracleWidget';
-import { QuickReadingCheckIn } from '../components/QuickReadingCheckIn';
-import { ReadingStreakWidget } from '../components/ReadingStreakWidget';
 import { RecommendationsSection } from '../components/RecommendationsSection';
 import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
-import { StatusBadge } from '../components/StatusBadge';
 import { VectorIcon } from '../components/VectorIcon';
 import { domainConfig, getWorkTypeConfig } from '../config/domainConfig';
 import { CODICE_RELEASE } from '../config/versioning';
 import { useToast } from '../context/ToastContext';
 import {
-  analyzeFranchises,
-  buildMissingFranchiseEntryDraft,
-} from '../services/franchiseEngine';
-import {
-  buildContinueWatchingHub,
-  getDisplayTitles,
-  isEpisodicWork,
-} from '../utils/backlogHelpers';
-import { buildTimeCapsuleEntries } from '../utils/timeCapsule';
+  buildCompactStreakChip,
+  buildHomeLocalRails,
+  buildHomeSessionPills,
+  computeHeroAdvancePlan,
+  resolveHeroVisual,
+  selectHeroPresentation,
+  shouldBackfillHeroBackdrop,
+} from '../lib/homeEngine';
+import { backfillWorkHeroBackdrop } from '../services/cinemaApi';
+import { buildMissingFranchiseEntryDraft } from '../services/franchiseEngine';
+import { getDisplayTitles } from '../utils/backlogHelpers';
+
+function SessionCircularPill({
+  pill,
+  disabled = false,
+  onTrigger,
+}) {
+  const { work, progressPct, nextActionLabel } = pill;
+  const radius = 25;
+  const circumference = 2 * Math.PI * radius;
+  const safePct = Math.max(0, Math.min(100, Number(progressPct) || 0));
+  const strokeDashoffset = circumference - (safePct / 100) * circumference;
+
+  const cleanCover =
+    typeof work?.coverUrl === 'string' && /^(https?:\/\/|data:image\/)/i.test(work.coverUrl.trim())
+      ? work.coverUrl.trim().replace(/^http:\/\//i, 'https://')
+      : null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onTrigger(work)}
+      disabled={disabled}
+      aria-label={`${work.title}: ${nextActionLabel}`}
+      title={`${work.title} (${nextActionLabel})`}
+      className="group flex w-16 shrink-0 flex-col items-center gap-1 text-center focus:outline-none disabled:opacity-60"
+    >
+      <div className="relative flex h-14 w-14 items-center justify-center rounded-full">
+        <svg
+          width="56"
+          height="56"
+          viewBox="0 0 56 56"
+          aria-hidden="true"
+          className="absolute inset-0 -rotate-90"
+        >
+          <circle
+            cx="28"
+            cy="28"
+            r={radius}
+            fill="none"
+            stroke="var(--border-color)"
+            strokeWidth="2.5"
+          />
+          <circle
+            cx="28"
+            cy="28"
+            r={radius}
+            fill="none"
+            stroke="var(--accent-color)"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={strokeDashoffset}
+          />
+        </svg>
+        <div className="h-11 w-11 overflow-hidden rounded-full border border-line bg-card flex items-center justify-center">
+          {cleanCover ? (
+            <img
+              src={cleanCover}
+              alt=""
+              loading="lazy"
+              className="h-full w-full object-cover transition-transform duration-150 group-hover:scale-105"
+            />
+          ) : (
+            <span className="text-xs font-semibold uppercase text-ink">
+              {String(work.title || '?').slice(0, 2)}
+            </span>
+          )}
+        </div>
+        <span className="absolute -bottom-1 rounded-full border border-line bg-app px-1.5 py-0.2 text-[9px] font-semibold tabular-nums text-accent">
+          {nextActionLabel}
+        </span>
+      </div>
+      <span className="w-full truncate text-[10px] font-medium text-muted group-hover:text-ink">
+        {work.title}
+      </span>
+    </button>
+  );
+}
 
 export function HomeScreen({
   items = [],
-  profile,
-  streakProps,
+  profile = null,
+  streakProps = null,
   readingSessions = [],
   dailyLogs = {},
   resolvedBadgeName = '',
-  viewerId = null,
+  loading = false,
+  tmdbKey = '',
   geminiKey = '',
   backupReminder = null,
   onSaveBackupNow,
   onDismissBackupReminder,
-  onQuickCheckIn,
   onQuickAdvanceWork,
+  onUpdateItem,
   onStartPickedWork,
   onSelectItem,
   onAddToWishlist,
@@ -60,125 +139,157 @@ export function HomeScreen({
   onOpenThemeStudio,
 }) {
   const { showToast } = useToast();
-  const { ui, cardFields, currentYear } = domainConfig;
+  const { ui, cardFields } = domainConfig;
   const calmMode = Boolean(profile?.calmMode);
+
   const [releaseModalOpen, setReleaseModalOpen] = useState(false);
   const [rouletteOpen, setRouletteOpen] = useState(false);
+  const [heroImgFailed, setHeroImgFailed] = useState(false);
+  const [advancingWorkId, setAdvancingWorkId] = useState(null);
+  const [completionPrompt, setCompletionPrompt] = useState(null);
+
+  const backfillAttemptedRef = useRef(new Set());
+  const advanceLockRef = useRef(new Map());
 
   const backlogItems = useMemo(
     () => items.filter((item) => item && item.inBacklog !== false),
     [items]
   );
 
-  const ongoingFranchises = useMemo(
-    () => analyzeFranchises(items).filter((f) => !f.isComplete || f.totalCount >= 2).slice(0, 8),
-    [items]
+  const hero = useMemo(
+    () => selectHeroPresentation(items, { loading }),
+    [items, loading]
   );
 
-  const continueHub = useMemo(
-    () => buildContinueWatchingHub(items),
-    [items]
-  );
-
-  const playingItems = useMemo(
-    () =>
-      backlogItems
-        .filter((item) => item.status === 'playing' || item.status === 'rewatching')
-        .sort((a, b) => {
-          const tA = Date.parse(a.updatedAt || a.createdAt || '') || 0;
-          const tB = Date.parse(b.updatedAt || b.createdAt || '') || 0;
-          return tB - tA;
-        }),
-    [backlogItems]
-  );
-
-  const completedYearCount = useMemo(
-    () =>
-      backlogItems.filter(
-        (item) =>
-          item.status === 'completed' &&
-          (item.completedYear === currentYear ||
-            String(item.completedDate || '').startsWith(String(currentYear)))
-      ).length,
-    [backlogItems, currentYear]
-  );
-
-  const annualGoal = Math.max(1, Number(profile?.annualGoal) || 24);
-  const annualGoalPct = Math.min(100, Math.round((completedYearCount / annualGoal) * 100));
-
-  const [animatedGoalPct, setAnimatedGoalPct] = useState(0);
+  const heroVisual = useMemo(() => {
+    if (!hero.work || heroImgFailed) {
+      if (heroImgFailed && hero.work) {
+        const coverOnly = resolveHeroVisual({ ...hero.work, backdropUrl: null });
+        return coverOnly;
+      }
+      return resolveHeroVisual(hero.work);
+    }
+    return resolveHeroVisual(hero.work);
+  }, [hero.work, heroImgFailed]);
 
   useEffect(() => {
-    const prefersReduced =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    if (prefersReduced) {
-      setAnimatedGoalPct(annualGoalPct);
-      return undefined;
-    }
-    const raf = window.requestAnimationFrame(() => {
-      setAnimatedGoalPct(annualGoalPct);
-    });
-    return () => window.cancelAnimationFrame(raf);
-  }, [annualGoalPct]);
+    setHeroImgFailed(false);
+  }, [hero.work?.id, hero.work?.backdropUrl]);
 
-  const featuredHub = continueHub.featured;
-  const otherHubEntries = continueHub.others;
+  // Backfill único em segundo plano de backdropUrl (Regra Extra 2: máx 2, sem OMDb, cooldown 30 dias)
+  useEffect(() => {
+    const candidate = hero.work;
+    if (!candidate?.id || !onUpdateItem) return undefined;
+    if (backfillAttemptedRef.current.has(candidate.id)) return undefined;
+    if (!shouldBackfillHeroBackdrop(candidate)) return undefined;
 
-  const highlightsItems = useMemo(() => {
-    return backlogItems
-      .filter(
-        (item) =>
-          item.isPlatinum ||
-          item.status === 'completed' ||
-          item.status === 'playing' ||
-          item.status === 'rewatching'
-      )
-      .sort((a, b) => {
-        const starDiff = Number(Boolean(b.isPlatinum)) - Number(Boolean(a.isPlatinum));
-        if (starDiff !== 0) return starDiff;
-        const dateA = Date.parse(a.completedDate || a.updatedAt || a.createdAt || '') || 0;
-        const dateB = Date.parse(b.completedDate || b.updatedAt || b.createdAt || '') || 0;
-        return dateB - dateA;
+    backfillAttemptedRef.current.add(candidate.id);
+    const controller = new AbortController();
+
+    backfillWorkHeroBackdrop(candidate, {
+      tmdbApiKey: tmdbKey,
+      signal: controller.signal,
+    })
+      .then((res) => {
+        if (controller.signal.aborted || !res?.attempted) return;
+        const patch = {
+          backdropCheckedAt: res.checkedAt,
+          preserveUpdatedAt: true,
+        };
+        if (res.backdropUrl) {
+          patch.backdropUrl = res.backdropUrl;
+        }
+        onUpdateItem(candidate.id, patch);
       })
-      .slice(0, 10);
-  }, [backlogItems]);
+      .catch(() => {
+        // Silencioso no fundo — cooldown evita loop
+      });
 
-  const timeCapsuleEntries = useMemo(
+    return () => controller.abort();
+  }, [hero.work, tmdbKey, onUpdateItem]);
+
+  const sessionPills = useMemo(
+    () => buildHomeSessionPills(items, { maxCount: 12 }),
+    [items]
+  );
+
+  const localRails = useMemo(
     () =>
-      buildTimeCapsuleEntries({
-        items: backlogItems,
+      buildHomeLocalRails({
+        items,
         readingSessions,
         dailyLogs,
       }),
-    [backlogItems, readingSessions, dailyLogs]
+    [items, readingSessions, dailyLogs]
   );
 
-  const summaryCards = [
-    {
-      id: 'total',
-      label: ui.home.summaryCards.total,
-      value: backlogItems.length,
-      highlight: false,
-    },
-    {
-      id: 'completedYear',
-      label: ui.home.summaryCards.completedYear,
-      value: completedYearCount,
-      highlight: false,
-    },
-    {
-      id: 'playingNow',
-      label: ui.home.summaryCards.playingNow,
-      value: playingItems.length,
-      highlight: true,
-    },
-  ];
+  const streakChip = useMemo(
+    () =>
+      profile?.gamificationEnabled !== false && !calmMode
+        ? buildCompactStreakChip(streakProps)
+        : null,
+    [profile?.gamificationEnabled, calmMode, streakProps]
+  );
+
+  const runProtectedAdvance = (work, { allowCompletion = true } = {}) => {
+    if (!work?.id || !onQuickAdvanceWork) return;
+    const now = Date.now();
+    const lockedUntil = advanceLockRef.current.get(work.id) || 0;
+    if (now < lockedUntil) return;
+
+    const plan = computeHeroAdvancePlan(work);
+    if (!plan) return;
+
+    if (plan.kind === 'episode' && plan.requiresCompletionConfirm && allowCompletion === true) {
+      setCompletionPrompt({ work, plan });
+      return;
+    }
+
+    if (plan.kind === 'minutes' && plan.addMinutes <= 0) {
+      showToast({
+        message: 'Esta obra já atingiu a duração total conhecida.',
+        type: 'info',
+      });
+      return;
+    }
+
+    advanceLockRef.current.set(work.id, now + 600);
+    setAdvancingWorkId(work.id);
+    onQuickAdvanceWork(work, { allowCompletion });
+    setTimeout(() => {
+      setAdvancingWorkId((curr) => (curr === work.id ? null : curr));
+    }, 450);
+  };
+
+  const confirmEpisodeAdvance = (markCompleted) => {
+    if (!completionPrompt?.work) return;
+    const { work } = completionPrompt;
+    setCompletionPrompt(null);
+
+    const now = Date.now();
+    advanceLockRef.current.set(work.id, now + 600);
+    setAdvancingWorkId(work.id);
+    onQuickAdvanceWork?.(work, { allowCompletion: markCompleted });
+    setTimeout(() => {
+      setAdvancingWorkId((curr) => (curr === work.id ? null : curr));
+    }, 450);
+  };
+
+  const heroAdvancePlan = useMemo(
+    () => (hero.work ? computeHeroAdvancePlan(hero.work) : null),
+    [hero.work]
+  );
+
+  const heroTitles = useMemo(
+    () => (hero.work ? getDisplayTitles(hero.work, 'bilingual') : { primary: '', secondary: '' }),
+    [hero.work]
+  );
 
   return (
-    <div className="space-y-6 pb-24">
-      <header className="flex items-start justify-between gap-3 pt-2">
-        <div className="min-w-0">
+    <div className="space-y-6 pb-8">
+      {/* Cabeçalho + Chip compacto de constância */}
+      <header className="flex flex-wrap items-start justify-between gap-3 pt-1">
+        <div className="min-w-0 flex-1">
           <p className="text-xs font-medium text-subtle">
             {ui.home.greetingPrefix}{' '}
             {profile?.displayName || profile?.handle || ui.profile.displayName}
@@ -205,19 +316,51 @@ export function HomeScreen({
               {domainConfig.appSubtitle}
             </span>
           </div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] font-medium tracking-wide text-subtle">
-            <span>{domainConfig.signature}</span>
-            <span aria-hidden="true">·</span>
-            <button
-              type="button"
-              onClick={() => setReleaseModalOpen(true)}
-              className="tabular-nums underline-offset-2 hover:underline"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              {CODICE_RELEASE.label}
-            </button>
-          </div>
+          {streakChip && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={streakProps?.onRegisterToday}
+                disabled={streakChip.loggedToday}
+                className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold tabular-nums transition-colors ${
+                  streakChip.loggedToday
+                    ? 'border-accent/40 bg-accent/15 text-accent cursor-default'
+                    : 'border-line bg-card text-ink hover:border-accent'
+                }`}
+              >
+                {streakChip.isPaused ? (
+                  <PauseCircle className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                ) : streakChip.loggedToday ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                ) : (
+                  <Flame className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                )}
+                <span>{streakChip.daysLabel}</span>
+                {!streakChip.loggedToday && (
+                  <span className="text-[11px] font-medium text-accent">
+                    · {streakChip.ctaLabel}
+                  </span>
+                )}
+              </button>
+
+              {!streakChip.loggedToday &&
+                !streakChip.isRestDayToday &&
+                streakChip.count > 0 &&
+                streakChip.restDaysRemaining > 0 &&
+                streakProps?.onUseRestDay && (
+                  <button
+                    type="button"
+                    onClick={streakProps.onUseRestDay}
+                    title="Usar dia de descanso mensal sem perder a sequência"
+                    className="inline-flex min-h-[44px] items-center rounded-full border border-line bg-card px-3 text-[11px] font-medium text-muted hover:border-accent hover:text-ink"
+                  >
+                    Descansar ({streakChip.restDaysRemaining}/2)
+                  </button>
+                )}
+            </div>
+          )}
         </div>
+
         {onOpenThemeStudio && (
           <button
             type="button"
@@ -231,10 +374,6 @@ export function HomeScreen({
         )}
       </header>
 
-      {profile?.gamificationEnabled !== false && !calmMode && streakProps && (
-        <ReadingStreakWidget {...streakProps} />
-      )}
-
       {backupReminder?.shouldRemind && (
         <BackupReminderBanner
           daysWithoutBackup={backupReminder.daysWithoutBackup}
@@ -243,245 +382,25 @@ export function HomeScreen({
         />
       )}
 
-      <QuickReadingCheckIn
-        items={items}
-        streakCount={streakProps?.streakCount || 0}
-        loggedToday={Boolean(streakProps?.loggedToday)}
-        readingSessions={readingSessions}
-        dailyLogs={dailyLogs}
-        onQuickLog={onQuickCheckIn}
-      />
-
-      {/* Em Cartaz · Continuar Assistindo */}
-      <section aria-label={ui.home.continueWatchingTitle} className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-baseline gap-2">
-            <h2 className="text-sm font-semibold tracking-tight text-ink">
-              {ui.home.continueWatchingTitle}
-            </h2>
-            {continueHub.all.length > 0 && (
-              <span className="text-[11px] tabular-nums text-subtle">
-                ({continueHub.all.length})
-              </span>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() => setRouletteOpen(true)}
-            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent/45 bg-accent/10 px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-accent/20"
-          >
-            <Dices className="h-4 w-4 text-accent" strokeWidth={1.5} />
-            <span>O que assistir hoje?</span>
-          </button>
-        </div>
-
-        {!featuredHub ? (
-          <div className="rounded-[6px] border border-dashed border-line bg-card px-5 py-7 text-center">
-            <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-[4px] border border-line bg-app text-accent">
-              <Film className="h-5 w-5" strokeWidth={1.5} />
-            </div>
-            <p className="mt-3 text-xs font-medium text-ink">
-              {ui.home.emptyActiveMessage}
-            </p>
-            <p className="mt-1 text-[11px] text-muted">
-              Marque um filme, série ou anime como Assistindo ou gire a roleta da fila Quero Ver.
-            </p>
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={() => setRouletteOpen(true)}
-                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] bg-accent px-4 py-2 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90"
-              >
-                <Dices className="h-4 w-4" strokeWidth={1.5} />
-                <span>Girar Roleta</span>
-              </button>
-              <button
-                type="button"
-                onClick={backlogItems.length > 0 ? onNavigateList : onNavigateAdd}
-                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-app px-3.5 py-2 text-xs font-medium text-ink hover:border-accent"
-              >
-                {backlogItems.length > 0 ? ui.home.emptyActiveCta : ui.home.emptyBacklogCta}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <article className="flex gap-3.5 rounded-[6px] border border-line bg-card p-3.5 transition-colors hover:border-accent/50">
-              <button
-                type="button"
-                onClick={() => onSelectItem(featuredHub.work)}
-                aria-label={`Abrir ficha de ${featuredHub.title}`}
-                className="shrink-0 rounded-[4px] focus:outline-none"
-              >
-                <CoverArt
-                  item={featuredHub.work}
-                  compact
-                  className="w-20 sm:w-24 rounded-[4px]"
-                />
-              </button>
-
-              <div className="flex min-w-0 flex-1 flex-col justify-between gap-2">
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-accent">
-                      <VectorIcon
-                        name={getWorkTypeConfig(featuredHub.workType).icon}
-                        className="h-3.5 w-3.5"
-                      />
-                      <span>
-                        {getWorkTypeConfig(featuredHub.workType).shortLabel}
-                        {featuredHub.audioFormat ? ` · ${featuredHub.audioFormat}` : ''}
-                      </span>
-                    </span>
-                    <span className="text-[11px] font-semibold tabular-nums text-ink">
-                      {featuredHub.progressPct}%
-                    </span>
-                  </div>
-
-                  {(() => {
-                    const featuredTitles = getDisplayTitles(featuredHub.work, 'bilingual');
-                    return (
-                      <>
-                        <h3 className="mt-1 line-clamp-2 text-sm sm:text-base font-semibold leading-snug text-ink">
-                          {featuredTitles.primary}
-                        </h3>
-                        {featuredTitles.secondary && (
-                          <p
-                            className="mt-0.5 truncate text-[11px] italic"
-                            style={{ color: 'var(--text-secondary)' }}
-                          >
-                            {featuredTitles.secondary}
-                          </p>
-                        )}
-                      </>
-                    );
-                  })()}
-
-                  {featuredHub.director && (
-                    <p className="mt-0.5 truncate text-xs text-muted">
-                      {featuredHub.director}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2 text-[11px] tabular-nums text-muted">
-                    <span>{featuredHub.metricLabel}</span>
-                    {Number(featuredHub.work?.rewatchCount) > 0 && (
-                      <span className="font-medium text-accent">
-                        Rewatch #{featuredHub.work.rewatchCount}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="h-[3px] w-full overflow-hidden rounded-[2px] bg-line">
-                    <div
-                      className="codice-goal-fill h-full"
-                      style={{
-                        width: `${Math.min(100, featuredHub.progressPct)}%`,
-                        backgroundColor: 'var(--accent-color)',
-                      }}
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-                    {onQuickAdvanceWork && (
-                      <button
-                        type="button"
-                        onClick={() => onQuickAdvanceWork(featuredHub.work)}
-                        className="inline-flex min-h-[44px] items-center gap-1 rounded-[4px] border border-line bg-app px-3 py-1.5 text-xs font-semibold tabular-nums text-ink transition-colors hover:border-accent hover:text-accent"
-                      >
-                        <Plus className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                        <span>
-                          {isEpisodicWork(featuredHub.work) ? '+1 Ep' : '+15 min'}
-                        </span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => onSelectItem(featuredHub.work)}
-                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] bg-accent px-4 py-2 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90"
-                    >
-                      <Play className="h-4 w-4" strokeWidth={1.5} />
-                      <span>{ui.home.resumeLabel}</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </article>
-
-            {otherHubEntries.length > 0 && (
-              <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 no-scrollbar">
-                {otherHubEntries.map((entry) => {
-                  const workMeta = getWorkTypeConfig(entry.workType);
-                  const cardTitles = getDisplayTitles(entry.work, 'bilingual');
-
-                  return (
-                    <button
-                      key={entry.id}
-                      type="button"
-                      onClick={() => onSelectItem(entry.work)}
-                      className="group flex w-44 shrink-0 snap-start flex-col justify-between rounded-[6px] border border-line bg-card p-2.5 text-left transition-colors hover:border-accent/50"
-                    >
-                      <div className="relative w-full">
-                        <CoverArt
-                          item={entry.work}
-                          compact
-                          className="w-full rounded-[4px]"
-                        />
-                        <span
-                          title={workMeta.label}
-                          className="absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-[4px] border border-line bg-app/90 text-accent"
-                        >
-                          <VectorIcon name={workMeta.icon} className="h-3.5 w-3.5" />
-                        </span>
-                      </div>
-                      <div className="mt-2.5 w-full space-y-1.5">
-                        <p className="truncate text-xs font-semibold text-ink transition-colors group-hover:text-accent">
-                          {cardTitles.primary}
-                        </p>
-                        {cardTitles.secondary && (
-                          <p
-                            className="truncate text-[10px] italic"
-                            style={{ color: 'var(--text-secondary)' }}
-                          >
-                            {cardTitles.secondary}
-                          </p>
-                        )}
-                        <div className="flex items-center justify-between gap-2 text-[10px] tabular-nums text-muted">
-                          <span className="truncate">{entry.metricLabel}</span>
-                          <span className="shrink-0 font-semibold text-accent">
-                            {entry.progressPct}%
-                          </span>
-                        </div>
-                        <div className="h-[2px] w-full overflow-hidden rounded-[2px] bg-line">
-                          <div
-                            className="h-full transition-all duration-150"
-                            style={{
-                              width: `${Math.min(100, entry.progressPct)}%`,
-                              backgroundColor: 'var(--accent-color)',
-                            }}
-                          />
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-
-      {backlogItems.length === 0 ? (
-        <section className="rounded-[6px] border border-line bg-card px-6 py-10 text-center">
+      {/* HERO EM 4 ESTADOS: carregando | ativo | fila Quero Ver | acervo vazio */}
+      {hero.state === 'loading' ? (
+        <section
+          aria-label="Carregando destaque da cinemateca"
+          aria-busy="true"
+          className="h-56 w-full animate-pulse rounded-[6px] border border-line bg-card"
+        />
+      ) : hero.state === 'empty' ? (
+        <section
+          aria-label="Boas-vindas à cinemateca"
+          className="rounded-[6px] border border-line bg-card px-5 py-9 text-center"
+        >
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-[4px] border border-line bg-app text-accent">
             <Film className="h-5 w-5" strokeWidth={1.5} />
           </div>
           <h2 className="mt-4 text-base font-semibold tracking-tight text-ink">
             {ui.home.emptyBacklogTitle}
           </h2>
-          <p className="mx-auto mt-1.5 max-w-xs text-xs leading-relaxed text-muted">
+          <p className="mx-auto mt-1.5 max-w-sm text-xs leading-relaxed text-muted">
             {ui.home.emptyBacklogDescription}
           </p>
           <button
@@ -490,339 +409,468 @@ export function HomeScreen({
             className="mt-5 inline-flex min-h-[44px] items-center gap-2 rounded-[4px] bg-accent px-5 py-2.5 text-sm font-semibold text-accent-ink transition-opacity hover:opacity-90"
           >
             <Plus className="h-4 w-4" strokeWidth={1.5} />
-            {ui.home.emptyBacklogCta}
+            <span>Catalogar Primeira Obra</span>
           </button>
         </section>
       ) : (
-        <>
-          {!calmMode && (
-            <>
-              <section aria-label="Resumo rápido" className="grid grid-cols-3 gap-2.5 sm:gap-3">
-                {summaryCards.map((card) => (
-                  <div
-                    key={card.id}
-                    className={`rounded-[6px] border bg-card p-3.5 sm:p-4 transition-colors ${
-                      card.highlight ? 'border-accent/40' : 'border-line'
-                    }`}
-                  >
-                    <span
-                      className={`block text-2xl font-semibold tabular-nums tracking-tight ${
-                        card.highlight ? 'text-accent' : 'text-ink'
-                      }`}
-                    >
-                      {card.value}
-                    </span>
-                    <span className="mt-1 block text-[11px] leading-tight text-muted">
-                      {card.label}
-                    </span>
-                  </div>
-                ))}
-              </section>
+        <section
+          aria-label="Obra em destaque"
+          className="relative overflow-hidden rounded-[6px] border border-line bg-card"
+        >
+          {/* Fundo visual do Hero: backdropUrl > capa borrada > gradiente do tema */}
+          {heroVisual.mode === 'backdrop' && heroVisual.imageUrl ? (
+            <img
+              src={heroVisual.imageUrl}
+              alt=""
+              onError={() => setHeroImgFailed(true)}
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          ) : heroVisual.mode === 'blurred-cover' && heroVisual.imageUrl ? (
+            <img
+              src={heroVisual.imageUrl}
+              alt=""
+              onError={() => setHeroImgFailed(true)}
+              className="absolute inset-0 h-full w-full scale-110 object-cover blur-md opacity-70"
+            />
+          ) : (
+            <div
+              aria-hidden="true"
+              className="absolute inset-0"
+              style={{
+                background:
+                  'linear-gradient(135deg, var(--accent-color) 0%, var(--bg-app) 100%)',
+                opacity: 0.35,
+              }}
+            />
+          )}
 
-              <section
-                aria-label={ui.home.annualGoalTitle}
-                className="rounded-[6px] border border-line bg-card p-4"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Target className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
-                    <h2 className="text-xs font-semibold tracking-tight text-ink">
-                      {ui.home.annualGoalTitle}
-                    </h2>
-                  </div>
-                  <div className="flex items-baseline gap-2 text-xs tabular-nums">
-                    <span className="font-medium text-muted">
-                      <strong className="font-semibold text-ink">{completedYearCount}</strong> / {annualGoal}
-                    </span>
-                    <span className="font-semibold text-accent">{annualGoalPct}%</span>
-                  </div>
+          {/* Scrim escuro >= 70% para garantir contraste WCAG AA sobre qualquer imagem (R3) */}
+          <div
+            aria-hidden="true"
+            className="absolute inset-0"
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(10, 12, 16, 0.72) 0%, rgba(10, 12, 16, 0.84) 55%, rgba(10, 12, 16, 0.94) 100%)',
+            }}
+          />
+
+          <div className="relative z-10 flex flex-col gap-4 p-4 sm:flex-row sm:items-end sm:p-5 text-white">
+            <button
+              type="button"
+              onClick={() => onSelectItem?.(hero.work)}
+              aria-label={`Abrir ficha de ${hero.work.title}`}
+              className="w-20 sm:w-24 shrink-0 self-start rounded-[4px] focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            >
+              <CoverArt
+                item={hero.work}
+                compact
+                priority
+                className="w-full rounded-[4px]"
+              />
+            </button>
+
+            <div className="min-w-0 flex-1 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-white/90">
+                <span className="inline-flex items-center gap-1.5">
+                  <VectorIcon
+                    name={getWorkTypeConfig(hero.work.workType).icon}
+                    className="h-3.5 w-3.5 text-white"
+                  />
+                  <span>
+                    {hero.state === 'queued'
+                      ? 'Sugestão da Fila Quero Ver'
+                      : getWorkTypeConfig(hero.work.workType).shortLabel}
+                    {hero.work.audioFormat ? ` · ${hero.work.audioFormat}` : ''}
+                  </span>
+                </span>
+                <span className="tabular-nums font-semibold">
+                  {hero.progressPct}%
+                </span>
+              </div>
+
+              <div>
+                <h2 className="line-clamp-2 text-base sm:text-lg font-semibold leading-snug text-white">
+                  {heroTitles.primary}
+                </h2>
+                {heroTitles.secondary && (
+                  <p className="mt-0.5 truncate text-xs italic text-white/80">
+                    {heroTitles.secondary}
+                  </p>
+                )}
+                {(hero.work.director || hero.work.studio) && (
+                  <p className="mt-0.5 truncate text-xs text-white/80">
+                    {hero.work.director || hero.work.studio}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2 text-xs tabular-nums text-white/90">
+                  <span>{hero.progressLabel}</span>
+                  {Number(hero.work.rewatchCount) > 0 && (
+                    <span>Rewatch #{hero.work.rewatchCount}</span>
+                  )}
                 </div>
-
-                <div
-                  role="progressbar"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={annualGoalPct}
-                  aria-label={`Progresso da Meta Anual: ${annualGoalPct}%`}
-                  className="mt-3 h-[4px] w-full overflow-hidden rounded-[2px] bg-line"
-                >
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/25">
                   <div
-                    className="codice-goal-fill h-full"
+                    className="h-full transition-all duration-150"
                     style={{
-                      width: `${animatedGoalPct}%`,
+                      width: `${Math.min(100, hero.progressPct)}%`,
                       backgroundColor: 'var(--accent-color)',
                     }}
                   />
                 </div>
-              </section>
-            </>
-          )}
-
-          {/* Sagas & Universos em Andamento */}
-          {ongoingFranchises.length > 0 && (
-            <section aria-label="Sagas e Universos em Andamento" className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <GitBranch className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                  <h2 className="text-sm font-semibold tracking-tight text-ink">
-                    Sagas &amp; Universos em Andamento
-                  </h2>
-                </div>
-                <span className="text-[11px] tabular-nums text-subtle">
-                  {ongoingFranchises.length}{' '}
-                  {ongoingFranchises.length === 1 ? 'saga' : 'sagas'}
-                </span>
               </div>
 
-              <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 no-scrollbar">
-                {ongoingFranchises.map((fr) => (
-                  <div
-                    key={fr.id}
-                    className="flex w-64 shrink-0 snap-start flex-col justify-between gap-2.5 rounded-2xl border border-line bg-card p-3"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onSelectItem?.(fr.representativeItem)}
-                      className="flex items-start gap-2.5 text-left"
-                    >
-                      <CoverArt
-                        item={fr.representativeItem}
-                        compact
-                        className="h-16 w-11 shrink-0 rounded-[4px]"
-                      />
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <p className="truncate text-xs font-semibold text-ink">
-                          {fr.name}
-                        </p>
-                        <p className="truncate text-[10px] text-muted">
-                          {fr.director || getWorkTypeConfig(fr.workType).shortLabel}
-                        </p>
-                        <p className="text-[11px] font-semibold tabular-nums text-accent">
-                          {fr.completedCount}/{fr.totalCount} concluídas · {fr.completionPct}%
-                        </p>
-                      </div>
-                    </button>
-
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
-                      <div
-                        className="codice-goal-fill h-full bg-accent transition-all duration-300"
-                        style={{ width: `${fr.completionPct}%` }}
-                      />
-                    </div>
-
-                    {fr.nextMissingEntry && onCatalogFranchiseEntry ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const draft = buildMissingFranchiseEntryDraft(fr, fr.nextMissingEntry);
-                          if (draft) {
-                            onCatalogFranchiseEntry(draft);
-                            showToast({
-                              message: `"${fr.nextMissingEntry.title}" adicionado à fila Quero Ver.`,
-                              type: 'success',
-                            });
-                          }
-                        }}
-                        className="inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-[4px] border border-accent bg-accent/10 px-2.5 py-1.5 text-[11px] font-semibold text-accent transition-colors hover:bg-accent hover:text-accent-ink"
-                      >
-                        <Plus className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
-                        <span className="truncate">
-                          + Catalogar: {fr.nextMissingEntry.title}
-                        </span>
-                      </button>
-                    ) : (
-                      <span className="inline-flex min-h-[36px] items-center justify-center rounded-[4px] border border-line bg-app px-2.5 text-[11px] font-medium text-muted">
-                        Cronologia completa
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          <OracleWidget
-            items={items}
-            profile={profile}
-            geminiKey={geminiKey}
-            onSelectItem={onSelectItem}
-            onOpenGeminiSettings={onOpenGeminiSettings}
-          />
-
-          <RecommendationsSection
-            items={items}
-            profile={profile}
-            viewerId={viewerId}
-            onAddToWishlist={onAddToWishlist}
-            onSelectItem={onSelectItem}
-            onNavigateAdd={onNavigateAdd}
-          />
-
-          {/* Neste Dia (Cápsula do Tempo) */}
-          {timeCapsuleEntries.length > 0 && (
-            <section aria-label="Neste Dia na cinemateca" className="space-y-2.5">
-              <div className="flex items-center gap-2">
-                <CalendarClock className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                <div>
-                  <h2 className="text-sm font-semibold tracking-tight text-ink">
-                    Neste Dia
-                  </h2>
-                  <p className="text-[11px] text-subtle">
-                    Memórias e sessões da sua linha do tempo audiovisual
-                  </p>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {timeCapsuleEntries.map((entry) => (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {hero.state === 'queued' && onStartPickedWork ? (
                   <button
-                    key={entry.id}
                     type="button"
-                    disabled={!entry.work}
-                    onClick={() => entry.work && onSelectItem?.(entry.work)}
-                    className="flex min-h-[44px] flex-col justify-between gap-1.5 rounded-[6px] border border-line bg-card p-3 text-left transition-colors hover:border-accent/50 disabled:cursor-default"
+                    onClick={() => onStartPickedWork(hero.work)}
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] bg-accent px-4 py-2 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="rounded-[4px] border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold text-accent">
-                        {entry.badgeLabel}
-                      </span>
-                      <span className="text-[10px] tabular-nums text-subtle">
-                        {entry.dateIso}
-                      </span>
-                    </div>
-                    <p className="truncate text-xs font-semibold text-ink">
-                      {entry.title}
-                    </p>
-                    <p className="truncate text-[11px] text-muted">{entry.subtitle}</p>
-                    {entry.quoteText && (
-                      <p className="line-clamp-2 border-l-2 border-accent/50 pl-2 text-[11px] italic text-subtle">
-                        {entry.quoteText}
-                      </p>
-                    )}
+                    <Play className="h-4 w-4" strokeWidth={1.5} />
+                    <span>Começar</span>
                   </button>
-                ))}
-              </div>
-            </section>
-          )}
+                ) : hero.state === 'active' && heroAdvancePlan && onQuickAdvanceWork ? (
+                  <button
+                    type="button"
+                    disabled={advancingWorkId === hero.work.id}
+                    onClick={() => runProtectedAdvance(hero.work, { allowCompletion: true })}
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] bg-accent px-4 py-2 text-xs font-semibold tabular-nums text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-60"
+                  >
+                    <Plus className="h-4 w-4" strokeWidth={1.5} />
+                    <span>
+                      {heroAdvancePlan.actionLabel}
+                    </span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onSelectItem?.(hero.work)}
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] bg-accent px-4 py-2 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90"
+                  >
+                    <Play className="h-4 w-4" strokeWidth={1.5} />
+                    <span>{ui.home.resumeLabel}</span>
+                  </button>
+                )}
 
-          {/* Cartazes em Destaque */}
-          <section aria-label={ui.home.highlightsTitle} className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                <h2 className="text-sm font-semibold tracking-tight text-ink">
-                  {ui.home.highlightsTitle}
-                </h2>
+                <button
+                  type="button"
+                  onClick={() => onSelectItem?.(hero.work)}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-white/40 bg-black/50 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-black/75"
+                >
+                  <span>Ficha</span>
+                </button>
               </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Confirmação ao avançar +1 Ep alcançando/passando o total conhecido */}
+      {completionPrompt?.work && (
+        <div
+          role="dialog"
+          aria-modal="false"
+          aria-label="Confirmar conclusão da série"
+          className="rounded-[6px] border border-accent bg-card p-3.5 text-xs text-ink space-y-2.5"
+        >
+          <p className="font-semibold">
+            {completionPrompt.plan?.passesTotal
+              ? `Você já passou do total conhecido de episódios de "${completionPrompt.work.title}".`
+              : `Você chegou ao último episódio conhecido de "${completionPrompt.work.title}".`}
+          </p>
+          <p className="text-[11px] text-muted">
+            Deseja marcar esta obra como Concluída ou apenas avançar o episódio?
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => confirmEpisodeAdvance(true)}
+              className="inline-flex min-h-[44px] items-center rounded-[4px] bg-accent px-3.5 text-xs font-semibold text-accent-ink"
+            >
+              Concluir obra
+            </button>
+            <button
+              type="button"
+              onClick={() => confirmEpisodeAdvance(false)}
+              className="inline-flex min-h-[44px] items-center rounded-[4px] border border-line bg-app px-3.5 text-xs font-medium text-ink hover:border-accent"
+            >
+              Só avançar (+1 Ep)
+            </button>
+            <button
+              type="button"
+              onClick={() => setCompletionPrompt(null)}
+              className="inline-flex min-h-[44px] items-center rounded-[4px] border border-line bg-card px-3 text-xs text-muted hover:text-ink"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Pílulas de sessão: avatares circulares >= 44px (56px) com anel de progresso, máx 12 + "ver todas" */}
+      {sessionPills.pills.length > 0 && (
+        <section aria-label="Pílulas rápidas de sessão" className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-subtle">
+              Toque Rápido de Sessão
+            </h2>
+            {sessionPills.hasMore && onNavigateList && (
               <button
                 type="button"
                 onClick={onNavigateList}
-                className="inline-flex min-h-[44px] items-center gap-1 px-1 text-xs font-medium text-accent hover:opacity-80"
+                className="inline-flex min-h-[44px] items-center gap-1 px-2 text-xs font-semibold text-accent hover:opacity-80"
               >
-                {ui.home.seeAllLabel}
-                <ArrowRight className="h-4 w-4" strokeWidth={1.5} />
+                <span>Ver todas ({sessionPills.totalCount})</span>
+                <ArrowRight className="h-3.5 w-3.5" strokeWidth={1.5} />
               </button>
-            </div>
-
-            {highlightsItems.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-line bg-card px-5 py-7 text-center">
-                <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl border border-accent/30 bg-accent/10 text-accent">
-                  <Sparkles className="h-5 w-5" strokeWidth={1.5} />
-                </div>
-                <p className="mt-3 text-xs font-semibold text-ink">
-                  {ui.home.highlightsEmptyTitle}
-                </p>
-                <p className="mx-auto mt-1 max-w-xs text-[11px] text-muted">
-                  {ui.home.highlightsEmptyDescription}
-                </p>
-                <button
-                  type="button"
-                  onClick={onNavigateAdd}
-                  className="mt-4 inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90"
-                >
-                  <Plus className="h-4 w-4" strokeWidth={1.5} />
-                  {ui.home.emptyBacklogCta}
-                </button>
-              </div>
-            ) : (
-              <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 no-scrollbar">
-                {highlightsItems.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => onSelectItem(item)}
-                    className="group w-36 sm:w-40 shrink-0 snap-start rounded-2xl border border-line bg-card p-2.5 text-left transition-colors hover:border-accent/50"
-                  >
-                    <div className="relative">
-                      <CoverArt
-                        item={item}
-                        compact
-                        className="w-full rounded-[4px]"
-                      />
-                      {item.isPlatinum && (
-                        <span
-                          aria-label="Obra-Prima 5 Estrelas"
-                          className="absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-full border border-accent/50 bg-app/85 text-accent backdrop-blur-xs"
-                        >
-                          <Star className="h-3.5 w-3.5 fill-current" strokeWidth={1.5} />
-                        </span>
-                      )}
-                      {typeof item[cardFields.rating] === 'number' && (
-                        <span className="absolute right-2 top-2 rounded-md border border-line bg-app/85 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink backdrop-blur-xs">
-                          {item[cardFields.rating]}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="mt-2.5 space-y-1">
-                      {(() => {
-                        const hiTitles = getDisplayTitles(item, 'bilingual');
-                        return (
-                          <>
-                            <p className="truncate text-xs font-semibold text-ink transition-colors group-hover:text-accent">
-                              {hiTitles.primary}
-                            </p>
-                            {hiTitles.secondary && (
-                              <p
-                                className="truncate text-[10px] italic"
-                                style={{ color: 'var(--text-secondary)' }}
-                              >
-                                {hiTitles.secondary}
-                              </p>
-                            )}
-                          </>
-                        );
-                      })()}
-                      <p className="truncate text-[11px] text-muted">
-                        {item.director || item.studio || getWorkTypeConfig(item.workType).shortLabel}
-                      </p>
-                      <div className="pt-0.5">
-                        <StatusBadge statusId={item.status} size="xs" />
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
             )}
-          </section>
-        </>
+          </div>
+          <div className="flex gap-3 overflow-x-auto pb-1 no-scrollbar">
+            {sessionPills.pills.map((pill) => (
+              <SessionCircularPill
+                key={pill.id}
+                pill={pill}
+                disabled={advancingWorkId === pill.id}
+                onTrigger={(work) => runProtectedAdvance(work, { allowCompletion: true })}
+              />
+            ))}
+          </div>
+        </section>
       )}
 
-      {backlogItems.length === 0 && (
+      {/* Trilho 1: Continuar Assistindo */}
+      {backlogItems.length > 0 && (
+        <HomeRail
+          title="Continuar Assistindo"
+          icon={Play}
+          count={localRails.continueWatching.length}
+          isEmpty={localRails.continueWatching.length === 0}
+          hideWhenEmpty
+        >
+          {localRails.continueWatching.map((entry) => {
+            const { work, progressPct, metricLabel, confirmedRating } = entry;
+            const titles = getDisplayTitles(work, 'bilingual');
+
+            return (
+              <button
+                key={entry.id}
+                type="button"
+                onClick={() => onSelectItem?.(work)}
+                className="group flex w-36 sm:w-40 shrink-0 snap-start flex-col justify-between rounded-[6px] border border-line bg-card p-2 text-left transition-colors hover:border-accent/50"
+              >
+                <div className="relative aspect-[2/3] w-full overflow-hidden rounded-[4px]">
+                  <CoverArt
+                    item={work}
+                    compact
+                    className="h-full w-full object-cover"
+                  />
+                  {confirmedRating !== null && (
+                    <span className="absolute right-1.5 top-1.5 rounded-[4px] border border-line bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white">
+                      {confirmedRating}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2 w-full space-y-1">
+                  <p className="truncate text-xs font-semibold text-ink group-hover:text-accent">
+                    {titles.primary}
+                  </p>
+                  <div className="flex items-center justify-between gap-1 text-[10px] tabular-nums text-muted">
+                    <span className="truncate">{metricLabel}</span>
+                    <span className="font-semibold text-accent">{progressPct}%</span>
+                  </div>
+                  <div className="h-[3px] w-full overflow-hidden rounded-[2px] bg-line">
+                    <div
+                      className="h-full transition-all duration-150"
+                      style={{
+                        width: `${Math.min(100, progressPct)}%`,
+                        backgroundColor: 'var(--accent-color)',
+                      }}
+                    />
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </HomeRail>
+      )}
+
+      {/* Trilho 2: Franquias & Sagas (oculto sem franquia >= 2 obras) */}
+      {backlogItems.length > 0 && (
+        <HomeRail
+          title="Franquias & Sagas"
+          icon={GitBranch}
+          count={localRails.franchises.length}
+          isEmpty={localRails.franchises.length === 0}
+          hideWhenEmpty
+        >
+          {localRails.franchises.map((fr) => (
+            <div
+              key={fr.id}
+              className="flex w-64 shrink-0 snap-start flex-col justify-between gap-2.5 rounded-[6px] border border-line bg-card p-3"
+            >
+              <button
+                type="button"
+                onClick={() => onSelectItem?.(fr.representativeItem)}
+                className="flex items-start gap-2.5 text-left"
+              >
+                <div className="aspect-[2/3] w-14 shrink-0 overflow-hidden rounded-[4px]">
+                  <CoverArt
+                    item={fr.representativeItem}
+                    compact
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <p className="truncate text-xs font-semibold text-ink">{fr.name}</p>
+                  <p className="truncate text-[10px] text-muted">
+                    {fr.director || getWorkTypeConfig(fr.workType).shortLabel}
+                  </p>
+                  <p className="text-[11px] font-semibold tabular-nums text-accent">
+                    {fr.completedCount}/{fr.totalCount} concluídas · {fr.completionPct}%
+                  </p>
+                  {fr.averageRating !== null && (
+                    <p className="text-[10px] font-medium tabular-nums text-ink">
+                      Média da saga: {fr.averageRating}/100
+                    </p>
+                  )}
+                </div>
+              </button>
+
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+                <div
+                  className="h-full bg-accent transition-all duration-300"
+                  style={{ width: `${fr.completionPct}%` }}
+                />
+              </div>
+
+              {fr.nextMissingEntry && onCatalogFranchiseEntry ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const draft = buildMissingFranchiseEntryDraft(fr, fr.nextMissingEntry);
+                    if (draft) {
+                      onCatalogFranchiseEntry(draft);
+                      showToast({
+                        message: `"${fr.nextMissingEntry.title}" adicionado à fila Quero Ver.`,
+                        type: 'success',
+                      });
+                    }
+                  }}
+                  className="inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-[4px] border border-accent bg-accent/10 px-2.5 py-1.5 text-[11px] font-semibold text-accent transition-colors hover:bg-accent hover:text-accent-ink"
+                >
+                  <Plus className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
+                  <span className="truncate">+ Catalogar: {fr.nextMissingEntry.title}</span>
+                </button>
+              ) : (
+                <span className="inline-flex min-h-[44px] items-center justify-center rounded-[4px] border border-line bg-app px-2.5 text-[11px] font-medium text-muted">
+                  Cronologia completa
+                </span>
+              )}
+            </div>
+          ))}
+        </HomeRail>
+      )}
+
+      {/* Trilho 3: Sugestões do DNA / Quero Ver + botão "O que assistir hoje?" (Roleta) + Curador opcional */}
+      {backlogItems.length > 0 && (
         <RecommendationsSection
           items={items}
           profile={profile}
-          viewerId={viewerId}
+          tmdbKey={tmdbKey}
+          geminiKey={geminiKey}
           onAddToWishlist={onAddToWishlist}
           onSelectItem={onSelectItem}
           onNavigateAdd={onNavigateAdd}
+          onOpenRoulette={() => setRouletteOpen(true)}
+          onOpenGeminiSettings={onOpenGeminiSettings}
         />
+      )}
+
+      {/* Trilho 4: Cápsula do Tempo & Destaques (oculto se vazio) */}
+      {backlogItems.length > 0 && (
+        <HomeRail
+          title="Cápsula do Tempo & Destaques"
+          icon={Sparkles}
+          count={localRails.highlights.length}
+          isEmpty={localRails.highlights.length === 0}
+          hideWhenEmpty
+          headerAction={
+            onNavigateList && (
+              <button
+                type="button"
+                onClick={onNavigateList}
+                className="inline-flex min-h-[44px] items-center gap-1 px-2 text-xs font-medium text-accent hover:opacity-80"
+              >
+                <span>{ui.home.seeAllLabel}</span>
+                <ArrowRight className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+            )
+          }
+        >
+          {localRails.highlights.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              disabled={!entry.work}
+              onClick={() => entry.work && onSelectItem?.(entry.work)}
+              className="group flex w-40 sm:w-44 shrink-0 snap-start flex-col justify-between gap-2 rounded-[6px] border border-line bg-card p-2.5 text-left transition-colors hover:border-accent/50 disabled:cursor-default"
+            >
+              {entry.work && (
+                <div className="relative aspect-[2/3] w-full overflow-hidden rounded-[4px]">
+                  <CoverArt
+                    item={entry.work}
+                    compact
+                    className="h-full w-full object-cover"
+                  />
+                  {entry.work.isPlatinum && (
+                    <span
+                      aria-label="Obra-Prima"
+                      className="absolute left-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-accent/50 bg-black/80 text-accent"
+                    >
+                      <Star className="h-3.5 w-3.5 fill-current" strokeWidth={1.5} />
+                    </span>
+                  )}
+                  {entry.confirmedRating !== null && (
+                    <span className="absolute right-1.5 top-1.5 rounded-[4px] border border-line bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white">
+                      {entry.confirmedRating}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className="w-full space-y-1">
+                <div className="flex items-center justify-between gap-1 text-[10px] tabular-nums">
+                  <span className="inline-flex items-center gap-1 font-semibold text-accent">
+                    <CalendarClock className="h-3 w-3 shrink-0" strokeWidth={1.5} />
+                    <span className="truncate">{entry.badgeLabel}</span>
+                  </span>
+                  {entry.dateIso && <span className="text-subtle">{entry.dateIso}</span>}
+                </div>
+                <p className="truncate text-xs font-semibold text-ink group-hover:text-accent">
+                  {entry.title}
+                </p>
+                {entry.subtitle && (
+                  <p className="truncate text-[10px] text-muted">{entry.subtitle}</p>
+                )}
+                {entry.quoteText && (
+                  <p className="line-clamp-2 border-l-2 border-accent/50 pl-2 text-[10px] italic text-subtle">
+                    “{entry.quoteText}”
+                  </p>
+                )}
+              </div>
+            </button>
+          ))}
+        </HomeRail>
       )}
 
       <footer className="pt-2 text-center">
         <button
           type="button"
           onClick={() => setReleaseModalOpen(true)}
-          className="min-h-[36px] px-2 text-[11px] tabular-nums underline-offset-2 hover:underline"
+          className="inline-flex min-h-[44px] items-center justify-center px-3 text-[11px] tabular-nums underline-offset-2 hover:underline"
           style={{ color: 'var(--text-secondary)' }}
         >
           {domainConfig.appName} · {CODICE_RELEASE.label}

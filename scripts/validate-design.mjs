@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { findForbiddenEmojisOrSymbols } from '../src/lib/emojiCheck.js';
 
 const ROOT_DIR = process.cwd();
 
@@ -38,7 +39,6 @@ const files = await walkSrc(path.join(ROOT_DIR, 'src'));
 const errors = [];
 const warnings = [];
 
-const emojiRegex = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/u;
 const secretRegex = /service_role|sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}/;
 const aiGradientRegex =
   /(?:from-(?:purple|violet|fuchsia|pink)-\d+.*to-(?:pink|rose|blue|cyan|indigo)-\d+|bg-clip-text\s+text-transparent)/;
@@ -49,8 +49,11 @@ for (const file of files) {
   const content = await fs.readFile(file, 'utf8');
   const lines = content.split('\n');
 
-  if (emojiRegex.test(content)) {
-    errors.push(`${rel}: contém caractere emoji proibido em src/`);
+  const violations = findForbiddenEmojisOrSymbols(content);
+  if (violations.length > 0) {
+    errors.push(
+      `${rel}: contém caractere emoji ou símbolo de texto proibido (R1: ${violations.map((v) => v.char).join(', ')})`
+    );
   }
 
   if (secretRegex.test(content)) {

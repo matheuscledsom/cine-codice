@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { ReadingHeatmapWidget } from '../components/ReadingHeatmapWidget';
 import { VectorIcon } from '../components/VectorIcon';
 import { domainConfig, getStatusList } from '../config/domainConfig';
+import { isConfirmedUserRating } from '../lib/ratings';
 import {
   getCompletionPace,
   getWatchedEpisodesCount,
@@ -62,9 +63,7 @@ export function StatsScreen({
 
     const maxHoursBar = Math.max(watchedHours, queuedHours, 1);
 
-    const rated = backlogItems.filter(
-      (item) => typeof item[cardFields.rating] === 'number'
-    );
+    const rated = backlogItems.filter((item) => isConfirmedUserRating(item));
     const avgRating = rated.length
       ? Math.round(
           rated.reduce((sum, item) => sum + item[cardFields.rating], 0) / rated.length

@@ -1,3 +1,42 @@
+import {
+  buildAniListRating,
+  buildMalRating,
+  buildTmdbRating,
+  createEmptyExternalRatings,
+  mergeExternalRatings,
+  normalizeExternalRatings,
+  parseOmdbRatings,
+} from '../lib/ratings.js';
+import {
+  applyCanonicalIdsToWork,
+  mergeIdsBlocks,
+  normalizeIdsBlock,
+  sanitizeImdbId,
+} from '../lib/idBridge.js';
+import {
+  apiRequest,
+  ApiQuotaError,
+  getOmdbDailyUsage,
+  maskSecretsInText,
+  runBoundedConcurrency,
+  stripApiKeysFromUrl,
+} from '../api/httpClient.js';
+import {
+  API_TIMEOUT_MS,
+  BACKDROP_RETRY_COOLDOWN_MS,
+  CACHE_STORES,
+  CACHE_TTL_MS,
+  OMDB_KEY_STORAGE,
+} from '../api/limits.js';
+import {
+  clearMemoryApiCacheForTests,
+  getCachedEntry,
+  getEpisodesTtlMs,
+  setCachedEntry,
+} from '../api/cacheDb.js';
+import { fetchAniListBatchByIds } from '../api/anilistBatch.js';
+import { migrateFavoriteGenresToObjects } from '../lib/genreCatalog.js';
+import { normalizeViewerFocusList } from '../lib/migrations.js';
 import { catalogItems } from '../data/mockData.js';
 import {
   mapCategoriesToGenreAndSubgenres,
@@ -8,21 +47,24 @@ const ANILIST_GRAPHQL_URL = 'https://graphql.anilist.co';
 const JIKAN_ANIME_URL = 'https://api.jikan.moe/v4/anime';
 const TVMAZE_SEARCH_URL = 'https://api.tvmaze.com/search/shows';
 const TVMAZE_SHOW_URL = 'https://api.tvmaze.com/shows';
+const TVMAZE_LOOKUP_URL = 'https://api.tvmaze.com/lookup/shows';
 const TMDB_API_BASE = 'https://api.themoviedb.org/3';
+const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
+const OMDB_API_BASE = 'https://www.omdbapi.com';
 const IMDB_SUGGESTION_BASE = 'https://v3.sg.media-imdb.com/suggestion';
 const WIKIDATA_API_URL = 'https://www.wikidata.org/w/api.php';
 const INTERNET_ARCHIVE_SEARCH_URL = 'https://archive.org/advancedsearch.php';
 
 export const TMDB_KEY_STORAGE = 'cine_codice_tmdb_key_v1';
+export { API_TIMEOUT_MS, OMDB_KEY_STORAGE };
 export const CINEMA_SOURCES_STORAGE_KEY = 'cine_codice_active_sources_v1';
 const SEARCH_CACHE_KEY = 'cine_codice_search_cache_v1';
 const IDB_SEARCH_CACHE_DB = 'cine_codice_search_cache_idb_v1';
 const IDB_SEARCH_CACHE_STORE = 'queries';
 
-const MEMORY_CACHE_TTL_MS = 15 * 60 * 1000;
-const IDB_SEARCH_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MEMORY_CACHE_TTL_MS = CACHE_TTL_MS.search;
+const IDB_SEARCH_CACHE_TTL_MS = CACHE_TTL_MS.search;
 const CACHE_MAX_ENTRIES = 80;
-export const API_TIMEOUT_MS = 8000;
 const MAX_RESULTS_PER_SOURCE = 10;
 
 export const CINEMA_API_SOURCES = [
@@ -120,6 +162,7 @@ export function sanitizeApiKey(rawKey) {
 
 export function getEnvTmdbApiKey() {
   try {
+    if (!import.meta?.env?.DEV) return '';
     return sanitizeApiKey(import.meta?.env?.VITE_TMDB_API_KEY || '');
   } catch {
     return '';
@@ -133,7 +176,7 @@ export function loadTmdbApiKey() {
       if (stored) return stored;
     }
   } catch {
-    // Fallback para env
+    // Fallback para env em DEV
   }
   return getEnvTmdbApiKey();
 }
@@ -146,6 +189,42 @@ export function saveTmdbApiKey(rawKey) {
       localStorage.setItem(TMDB_KEY_STORAGE, clean);
     } else {
       localStorage.removeItem(TMDB_KEY_STORAGE);
+    }
+  } catch {
+    // Ignora falha de quota
+  }
+  return clean;
+}
+
+export function getEnvOmdbApiKey() {
+  try {
+    if (!import.meta?.env?.DEV) return '';
+    return sanitizeApiKey(import.meta?.env?.VITE_OMDB_API_KEY || '');
+  } catch {
+    return '';
+  }
+}
+
+export function loadOmdbApiKey() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const stored = sanitizeApiKey(localStorage.getItem(OMDB_KEY_STORAGE));
+      if (stored) return stored;
+    }
+  } catch {
+    // Fallback para env em DEV
+  }
+  return getEnvOmdbApiKey();
+}
+
+export function saveOmdbApiKey(rawKey) {
+  const clean = sanitizeApiKey(rawKey);
+  try {
+    if (typeof localStorage === 'undefined') return clean;
+    if (clean) {
+      localStorage.setItem(OMDB_KEY_STORAGE, clean);
+    } else {
+      localStorage.removeItem(OMDB_KEY_STORAGE);
     }
   } catch {
     // Ignora falha de quota
@@ -207,6 +286,7 @@ const memoryCache = new Map();
 
 export function clearCinemaSearchCache() {
   memoryCache.clear();
+  clearMemoryApiCacheForTests();
   try {
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(SEARCH_CACHE_KEY);
@@ -266,18 +346,25 @@ function setCachedCinemaSearch(query, filter, sources, payload) {
 }
 
 function openSearchCacheIdb() {
-  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function') {
+    return Promise.resolve(null);
+  }
   return new Promise((resolve) => {
     try {
       const req = indexedDB.open(IDB_SEARCH_CACHE_DB, 1);
       req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(IDB_SEARCH_CACHE_STORE)) {
-          db.createObjectStore(IDB_SEARCH_CACHE_STORE, { keyPath: 'key' });
+        try {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_SEARCH_CACHE_STORE)) {
+            db.createObjectStore(IDB_SEARCH_CACHE_STORE, { keyPath: 'key' });
+          }
+        } catch {
+          // Modo privado pode bloquear criação de schema
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
     } catch {
       resolve(null);
     }
@@ -285,15 +372,16 @@ function openSearchCacheIdb() {
 }
 
 export async function getIdbCachedSearch(key) {
+  const safeKey = stripApiKeysFromUrl(key);
   const db = await openSearchCacheIdb();
   if (!db) return null;
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(IDB_SEARCH_CACHE_STORE, 'readonly');
-      const req = tx.objectStore(IDB_SEARCH_CACHE_STORE).get(key);
+      const req = tx.objectStore(IDB_SEARCH_CACHE_STORE).get(safeKey);
       req.onsuccess = () => {
         const rec = req.result;
-        db.close();
+        try { db.close(); } catch { /* silencioso */ }
         if (!rec || Date.now() - Number(rec.timestamp || 0) >= IDB_SEARCH_CACHE_TTL_MS) {
           resolve(null);
           return;
@@ -301,58 +389,88 @@ export async function getIdbCachedSearch(key) {
         resolve(rec);
       };
       req.onerror = () => {
-        db.close();
+        try { db.close(); } catch { /* silencioso */ }
+        resolve(null);
+      };
+      tx.onabort = () => {
+        try { db.close(); } catch { /* silencioso */ }
         resolve(null);
       };
     } catch {
+      try { db.close(); } catch { /* silencioso */ }
       resolve(null);
     }
   });
 }
 
 export async function setIdbCachedSearch(key, payload) {
+  const safeKey = stripApiKeysFromUrl(key);
   const db = await openSearchCacheIdb();
   if (!db) return;
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(IDB_SEARCH_CACHE_STORE, 'readwrite');
       tx.objectStore(IDB_SEARCH_CACHE_STORE).put({
-        key,
+        key: safeKey,
         ...payload,
         timestamp: Date.now(),
       });
       tx.oncomplete = () => {
-        db.close();
+        try { db.close(); } catch { /* silencioso */ }
         resolve();
       };
       tx.onerror = () => {
-        db.close();
+        try { db.close(); } catch { /* silencioso */ }
+        resolve();
+      };
+      tx.onabort = () => {
+        try { db.close(); } catch { /* silencioso */ }
         resolve();
       };
     } catch {
+      try { db.close(); } catch { /* silencioso */ }
       resolve();
     }
   });
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS, fetchImpl = fetch) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const externalSignal = options.signal;
-  const onAbort = () => controller.abort();
-  if (externalSignal) {
-    if (externalSignal.aborted) controller.abort();
-    else externalSignal.addEventListener('abort', onAbort, { once: true });
-  }
-  try {
-    return await fetchImpl(url, {
-      ...options,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-    if (externalSignal) externalSignal.removeEventListener('abort', onAbort);
-  }
+async function fetchWithTimeout(
+  url,
+  options = {},
+  timeoutMs = API_TIMEOUT_MS,
+  fetchImpl = fetch,
+  provider = 'generic'
+) {
+  const {
+    method = 'GET',
+    headers = undefined,
+    body = undefined,
+    signal = undefined,
+    dedup = true,
+    dedupKey = undefined,
+    mode = 'auto',
+    maxRetries = undefined,
+    retryBaseDelayMs = undefined,
+    nowFn = undefined,
+    sleepFn = undefined,
+  } = options || {};
+
+  return apiRequest(url, {
+    provider,
+    method,
+    headers,
+    body,
+    signal,
+    timeoutMs,
+    fetchImpl,
+    dedup,
+    dedupKey,
+    mode,
+    ...(maxRetries !== undefined ? { maxRetries } : {}),
+    ...(retryBaseDelayMs !== undefined ? { retryBaseDelayMs } : {}),
+    ...(nowFn ? { nowFn } : {}),
+    ...(sleepFn ? { sleepFn } : {}),
+  });
 }
 
 function parseJikanDurationMinutes(rawDuration) {
@@ -407,8 +525,14 @@ export function normalizeAniListMedia(media) {
   };
   const animeFormat = formatMap[media.format] || 'TV';
   const coverUrl = media.coverImage?.extraLarge || media.coverImage?.large || media.coverImage?.medium || null;
+  const backdropUrl = media.bannerImage || null;
+  const anilistRating = buildAniListRating(media.averageScore);
+  const externalRatings = {
+    ...createEmptyExternalRatings(),
+    anilist: anilistRating,
+  };
 
-  return {
+  return applyCanonicalIdsToWork({
     id: `anilist-${media.id}`,
     anilistId: media.id,
     malId: media.idMal || null,
@@ -418,6 +542,8 @@ export function normalizeAniListMedia(media) {
     studio,
     workType: 'anime',
     animeFormat,
+    animeStatus: media.status || null,
+    nextAiringEpisode: media.nextAiringEpisode || null,
     releaseYear: year,
     totalSeasons: 1,
     totalEpisodes: Number(media.episodes) > 0 ? Number(media.episodes) : null,
@@ -430,13 +556,15 @@ export function normalizeAniListMedia(media) {
     genres,
     synopsis: stripHtmlTags(media.description || ''),
     coverUrl,
+    backdropUrl,
     coverCandidates: [coverUrl].filter(Boolean),
     franchiseRelations: relations,
     externalScore: media.averageScore || null,
+    externalRatings,
     sourceBadge: 'AniList',
     mergedSources: ['AniList'],
     monogram: buildMonogram(title),
-  };
+  });
 }
 
 async function searchAniList(query, { signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}) {
@@ -448,15 +576,18 @@ async function searchAniList(query, { signal, fetchImpl = fetch, timeoutMs = API
           idMal
           title { romaji english native }
           format
+          status
           episodes
           duration
           seasonYear
           startDate { year }
           averageScore
           genres
+          bannerImage
           description(asHtml: false)
           coverImage { extraLarge large medium }
           studios(isMain: true) { nodes { name } }
+          nextAiringEpisode { episode airingAt timeUntilAiring }
           relations {
             edges {
               relationType
@@ -465,6 +596,7 @@ async function searchAniList(query, { signal, fetchImpl = fetch, timeoutMs = API
                 idMal
                 type
                 format
+                status
                 episodes
                 seasonYear
                 title { romaji english native }
@@ -486,7 +618,8 @@ async function searchAniList(query, { signal, fetchImpl = fetch, timeoutMs = API
       signal,
     },
     timeoutMs,
-    fetchImpl
+    fetchImpl,
+    'anilist'
   );
 
   if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
@@ -497,7 +630,7 @@ async function searchAniList(query, { signal, fetchImpl = fetch, timeoutMs = API
 
 async function searchJikan(query, { signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}) {
   const url = `${JIKAN_ANIME_URL}?q=${encodeURIComponent(query)}&limit=${MAX_RESULTS_PER_SOURCE}&sfw=true`;
-  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl);
+  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl, 'jikan');
   if (!res.ok) throw new Error(`Jikan HTTP ${res.status}`);
   const json = await res.json();
   const list = Array.isArray(json?.data) ? json.data : [];
@@ -521,8 +654,9 @@ async function searchJikan(query, { signal, fetchImpl = fetch, timeoutMs = API_T
         null;
       const durMin = parseJikanDurationMinutes(entry.duration);
       const animeFormat = entry.type === 'Movie' ? 'Filme' : entry.type || 'TV';
+      const malRating = buildMalRating(entry.score);
 
-      return {
+      return applyCanonicalIdsToWork({
         id: `mal-${entry.mal_id}`,
         malId: entry.mal_id,
         title,
@@ -541,17 +675,21 @@ async function searchJikan(query, { signal, fetchImpl = fetch, timeoutMs = API_T
         synopsis: stripHtmlTags(entry.synopsis || ''),
         coverUrl,
         coverCandidates: [coverUrl].filter(Boolean),
+        externalRatings: {
+          ...createEmptyExternalRatings(),
+          mal: malRating,
+        },
         sourceBadge: 'MAL',
         mergedSources: ['MAL'],
         monogram: buildMonogram(title),
-      };
+      });
     })
     .filter(Boolean);
 }
 
 async function searchTvMaze(query, { signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}) {
   const url = `${TVMAZE_SEARCH_URL}?q=${encodeURIComponent(query)}`;
-  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl);
+  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl, 'tvmaze');
   if (!res.ok) throw new Error(`TVmaze HTTP ${res.status}`);
   const list = await res.json();
   if (!Array.isArray(list)) return [];
@@ -569,7 +707,7 @@ async function searchTvMaze(query, { signal, fetchImpl = fetch, timeoutMs = API_
         String(show.type || '').toLowerCase() === 'animation' &&
         String(show.language || '').toLowerCase() === 'japanese';
 
-      return {
+      return applyCanonicalIdsToWork({
         id: `tvmaze-${show.id}`,
         tvmazeId: show.id,
         imdbId: show.externals?.imdb || '',
@@ -591,24 +729,46 @@ async function searchTvMaze(query, { signal, fetchImpl = fetch, timeoutMs = API_
         sourceBadge: 'TVmaze',
         mergedSources: ['TVmaze'],
         monogram: buildMonogram(show.name),
-      };
+      });
     })
     .filter(Boolean);
 }
 
 export async function fetchTvMazeShowDetails(
   tvmazeId,
-  { signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}
+  {
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    showStatus = '',
+    allowStaleOffline = false,
+  } = {}
 ) {
   if (!tvmazeId) return null;
+  const cacheKey = `tvmaze:episodes:${tvmazeId}`;
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, { allowStaleOffline });
+  if (cached.hit && !cached.stale) {
+    return cached.data;
+  }
+
   try {
-    const [seasonsRes, episodesRes] = await Promise.all([
-      fetchWithTimeout(`${TVMAZE_SHOW_URL}/${tvmazeId}/seasons`, { signal }, timeoutMs, fetchImpl),
-      fetchWithTimeout(`${TVMAZE_SHOW_URL}/${tvmazeId}/episodes`, { signal }, timeoutMs, fetchImpl),
-    ]);
+    const [seasonsRes, episodesRes, showRes] = await runBoundedConcurrency(
+      [
+        () => fetchWithTimeout(`${TVMAZE_SHOW_URL}/${tvmazeId}/seasons`, { signal }, timeoutMs, fetchImpl, 'tvmaze'),
+        () => fetchWithTimeout(`${TVMAZE_SHOW_URL}/${tvmazeId}/episodes`, { signal }, timeoutMs, fetchImpl, 'tvmaze'),
+        () =>
+          fetchWithTimeout(`${TVMAZE_SHOW_URL}/${tvmazeId}?embed=nextepisode`, { signal }, timeoutMs, fetchImpl, 'tvmaze').catch(
+            () => null
+          ),
+      ],
+      2
+    );
     const seasons = seasonsRes.ok ? await seasonsRes.json() : [];
     const episodes = episodesRes.ok ? await episodesRes.json() : [];
-    if (!Array.isArray(episodes) || episodes.length === 0) return null;
+    const showData = showRes?.ok ? await showRes.json() : null;
+    if (!Array.isArray(episodes) || episodes.length === 0) {
+      return cached.hit ? { ...cached.data, isOfflineCache: true, cacheDateLabel: cached.cacheDateLabel } : null;
+    }
 
     const bySeason = new Map();
     const episodeList = [];
@@ -629,6 +789,15 @@ export async function fetchTvMazeShowDetails(
         name: ep.name || `Episódio ${ep.number || ''}`,
         runtime,
         airdate: ep.airdate || '',
+        airstamp: ep.airstamp || '',
+        imageUrl: ep.image?.medium || ep.image?.original || null,
+        summary: stripHtmlTags(ep.summary || ''),
+        rating:
+          ep.rating?.average !== null &&
+          ep.rating?.average !== undefined &&
+          Number(ep.rating.average) > 0
+            ? Number(ep.rating.average)
+            : null,
       });
     });
 
@@ -642,14 +811,37 @@ export async function fetchTvMazeShowDetails(
       episodesPerSeason.push(bySeason.get(s) || 1);
     }
 
-    return {
+    const nextEpRaw = showData?._embedded?.nextepisode || null;
+    const nextEpisode = nextEpRaw
+      ? {
+          season: Number(nextEpRaw.season) || null,
+          number: Number(nextEpRaw.number) || null,
+          name: nextEpRaw.name || null,
+          airdate: nextEpRaw.airdate || null,
+          airstamp: nextEpRaw.airstamp || null,
+        }
+      : null;
+
+    const resolvedStatus = showData?.status || showStatus || '';
+    const result = {
       totalSeasons: maxSeason,
       totalEpisodes: episodes.length,
       episodesPerSeason,
       episodeList,
       episodeDurationMinutes: durationCount > 0 ? Math.round(durationSum / durationCount) : null,
+      showStatus: resolvedStatus || null,
+      nextEpisode,
     };
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, result, {
+      ttlMs: getEpisodesTtlMs(resolvedStatus),
+    });
+
+    return result;
   } catch {
+    if (cached.hit) {
+      return { ...cached.data, isOfflineCache: true, cacheDateLabel: cached.cacheDateLabel };
+    }
     return null;
   }
 }
@@ -669,7 +861,7 @@ async function searchTmdb(
         : `${TMDB_API_BASE}/search/multi`;
 
   const url = `${endpoint}?api_key=${encodeURIComponent(key)}&language=pt-BR&include_adult=false&query=${encodeURIComponent(query)}`;
-  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl);
+  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl, 'tmdb');
   if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
   const json = await res.json();
   const list = Array.isArray(json?.results) ? json.results : [];
@@ -687,17 +879,20 @@ async function searchTmdb(
       const originalTitle = r.original_title || r.original_name || title;
       const dateStr = r.release_date || r.first_air_date || '';
       const year = dateStr ? Number(String(dateStr).slice(0, 4)) : null;
-      const isAnime =
-        Array.isArray(r.genre_ids) &&
-        r.genre_ids.includes(16) &&
-        (r.original_language === 'ja' || (Array.isArray(r.origin_country) && r.origin_country.includes('JP')));
+      const hasAnimation = Array.isArray(r.genre_ids) && r.genre_ids.includes(16);
+      const isJp =
+        r.original_language === 'ja' ||
+        (Array.isArray(r.origin_country) && r.origin_country.includes('JP'));
+      const isAnime = hasAnimation && isJp;
       const workType = isAnime ? 'anime' : mType === 'tv' ? 'series' : 'movie';
       const rawGenres = (Array.isArray(r.genre_ids) ? r.genre_ids : [])
         .map((gid) => TMDB_GENRE_MAP[gid])
         .filter(Boolean);
       const coverUrl = r.poster_path ? `https://image.tmdb.org/t/p/w500${r.poster_path}` : null;
+      const backdropUrl = r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null;
+      const tmdbRating = buildTmdbRating(r.vote_average, r.vote_count);
 
-      return {
+      return applyCanonicalIdsToWork({
         id: `tmdb-${mType}-${r.id}`,
         tmdbId: r.id,
         tmdbMediaType: mType,
@@ -706,31 +901,84 @@ async function searchTmdb(
         workType,
         releaseYear: Number.isFinite(year) ? year : null,
         genres: mapCategoriesToGenreAndSubgenres(rawGenres, { workType }).genres,
+        genreIds: Array.isArray(r.genre_ids) ? r.genre_ids : [],
+        hasTmdbAnimationGenre: hasAnimation,
+        originCountry: Array.isArray(r.origin_country) ? r.origin_country : isJp ? ['JP'] : [],
         language: normalizeLanguageLabel(r.original_language || ''),
         synopsis: String(r.overview || '').trim(),
         coverUrl,
+        backdropUrl,
         coverCandidates: [coverUrl].filter(Boolean),
         externalScore: r.vote_average ? Math.round(r.vote_average * 10) : null,
+        externalRatings: {
+          ...createEmptyExternalRatings(),
+          tmdb: tmdbRating,
+        },
         sourceBadge: 'TMDB',
         mergedSources: ['TMDB'],
         monogram: buildMonogram(title),
-      };
+      });
     })
     .filter(Boolean);
 }
 
-export async function fetchTmdbDetails(
+async function fetchTmdbDetailsInternal(
   tmdbId,
   mediaType = 'movie',
-  { apiKey = '', signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}
+  {
+    apiKey = '',
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    allowStaleOffline = true,
+    forceRefresh = false,
+    nowFn = Date.now,
+  } = {}
 ) {
-  const key = sanitizeApiKey(apiKey) || loadTmdbApiKey();
-  if (!key || !tmdbId) return null;
+  if (!tmdbId) return { ok: false, status: 'MISSING_ID', data: null };
   const type = mediaType === 'tv' ? 'tv' : 'movie';
+  const cacheKey = `tmdb:${type}:${tmdbId}`;
+  const now = nowFn();
+
+  const cached = forceRefresh
+    ? { hit: false, stale: false, data: null }
+    : await getCachedEntry(CACHE_STORES.ratings, cacheKey, {
+        now,
+        allowStaleOffline,
+      });
+
+  if (cached.hit && !cached.stale && cached.data) {
+    return {
+      ok: true,
+      status: 'CACHE_HIT',
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+      data: cached.data,
+    };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
+  if (!key) {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ok: true,
+        status: 'OFFLINE_CACHE',
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        data: cached.data,
+      };
+    }
+    return { ok: false, status: 'MISSING_KEY', data: null };
+  }
+
   try {
-    const url = `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}?api_key=${encodeURIComponent(key)}&language=pt-BR&append_to_response=credits`;
-    const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl);
-    if (!res.ok) return null;
+    const url = `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}?api_key=${encodeURIComponent(key)}&language=pt-BR&append_to_response=credits,external_ids`;
+    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    if (!res.ok) {
+      throw new Error(`TMDB HTTP ${res.status}`);
+    }
     const d = await res.json();
 
     const directors = Array.isArray(d.credits?.crew)
@@ -749,40 +997,114 @@ export async function fetchTmdbDetails(
       ? d.production_companies.slice(0, 2).map((p) => p.name).join(', ')
       : '';
 
+    const imdbId = sanitizeImdbId(d.external_ids?.imdb_id || d.imdb_id) || '';
+    const backdropUrl = d.backdrop_path ? `${TMDB_BACKDROP_BASE}${d.backdrop_path}` : null;
+    const fetchedAt = nowFn();
+    const tmdbRating = buildTmdbRating(d.vote_average, d.vote_count, fetchedAt);
+    const ids = normalizeIdsBlock({
+      tmdbId: d.id || tmdbId,
+      imdbId,
+    });
+    const externalRatings = {
+      ...createEmptyExternalRatings(),
+      tmdb: tmdbRating,
+    };
+
+    let details;
     if (type === 'movie') {
       const runtime = Number(d.runtime) || null;
-      return {
+      const col = d.belongs_to_collection || null;
+      details = {
+        ids,
+        tmdbId: ids.tmdb,
+        imdbId: ids.imdb || '',
+        backdropUrl,
         durationMinutes: runtime,
         totalSeconds: runtime ? runtime * 60 : null,
         director: directors.join(', ') || studios,
         studio: studios,
         cast,
-        franchiseName: d.belongs_to_collection?.name?.replace(/\s*Collection$/i, '').trim() || '',
+        belongsToCollection: col?.id
+          ? {
+              id: Number(col.id),
+              name: String(col.name || '').trim(),
+              posterPath: col.poster_path || null,
+              backdropPath: col.backdrop_path || null,
+            }
+          : null,
+        franchiseName: col?.name?.replace(/\s*Collection$/i, '').trim() || '',
+        tmdbStatus: d.status || null,
+        externalRatings,
+        synopsis: String(d.overview || '').trim(),
+      };
+    } else {
+      const epRun = Array.isArray(d.episode_run_time) && d.episode_run_time[0]
+        ? Number(d.episode_run_time[0])
+        : null;
+      const validSeasons = Array.isArray(d.seasons)
+        ? d.seasons.filter((s) => Number(s.season_number) > 0)
+        : [];
+      const episodesPerSeason = validSeasons.map((s) => Math.max(1, Number(s.episode_count) || 1));
+
+      details = {
+        ids,
+        tmdbId: ids.tmdb,
+        imdbId: ids.imdb || '',
+        backdropUrl,
+        totalSeasons: Number(d.number_of_seasons) || validSeasons.length || 1,
+        totalEpisodes: Number(d.number_of_episodes) || null,
+        episodesPerSeason,
+        episodeDurationMinutes: epRun || 45,
+        director: creators.join(', ') || studios,
+        studio: studios,
+        cast,
+        tmdbStatus: d.status || null,
+        nextEpisodeToAir: d.next_episode_to_air || null,
+        originCountry: Array.isArray(d.origin_country) ? d.origin_country : [],
+        externalRatings,
         synopsis: String(d.overview || '').trim(),
       };
     }
 
-    const epRun = Array.isArray(d.episode_run_time) && d.episode_run_time[0]
-      ? Number(d.episode_run_time[0])
-      : null;
-    const validSeasons = Array.isArray(d.seasons)
-      ? d.seasons.filter((s) => Number(s.season_number) > 0)
-      : [];
-    const episodesPerSeason = validSeasons.map((s) => Math.max(1, Number(s.episode_count) || 1));
+    await setCachedEntry(CACHE_STORES.ratings, cacheKey, details, {
+      ttlMs: CACHE_TTL_MS.ratings,
+      now: fetchedAt,
+    });
 
     return {
-      totalSeasons: Number(d.number_of_seasons) || validSeasons.length || 1,
-      totalEpisodes: Number(d.number_of_episodes) || null,
-      episodesPerSeason,
-      episodeDurationMinutes: epRun || 45,
-      director: creators.join(', ') || studios,
-      studio: studios,
-      cast,
-      synopsis: String(d.overview || '').trim(),
+      ok: true,
+      status: 'OK',
+      fromCache: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      data: details,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ok: true,
+        status: 'OFFLINE_CACHE',
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        data: cached.data,
+      };
+    }
+    return {
+      ok: false,
+      status: maskSecretsInText(err?.code || err?.message || 'TMDB_ERROR', [key]),
+      data: null,
+    };
   }
+}
+
+export async function fetchTmdbDetails(
+  tmdbId,
+  mediaType = 'movie',
+  options = {}
+) {
+  const res = await fetchTmdbDetailsInternal(tmdbId, mediaType, options);
+  return res.ok ? res.data : null;
 }
 
 async function searchImdbSuggestion(
@@ -800,7 +1122,7 @@ async function searchImdbSuggestion(
   if (!slug) return [];
 
   const url = `${IMDB_SUGGESTION_BASE}/${firstChar}/${encodeURIComponent(slug)}.json`;
-  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl);
+  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl, 'imdb');
   if (!res.ok) throw new Error(`IMDb HTTP ${res.status}`);
   const json = await res.json();
   const list = Array.isArray(json?.d) ? json.d : [];
@@ -812,7 +1134,7 @@ async function searchImdbSuggestion(
       const qType = String(row.q || '').toLowerCase();
       const workType = /tv series|tv mini-series|series/.test(qType) ? 'series' : 'movie';
       const coverUrl = row.i?.imageUrl || null;
-      return {
+      return applyCanonicalIdsToWork({
         id: `imdb-${row.id}`,
         imdbId: row.id,
         title: String(row.l).trim(),
@@ -826,7 +1148,7 @@ async function searchImdbSuggestion(
         sourceBadge: 'IMDb',
         mergedSources: ['IMDb'],
         monogram: buildMonogram(row.l),
-      };
+      });
     });
 }
 
@@ -835,7 +1157,7 @@ async function searchWikidataCinema(
   { signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}
 ) {
   const searchUrl = `${WIKIDATA_API_URL}?action=wbsearchentities&search=${encodeURIComponent(query)}&language=pt&uselang=pt&format=json&origin=*&limit=6`;
-  const res = await fetchWithTimeout(searchUrl, { signal }, timeoutMs, fetchImpl);
+  const res = await fetchWithTimeout(searchUrl, { signal }, timeoutMs, fetchImpl, 'wikidata');
   if (!res.ok) throw new Error(`Wikidata HTTP ${res.status}`);
   const searchJson = await res.json();
   const candidates = Array.isArray(searchJson?.search) ? searchJson.search : [];
@@ -843,7 +1165,7 @@ async function searchWikidataCinema(
 
   const ids = candidates.map((c) => c.id).join('|');
   const entityUrl = `${WIKIDATA_API_URL}?action=wbgetentities&ids=${encodeURIComponent(ids)}&props=labels|descriptions|claims&languages=pt|en|ja&format=json&origin=*`;
-  const entityRes = await fetchWithTimeout(entityUrl, { signal }, timeoutMs, fetchImpl);
+  const entityRes = await fetchWithTimeout(entityUrl, { signal }, timeoutMs, fetchImpl, 'wikidata');
   if (!entityRes.ok) return [];
   const entityJson = await entityRes.json();
   const entities = entityJson?.entities || {};
@@ -919,7 +1241,7 @@ async function searchInternetArchiveMovies(
   params.append('fl[]', 'description');
 
   const url = `${INTERNET_ARCHIVE_SEARCH_URL}?${params.toString()}`;
-  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl);
+  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl, 'internetArchive');
   if (!res.ok) throw new Error(`Internet Archive HTTP ${res.status}`);
   const json = await res.json();
   const docs = Array.isArray(json?.response?.docs) ? json.response.docs : [];
@@ -973,9 +1295,13 @@ function mergeTwoCandidates(primary, incoming) {
       ? incoming.synopsis
       : primary.synopsis;
 
-  return {
+  const mergedIds = mergeIdsBlocks(primary, incoming);
+  const mergedRatings = mergeExternalRatings(incoming.externalRatings, primary.externalRatings);
+
+  return applyCanonicalIdsToWork({
     ...incoming,
     ...primary,
+    ids: mergedIds,
     originalTitle: primary.originalTitle || incoming.originalTitle || primary.title,
     director: primary.director || incoming.director || '',
     studio: primary.studio || incoming.studio || '',
@@ -986,12 +1312,12 @@ function mergeTwoCandidates(primary, incoming) {
     durationMinutes: primary.durationMinutes || incoming.durationMinutes || null,
     totalSeconds: primary.totalSeconds || incoming.totalSeconds || null,
     episodeDurationMinutes: primary.episodeDurationMinutes || incoming.episodeDurationMinutes || null,
-    anilistId: primary.anilistId || incoming.anilistId || null,
-    malId: primary.malId || incoming.malId || null,
-    tvmazeId: primary.tvmazeId || incoming.tvmazeId || null,
-    tmdbId: primary.tmdbId || incoming.tmdbId || null,
+    anilistId: mergedIds.anilist,
+    malId: mergedIds.mal,
+    tvmazeId: mergedIds.tvmaze,
+    tmdbId: mergedIds.tmdb,
     tmdbMediaType: primary.tmdbMediaType || incoming.tmdbMediaType || null,
-    imdbId: primary.imdbId || incoming.imdbId || '',
+    imdbId: mergedIds.imdb || '',
     openAccessUrl: primary.openAccessUrl || incoming.openAccessUrl || '',
     franchiseRelations:
       Array.isArray(primary.franchiseRelations) && primary.franchiseRelations.length > 0
@@ -1000,10 +1326,12 @@ function mergeTwoCandidates(primary, incoming) {
     genres,
     synopsis: longerSynopsis || '',
     coverUrl: coverCandidates[0] || null,
+    backdropUrl: primary.backdropUrl || incoming.backdropUrl || null,
     coverCandidates,
+    externalRatings: mergedRatings,
     sourceBadge: primary.sourceBadge || mergedSources[0],
     mergedSources,
-  };
+  });
 }
 
 export function deduplicateCinemaResults(items = []) {
@@ -1179,47 +1507,594 @@ export async function searchCinemaMedia(
   return responsePayload;
 }
 
+export async function fetchJikanAnimeRating(
+  malId,
+  {
+    allowStaleOffline = true,
+    forceRefresh = false,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    sleepFn = undefined,
+  } = {}
+) {
+  const cleanId = Number(malId);
+  if (!Number.isInteger(cleanId) || cleanId <= 0) {
+    return { ok: false, reason: 'MISSING_MAL_ID', malRating: null };
+  }
+
+  const cacheKey = `jikan:anime:${cleanId}`;
+  const now = nowFn();
+  const cached = forceRefresh
+    ? { hit: false, stale: false, data: null }
+    : await getCachedEntry(CACHE_STORES.ratings, cacheKey, {
+        now,
+        allowStaleOffline,
+      });
+
+  if (cached.hit && !cached.stale && cached.data) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+      malRating: cached.data.malRating || null,
+      totalEpisodes: cached.data.totalEpisodes || null,
+    };
+  }
+
+  try {
+    const url = `${JIKAN_ANIME_URL}/${cleanId}`;
+    const res = await fetchWithTimeout(
+      url,
+      { signal, nowFn, sleepFn },
+      timeoutMs,
+      fetchImpl,
+      'jikan'
+    );
+    if (!res.ok) {
+      throw new Error(`Jikan HTTP ${res.status}`);
+    }
+    const json = await res.json();
+    const d = json?.data || null;
+    if (!d) {
+      return { ok: false, reason: 'JIKAN_NOT_FOUND', malRating: null };
+    }
+
+    const fetchedAt = nowFn();
+    const malRating = buildMalRating(d.score, fetchedAt);
+    const totalEpisodes = Number(d.episodes) > 0 ? Number(d.episodes) : null;
+    const payload = { malRating, totalEpisodes };
+
+    await setCachedEntry(CACHE_STORES.ratings, cacheKey, payload, {
+      ttlMs: CACHE_TTL_MS.ratings,
+      now: fetchedAt,
+    });
+
+    return {
+      ok: true,
+      fromCache: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      malRating,
+      totalEpisodes,
+    };
+  } catch (err) {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ok: true,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        malRating: cached.data.malRating || null,
+        totalEpisodes: cached.data.totalEpisodes || null,
+      };
+    }
+    return {
+      ok: false,
+      reason: err?.code || err?.message || 'JIKAN_ERROR',
+      malRating: null,
+    };
+  }
+}
+
+function mapJikanRelationType(raw = '') {
+  const clean = String(raw || '').trim().toLowerCase();
+  if (clean === 'sequel') return 'SEQUEL';
+  if (clean === 'prequel') return 'PREQUEL';
+  if (clean === 'spin-off' || clean === 'spinoff') return 'SPIN_OFF';
+  if (clean === 'side story') return 'SIDE_STORY';
+  if (clean.includes('parent')) return 'PARENT';
+  if (clean.includes('summary')) return 'SUMMARY';
+  if (clean.includes('alternative')) return 'ALTERNATIVE';
+  if (clean.includes('character') || clean === 'other') return 'OTHER';
+  return 'SIDE_STORY';
+}
+
+export async function fetchJikanAnimeRelations(
+  malId,
+  {
+    allowStaleOffline = true,
+    forceRefresh = false,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    sleepFn = undefined,
+  } = {}
+) {
+  const cleanId = Number(malId);
+  if (!Number.isInteger(cleanId) || cleanId <= 0) {
+    return { ok: false, reason: 'MISSING_MAL_ID', relations: [] };
+  }
+
+  const cacheKey = `jikan:relations:${cleanId}`;
+  const now = nowFn();
+  const cached = forceRefresh
+    ? { hit: false, stale: false, data: null }
+    : await getCachedEntry(CACHE_STORES.relations, cacheKey, {
+        now,
+        allowStaleOffline,
+      });
+
+  if (cached.hit && !cached.stale && Array.isArray(cached.data)) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+      relations: cached.data,
+    };
+  }
+
+  try {
+    const url = `${JIKAN_ANIME_URL}/${cleanId}/relations`;
+    const res = await fetchWithTimeout(
+      url,
+      { signal, nowFn, sleepFn },
+      timeoutMs,
+      fetchImpl,
+      'jikan'
+    );
+    if (!res.ok) {
+      throw new Error(`Jikan HTTP ${res.status}`);
+    }
+    const json = await res.json();
+    const list = Array.isArray(json?.data) ? json.data : [];
+
+    const relations = [];
+    for (const group of list) {
+      const relationType = mapJikanRelationType(group?.relation);
+      const entries = Array.isArray(group?.entry) ? group.entry : [];
+      for (const entry of entries) {
+        if (!entry || String(entry.type || '').toLowerCase() !== 'anime') continue;
+        const entryMalId = Number(entry.mal_id);
+        const title = String(entry.name || '').trim();
+        if (!title) continue;
+        relations.push({
+          relationType,
+          malId: Number.isInteger(entryMalId) && entryMalId > 0 ? entryMalId : null,
+          anilistId: null,
+          title,
+          originalTitle: title,
+          format: /\bmovie\b|\bfilme\b/i.test(title)
+            ? 'MOVIE'
+            : /\bova\b/i.test(title)
+              ? 'OVA'
+              : /\bona\b/i.test(title)
+                ? 'ONA'
+                : /\bspecial\b/i.test(title)
+                  ? 'SPECIAL'
+                  : 'TV',
+        });
+      }
+    }
+
+    await setCachedEntry(CACHE_STORES.relations, cacheKey, relations, {
+      ttlMs: CACHE_TTL_MS.relations,
+      now: nowFn(),
+    });
+
+    return {
+      ok: true,
+      fromCache: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      relations,
+    };
+  } catch (err) {
+    if (cached.hit && allowStaleOffline && Array.isArray(cached.data)) {
+      return {
+        ok: true,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        relations: cached.data,
+      };
+    }
+    return {
+      ok: false,
+      reason: err?.code || err?.message || 'JIKAN_RELATIONS_ERROR',
+      relations: [],
+    };
+  }
+}
+
+export async function enrichWorkWithExternalRatings(
+  work,
+  {
+    tmdbApiKey = '',
+    omdbApiKey = '',
+    allowStaleOffline = true,
+    forceRefresh = false,
+    signal,
+    fetchImpl = fetch,
+    nowFn = Date.now,
+    maxConcurrency = 2,
+  } = {}
+) {
+  if (!work) return { work, meta: { partial: false, failedSources: [], omdbMissingKey: false } };
+
+  const safeConcurrency = Math.max(1, Math.min(2, Number(maxConcurrency) || 2));
+  let enriched = applyCanonicalIdsToWork({
+    ...work,
+    externalRatings: normalizeExternalRatings(work.externalRatings),
+  });
+
+  const attemptedSources = [];
+  const succeededSources = [];
+  const failedSources = [];
+  let omdbMissingKey = false;
+  let omdbStatus = null;
+  let isOfflineCache = false;
+  let cacheDateLabel = '';
+
+  const noteOffline = (res) => {
+    if (res?.isOfflineCache) {
+      isOfflineCache = true;
+      if (res.cacheDateLabel && !cacheDateLabel) {
+        cacheDateLabel = res.cacheDateLabel;
+      }
+    }
+  };
+
+  // Etapa 1 (máx. 2 requisições simultâneas): detalhes base (TMDB, AniList, TVmaze) + bridge
+  const stage1Tasks = [];
+  let tmdbRes = null;
+  let tvDetails = null;
+  let aniListRes = null;
+
+  if (enriched.ids.tvmaze) {
+    stage1Tasks.push(async () => {
+      tvDetails = await fetchTvMazeShowDetails(enriched.ids.tvmaze, {
+        signal,
+        fetchImpl,
+        allowStaleOffline,
+      });
+    });
+  }
+
+  if (enriched.ids.tmdb) {
+    attemptedSources.push('tmdb');
+    stage1Tasks.push(async () => {
+      tmdbRes = await fetchTmdbDetailsInternal(
+        enriched.ids.tmdb,
+        enriched.tmdbMediaType || (enriched.workType === 'movie' ? 'movie' : 'tv'),
+        {
+          apiKey: tmdbApiKey,
+          signal,
+          fetchImpl,
+          allowStaleOffline,
+          forceRefresh,
+          nowFn,
+        }
+      );
+    });
+  }
+
+  if (
+    enriched.ids.anilist &&
+    (enriched.workType === 'anime' || !enriched.backdropUrl || !enriched.externalRatings?.anilist)
+  ) {
+    attemptedSources.push('anilist');
+    stage1Tasks.push(async () => {
+      const cacheKey = `anilist:media:${enriched.ids.anilist}`;
+      const cached = forceRefresh
+        ? { hit: false, stale: false, data: null }
+        : await getCachedEntry(CACHE_STORES.ratings, cacheKey, {
+            now: nowFn(),
+            allowStaleOffline,
+          });
+      if (cached.hit && !cached.stale && cached.data) {
+        aniListRes = {
+          ok: true,
+          data: cached.data,
+          isOfflineCache: false,
+          cacheDateLabel: cached.cacheDateLabel,
+        };
+        return;
+      }
+      try {
+        const map = await fetchAniListMediaByIds([enriched.ids.anilist], {
+          signal,
+          fetchImpl,
+          nowFn,
+        });
+        const media = map.get(enriched.ids.anilist) || null;
+        if (media) {
+          await setCachedEntry(CACHE_STORES.ratings, cacheKey, media, {
+            ttlMs: CACHE_TTL_MS.ratings,
+            now: nowFn(),
+          });
+          aniListRes = { ok: true, data: media, isOfflineCache: false, cacheDateLabel: '' };
+        } else {
+          aniListRes = { ok: false };
+        }
+      } catch {
+        if (cached.hit && allowStaleOffline && cached.data) {
+          aniListRes = {
+            ok: true,
+            data: cached.data,
+            isOfflineCache: true,
+            cacheDateLabel: cached.cacheDateLabel,
+          };
+        } else {
+          aniListRes = { ok: false, error: true };
+        }
+      }
+    });
+  }
+
+  await runBoundedConcurrency(stage1Tasks, safeConcurrency);
+
+  if (tvDetails) {
+    noteOffline(tvDetails);
+    enriched = {
+      ...enriched,
+      totalSeasons: tvDetails.totalSeasons || enriched.totalSeasons,
+      totalEpisodes: tvDetails.totalEpisodes || enriched.totalEpisodes,
+      episodesPerSeason: tvDetails.episodesPerSeason || enriched.episodesPerSeason,
+      episodeList: tvDetails.episodeList || enriched.episodeList,
+      episodeDurationMinutes:
+        tvDetails.episodeDurationMinutes || enriched.episodeDurationMinutes,
+      showStatus: tvDetails.showStatus || enriched.showStatus || null,
+      nextEpisode: tvDetails.nextEpisode || enriched.nextEpisode || null,
+    };
+  }
+
+  if (tmdbRes?.ok && tmdbRes.data) {
+    noteOffline(tmdbRes);
+    succeededSources.push('tmdb');
+    const td = tmdbRes.data;
+    const mergedIds = mergeIdsBlocks(enriched.ids, td.ids);
+    enriched = applyCanonicalIdsToWork({
+      ...enriched,
+      ...td,
+      ids: mergedIds,
+      backdropUrl: td.backdropUrl || enriched.backdropUrl || null,
+      director: enriched.director || td.director || '',
+      studio: enriched.studio || td.studio || '',
+      externalRatings: mergeExternalRatings(enriched.externalRatings, td.externalRatings),
+      synopsis:
+        String(td.synopsis || '').length > String(enriched.synopsis || '').length
+          ? td.synopsis
+          : enriched.synopsis,
+    });
+  } else if (tmdbRes && !tmdbRes.ok && tmdbRes.status !== 'MISSING_KEY' && tmdbRes.status !== 'MISSING_ID') {
+    failedSources.push('tmdb');
+  }
+
+  if (aniListRes?.ok && aniListRes.data) {
+    noteOffline(aniListRes);
+    succeededSources.push('anilist');
+    const ad = aniListRes.data;
+    const mergedIds = mergeIdsBlocks(enriched.ids, ad.ids);
+    enriched = applyCanonicalIdsToWork({
+      ...enriched,
+      ids: mergedIds,
+      backdropUrl: ad.backdropUrl || enriched.backdropUrl || null,
+      externalRatings: mergeExternalRatings(enriched.externalRatings, ad.externalRatings),
+      franchiseRelations:
+        Array.isArray(ad.franchiseRelations) && ad.franchiseRelations.length > 0
+          ? ad.franchiseRelations
+          : enriched.franchiseRelations || [],
+      totalEpisodes: enriched.totalEpisodes || ad.totalEpisodes || null,
+      animeStatus: ad.animeStatus || enriched.animeStatus || null,
+      nextAiringEpisode: ad.nextAiringEpisode || enriched.nextAiringEpisode || null,
+      synopsis:
+        String(ad.synopsis || '').length > String(enriched.synopsis || '').length
+          ? ad.synopsis
+          : enriched.synopsis,
+    });
+  } else if (aniListRes?.error) {
+    failedSources.push('anilist');
+  }
+
+  // Ponte D1 para anime vindo do TMDB sem anilistId
+  const isJp =
+    Array.isArray(enriched.originCountry)
+      ? enriched.originCountry.includes('JP')
+      : String(enriched.originCountry || '').toUpperCase() === 'JP' ||
+        String(enriched.language || '').toLowerCase() === 'japonês';
+  const hasAnimGenre =
+    enriched.hasTmdbAnimationGenre === true ||
+    (Array.isArray(enriched.genreIds) && enriched.genreIds.includes(16)) ||
+    (Array.isArray(enriched.genres) &&
+      enriched.genres.some((g) => /anima[çc][aã]o|anime/i.test(String(g))));
+
+  if (!enriched.ids.anilist && enriched.ids.tmdb && hasAnimGenre && isJp) {
+    const confirmed = await confirmAnimeOnAniList(
+      {
+        title: enriched.originalTitle || enriched.title,
+        altTitle: enriched.title,
+        releaseYear: enriched.releaseYear,
+      },
+      { signal, fetchImpl }
+    );
+    if (confirmed?.anilistId) {
+      const aniMedia = confirmed.media;
+      const mergedIds = mergeIdsBlocks(enriched.ids, {
+        anilist: confirmed.anilistId,
+        mal: confirmed.malId || aniMedia?.malId || null,
+      });
+      enriched = applyCanonicalIdsToWork({
+        ...enriched,
+        workType: 'anime',
+        ids: mergedIds,
+        animeFormat: enriched.animeFormat || aniMedia?.animeFormat || 'TV',
+        animeStatus: aniMedia?.animeStatus || enriched.animeStatus || null,
+        nextAiringEpisode: aniMedia?.nextAiringEpisode || enriched.nextAiringEpisode || null,
+        franchiseRelations:
+          Array.isArray(aniMedia?.franchiseRelations) && aniMedia.franchiseRelations.length > 0
+            ? aniMedia.franchiseRelations
+            : enriched.franchiseRelations || [],
+        backdropUrl: enriched.backdropUrl || aniMedia?.backdropUrl || null,
+        externalRatings: mergeExternalRatings(
+          enriched.externalRatings,
+          aniMedia?.externalRatings
+        ),
+      });
+    }
+  }
+
+  // Etapa 2 (máx. 2 requisições simultâneas): OMDb (IMDb/RT/Metacritic), Jikan (MAL) e TVmaze IMDb lookup
+  const stage2Tasks = [];
+  let omdbRes = null;
+  let malRes = null;
+  let malRelationsRes = null;
+  let tvLookupRes = null;
+
+  if (enriched.ids.imdb && enriched.workType !== 'anime') {
+    attemptedSources.push('omdb');
+    stage2Tasks.push(async () => {
+      omdbRes = await fetchOmdbByImdbId(enriched.ids.imdb, {
+        apiKey: omdbApiKey,
+        allowStaleOffline,
+        signal,
+        fetchImpl,
+        nowFn,
+      });
+    });
+  }
+
+  if (
+    enriched.ids.mal &&
+    (enriched.workType === 'anime' || Boolean(enriched.ids.anilist))
+  ) {
+    attemptedSources.push('mal');
+    stage2Tasks.push(async () => {
+      malRes = await fetchJikanAnimeRating(enriched.ids.mal, {
+        allowStaleOffline,
+        forceRefresh,
+        signal,
+        fetchImpl,
+        nowFn,
+      });
+    });
+    if (!Array.isArray(enriched.franchiseRelations) || enriched.franchiseRelations.length === 0) {
+      stage2Tasks.push(async () => {
+        malRelationsRes = await fetchJikanAnimeRelations(enriched.ids.mal, {
+          allowStaleOffline,
+          forceRefresh,
+          signal,
+          fetchImpl,
+          nowFn,
+        });
+      });
+    }
+  }
+
+  if (enriched.ids.imdb && !enriched.ids.tvmaze && enriched.workType === 'series') {
+    stage2Tasks.push(async () => {
+      tvLookupRes = await lookupTvMazeByImdb(enriched.ids.imdb, {
+        signal,
+        fetchImpl,
+      });
+    });
+  }
+
+  await runBoundedConcurrency(stage2Tasks, safeConcurrency);
+
+  if (omdbRes?.ok && omdbRes.ratings) {
+    noteOffline(omdbRes);
+    omdbStatus = 'OK';
+    succeededSources.push('omdb');
+    enriched = applyCanonicalIdsToWork({
+      ...enriched,
+      externalRatings: mergeExternalRatings(enriched.externalRatings, omdbRes.ratings),
+    });
+  } else if (omdbRes && !omdbRes.ok) {
+    omdbStatus = omdbRes.reason || 'OMDB_ERROR';
+    if (omdbRes.reason === 'MISSING_KEY') {
+      omdbMissingKey = true;
+    } else if (omdbRes.reason !== 'OMDB_NOT_FOUND') {
+      failedSources.push('omdb');
+    }
+  }
+
+  if (malRes?.ok) {
+    noteOffline(malRes);
+    succeededSources.push('mal');
+    if (malRes.malRating) {
+      enriched = applyCanonicalIdsToWork({
+        ...enriched,
+        externalRatings: mergeExternalRatings(enriched.externalRatings, {
+          mal: malRes.malRating,
+        }),
+      });
+    }
+    if (!enriched.totalEpisodes && malRes.totalEpisodes) {
+      enriched.totalEpisodes = malRes.totalEpisodes;
+    }
+  } else if (malRes && !malRes.ok && malRes.reason !== 'JIKAN_NOT_FOUND') {
+    failedSources.push('mal');
+  }
+
+  if (
+    malRelationsRes?.ok &&
+    Array.isArray(malRelationsRes.relations) &&
+    malRelationsRes.relations.length > 0 &&
+    (!Array.isArray(enriched.franchiseRelations) || enriched.franchiseRelations.length === 0)
+  ) {
+    enriched.franchiseRelations = malRelationsRes.relations;
+  }
+
+  if (tvLookupRes?.tvmazeId) {
+    enriched = applyCanonicalIdsToWork({
+      ...enriched,
+      ids: mergeIdsBlocks(enriched.ids, { tvmaze: tvLookupRes.tvmazeId }),
+    });
+  }
+
+  enriched = applyCanonicalIdsToWork({
+    ...enriched,
+    backdropUrl: enriched.backdropUrl || null,
+    externalRatings: normalizeExternalRatings(enriched.externalRatings),
+  });
+
+  return {
+    work: enriched,
+    meta: {
+      attemptedSources: Array.from(new Set(attemptedSources)),
+      succeededSources: Array.from(new Set(succeededSources)),
+      failedSources: Array.from(new Set(failedSources)),
+      omdbStatus,
+      omdbMissingKey,
+      isOfflineCache,
+      cacheDateLabel,
+      partial: failedSources.length > 0 || omdbMissingKey,
+    },
+  };
+}
+
 export async function enrichCinemaCandidate(
   candidate,
-  { tmdbApiKey = '', signal, fetchImpl = fetch } = {}
+  options = {}
 ) {
   if (!candidate) return candidate;
-  let enriched = { ...candidate };
-
-  if (enriched.tvmazeId) {
-    const tvDetails = await fetchTvMazeShowDetails(enriched.tvmazeId, { signal, fetchImpl });
-    if (tvDetails) {
-      enriched = {
-        ...enriched,
-        totalSeasons: tvDetails.totalSeasons,
-        totalEpisodes: tvDetails.totalEpisodes,
-        episodesPerSeason: tvDetails.episodesPerSeason,
-        episodeList: tvDetails.episodeList,
-        episodeDurationMinutes: tvDetails.episodeDurationMinutes || enriched.episodeDurationMinutes,
-      };
-    }
-  }
-
-  if (enriched.tmdbId) {
-    const tmdbDetails = await fetchTmdbDetails(
-      enriched.tmdbId,
-      enriched.tmdbMediaType || (enriched.workType === 'movie' ? 'movie' : 'tv'),
-      { apiKey: tmdbApiKey, signal, fetchImpl }
-    );
-    if (tmdbDetails) {
-      enriched = {
-        ...enriched,
-        ...tmdbDetails,
-        director: enriched.director || tmdbDetails.director || '',
-        synopsis:
-          String(tmdbDetails.synopsis || '').length > String(enriched.synopsis || '').length
-            ? tmdbDetails.synopsis
-            : enriched.synopsis,
-      };
-    }
-  }
-
-  return enriched;
+  const res = await enrichWorkWithExternalRatings(candidate, options);
+  return res.work;
 }
 
 export async function testTmdbConnection(apiKey = '', { fetchImpl = fetch } = {}) {
@@ -1234,9 +2109,10 @@ export async function testTmdbConnection(apiKey = '', { fetchImpl = fetch } = {}
   try {
     const res = await fetchWithTimeout(
       `${TMDB_API_BASE}/configuration?api_key=${encodeURIComponent(key)}`,
-      {},
+      { dedup: false },
       6000,
-      fetchImpl
+      fetchImpl,
+      'tmdb'
     );
     const latencyMs = Date.now() - start;
     if (!res.ok) {
@@ -1253,3 +2129,1122 @@ export async function testTmdbConnection(apiKey = '', { fetchImpl = fetch } = {}
     };
   }
 }
+
+export async function fetchTmdbExternalIds(
+  tmdbId,
+  mediaType = 'movie',
+  { apiKey = '', signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}
+) {
+  const key = sanitizeApiKey(apiKey) || loadTmdbApiKey();
+  if (!key || !tmdbId) return null;
+  const type = mediaType === 'tv' ? 'tv' : 'movie';
+  try {
+    const url = `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}/external_ids?api_key=${encodeURIComponent(key)}`;
+    const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl, 'tmdb');
+    if (!res.ok) return null;
+    const json = await res.json();
+    return {
+      imdbId: sanitizeImdbId(json?.imdb_id) || null,
+      tvdbId: Number(json?.tvdb_id) || null,
+      wikidataId: json?.wikidata_id || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function lookupTvMazeByImdb(
+  imdbId,
+  { signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}
+) {
+  const clean = sanitizeImdbId(imdbId);
+  if (!clean) return null;
+  try {
+    const url = `${TVMAZE_LOOKUP_URL}?imdb=${encodeURIComponent(clean)}`;
+    const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl, 'tvmaze');
+    if (res.status === 404 || !res.ok) return null;
+    const show = await res.json();
+    if (!show?.id) return null;
+    return {
+      tvmazeId: Number(show.id),
+      imdbId: clean,
+      name: show.name || '',
+      status: show.status || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchOmdbByImdbId(
+  imdbId,
+  {
+    apiKey = '',
+    mode = 'auto',
+    allowStaleOffline = false,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    sleepFn = undefined,
+  } = {}
+) {
+  const cleanImdb = sanitizeImdbId(imdbId);
+  if (!cleanImdb) {
+    return { ok: false, reason: 'MISSING_IMDB_ID', ratings: null, data: null };
+  }
+
+  const now = nowFn();
+  const cacheKey = `omdb:${cleanImdb}`;
+  const cached = await getCachedEntry(CACHE_STORES.ratings, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+
+  if (cached.hit && !cached.stale) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+      ratings: cached.data.ratings,
+      data: cached.data.raw || null,
+    };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadOmdbApiKey();
+  if (!key) {
+    if (cached.hit && allowStaleOffline) {
+      return {
+        ok: true,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        ratings: cached.data.ratings,
+        data: cached.data.raw || null,
+      };
+    }
+    return { ok: false, reason: 'MISSING_KEY', ratings: null, data: null };
+  }
+
+  try {
+    const url = `${OMDB_API_BASE}/?apikey=${encodeURIComponent(key)}&i=${encodeURIComponent(cleanImdb)}`;
+    const res = await fetchWithTimeout(
+      url,
+      { signal, mode, nowFn, sleepFn },
+      timeoutMs,
+      fetchImpl,
+      'omdb'
+    );
+    if (!res.ok) {
+      throw new Error(`OMDb HTTP ${res.status}`);
+    }
+    const json = await res.json();
+    if (json?.Response === 'False') {
+      return {
+        ok: false,
+        reason: maskSecretsInText(json?.Error || 'OMDB_NOT_FOUND', [key]),
+        ratings: { imdb: null, rottenTomatoes: null, metacritic: null },
+        data: null,
+      };
+    }
+
+    const fetchedAt = nowFn();
+    const ratings = parseOmdbRatings(json, fetchedAt);
+    await setCachedEntry(
+      CACHE_STORES.ratings,
+      cacheKey,
+      { ratings, raw: json },
+      { ttlMs: CACHE_TTL_MS.ratings, now: fetchedAt }
+    );
+
+    return {
+      ok: true,
+      fromCache: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      ratings,
+      data: json,
+    };
+  } catch (err) {
+    if (cached.hit && allowStaleOffline) {
+      return {
+        ok: true,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        ratings: cached.data.ratings,
+        data: cached.data.raw || null,
+      };
+    }
+    if (err instanceof ApiQuotaError) {
+      return { ok: false, reason: err.code, ratings: null, data: null, quota: err.usage };
+    }
+    return {
+      ok: false,
+      reason: maskSecretsInText(err?.code || err?.message || 'OMDB_ERROR', [key]),
+      ratings: null,
+      data: null,
+    };
+  }
+}
+
+export async function testOmdbConnection(apiKey = '', { fetchImpl = fetch } = {}) {
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadOmdbApiKey();
+  if (!key) {
+    return {
+      ok: false,
+      errorMessage: 'Informe uma chave da API OMDb para testar.',
+    };
+  }
+  const start = Date.now();
+  try {
+    const res = await fetchWithTimeout(
+      `${OMDB_API_BASE}/?apikey=${encodeURIComponent(key)}&i=tt0133093`,
+      { dedup: false, mode: 'manual', maxRetries: 0 },
+      6000,
+      fetchImpl,
+      'omdb'
+    );
+    const latencyMs = Date.now() - start;
+    const json = await res.json().catch(() => null);
+    if (!res.ok || json?.Response === 'False') {
+      return {
+        ok: false,
+        errorMessage: maskSecretsInText(
+          json?.Error || (res.status === 401 ? 'Chave OMDb inválida.' : `Erro HTTP ${res.status}`),
+          [key]
+        ),
+      };
+    }
+    return { ok: true, latencyMs, model: 'OMDb API' };
+  } catch (err) {
+    return {
+      ok: false,
+      errorMessage:
+        err instanceof ApiQuotaError
+          ? maskSecretsInText(err.message, [key])
+          : 'Não foi possível conectar à OMDb agora.',
+    };
+  }
+}
+
+export async function fetchAniListMediaByIds(anilistIds = [], options = {}) {
+  const map = await fetchAniListBatchByIds(anilistIds, options);
+  const out = new Map();
+  for (const [id, rawMedia] of map.entries()) {
+    out.set(id, rawMedia ? normalizeAniListMedia(rawMedia) : null);
+  }
+  return out;
+}
+
+export async function confirmAnimeOnAniList(
+  { title = '', altTitle = '', releaseYear = null } = {},
+  { signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}
+) {
+  const searchTerm = String(title || altTitle || '').trim();
+  if (!searchTerm) return null;
+  try {
+    const results = await searchAniList(searchTerm, { signal, fetchImpl, timeoutMs });
+    if (!results.length) return null;
+    const targetNorm = normalizeTitleForDedup(searchTerm);
+    const altNorm = normalizeTitleForDedup(altTitle);
+    const targetYear = Number(releaseYear) || null;
+
+    const matched = results.find((item) => {
+      const n1 = normalizeTitleForDedup(item.title);
+      const n2 = normalizeTitleForDedup(item.originalTitle);
+      const titleMatch =
+        (targetNorm && (n1 === targetNorm || n2 === targetNorm)) ||
+        (altNorm && (n1 === altNorm || n2 === altNorm));
+      if (!titleMatch) return false;
+      if (targetYear && item.releaseYear) {
+        return Math.abs(Number(item.releaseYear) - targetYear) <= 1;
+      }
+      return true;
+    });
+
+    return matched
+      ? { anilistId: matched.anilistId, malId: matched.malId || null, media: matched }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchJikanEpisodes(
+  malId,
+  {
+    page = 1,
+    showStatus = '',
+    allowStaleOffline = false,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    sleepFn = undefined,
+  } = {}
+) {
+  const cleanId = Number(malId);
+  if (!Number.isInteger(cleanId) || cleanId <= 0) return null;
+
+  const cacheKey = `jikan:episodes:${cleanId}:p${page}`;
+  const now = nowFn();
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+
+  if (cached.hit && !cached.stale) {
+    return { ...cached.data, fromCache: true, isOfflineCache: false, cacheDateLabel: cached.cacheDateLabel };
+  }
+
+  try {
+    const url = `${JIKAN_ANIME_URL}/${cleanId}/episodes?page=${Math.max(1, Number(page) || 1)}`;
+    const res = await fetchWithTimeout(
+      url,
+      { signal, nowFn, sleepFn },
+      timeoutMs,
+      fetchImpl,
+      'jikan'
+    );
+    if (!res.ok) throw new Error(`Jikan HTTP ${res.status}`);
+    const json = await res.json();
+    const list = Array.isArray(json?.data) ? json.data : [];
+
+    const episodes = list.map((ep) => ({
+      malId: Number(ep.mal_id) || null,
+      number: Number(ep.mal_id) || null,
+      title: ep.title || ep.title_romanji || null,
+      aired: ep.aired || null,
+      score: ep.score !== null && ep.score !== undefined ? Number(ep.score) : null,
+      filler: Boolean(ep.filler),
+      recap: Boolean(ep.recap),
+    }));
+
+    const result = {
+      malId: cleanId,
+      page: Number(page) || 1,
+      hasNextPage: Boolean(json?.pagination?.has_next_page),
+      lastVisiblePage: Number(json?.pagination?.last_visible_page) || 1,
+      episodes,
+    };
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, result, {
+      ttlMs: getEpisodesTtlMs(showStatus),
+      now: nowFn(),
+    });
+
+    return { ...result, fromCache: false, isOfflineCache: false };
+  } catch {
+    if (cached.hit && allowStaleOffline) {
+      return {
+        ...cached.data,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+      };
+    }
+    return null;
+  }
+}
+
+export async function fetchTmdbSeasonDetails(
+  tmdbId,
+  seasonNumber = 1,
+  {
+    apiKey = '',
+    showStatus = '',
+    allowStaleOffline = true,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+  } = {}
+) {
+  const cleanTmdb = Number(tmdbId);
+  const cleanSeason = Math.max(1, Math.round(Number(seasonNumber) || 1));
+  if (!Number.isInteger(cleanTmdb) || cleanTmdb <= 0) return null;
+
+  const cacheKey = `tmdb:season:${cleanTmdb}:s${cleanSeason}`;
+  const now = nowFn();
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+
+  if (cached.hit && !cached.stale && cached.data) {
+    return {
+      ...cached.data,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+    };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
+  if (!key) {
+    return cached.hit && allowStaleOffline && cached.data
+      ? {
+          ...cached.data,
+          fromCache: true,
+          isOfflineCache: true,
+          cacheDateLabel: cached.cacheDateLabel,
+        }
+      : null;
+  }
+
+  try {
+    const url = `${TMDB_API_BASE}/tv/${cleanTmdb}/season/${cleanSeason}?api_key=${encodeURIComponent(key)}&language=pt-BR`;
+    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+    const json = await res.json();
+    const rawList = Array.isArray(json?.episodes) ? json.episodes : [];
+
+    const episodes = rawList.map((ep) => ({
+      season: cleanSeason,
+      number: Number(ep.episode_number) || 1,
+      name: ep.name || `Episódio ${ep.episode_number || ''}`,
+      runtime: Number(ep.runtime) > 0 ? Number(ep.runtime) : null,
+      airdate: ep.air_date || '',
+      summary: String(ep.overview || '').trim(),
+      imageUrl: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : null,
+      rating:
+        ep.vote_average !== null &&
+        ep.vote_average !== undefined &&
+        Number(ep.vote_average) > 0
+          ? Math.round(Number(ep.vote_average) * 10) / 10
+          : null,
+    }));
+
+    const result = {
+      tmdbId: cleanTmdb,
+      season: cleanSeason,
+      episodes,
+    };
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, result, {
+      ttlMs: getEpisodesTtlMs(showStatus),
+      now: nowFn(),
+    });
+
+    return { ...result, fromCache: false, isOfflineCache: false, cacheDateLabel: '' };
+  } catch {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ...cached.data,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+      };
+    }
+    return null;
+  }
+}
+
+export async function fetchTmdbEpisodeGroups(
+  tmdbId,
+  {
+    apiKey = '',
+    showStatus = '',
+    allowStaleOffline = true,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+  } = {}
+) {
+  const cleanTmdb = Number(tmdbId);
+  if (!Number.isInteger(cleanTmdb) || cleanTmdb <= 0) return { ok: false, groups: [] };
+
+  const cacheKey = `tmdb:epgroups:${cleanTmdb}`;
+  const now = nowFn();
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+
+  if (cached.hit && !cached.stale && cached.data) {
+    return {
+      ok: true,
+      groups: cached.data,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+    };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
+  if (!key) {
+    return cached.hit && allowStaleOffline && cached.data
+      ? {
+          ok: true,
+          groups: cached.data,
+          fromCache: true,
+          isOfflineCache: true,
+          cacheDateLabel: cached.cacheDateLabel,
+        }
+      : { ok: false, groups: [] };
+  }
+
+  try {
+    const url = `${TMDB_API_BASE}/tv/${cleanTmdb}/episode_groups?api_key=${encodeURIComponent(key)}`;
+    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+    const json = await res.json();
+    const groups = (Array.isArray(json?.results) ? json.results : []).map((g) => ({
+      id: String(g.id),
+      name: String(g.name || '').trim(),
+      description: String(g.description || '').trim(),
+      episodeCount: Number(g.episode_count) || 0,
+      groupCount: Number(g.group_count) || 0,
+      type: Number(g.type) || null,
+      isSuggestion: true,
+    }));
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, groups, {
+      ttlMs: getEpisodesTtlMs(showStatus),
+      now: nowFn(),
+    });
+
+    return { ok: true, groups, fromCache: false, isOfflineCache: false, cacheDateLabel: '' };
+  } catch {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ok: true,
+        groups: cached.data,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+      };
+    }
+    return { ok: false, groups: [] };
+  }
+}
+
+export async function fetchTmdbEpisodeGroupDetails(
+  groupId,
+  {
+    apiKey = '',
+    showStatus = '',
+    allowStaleOffline = true,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+  } = {}
+) {
+  const cleanId = String(groupId || '').trim();
+  if (!cleanId) return { ok: false, arcs: [] };
+
+  const cacheKey = `tmdb:epgroup:${cleanId}`;
+  const now = nowFn();
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+  if (cached.hit && !cached.stale && cached.data) {
+    return { ok: true, arcs: cached.data, fromCache: true };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
+  if (!key) return { ok: false, arcs: [] };
+
+  try {
+    const url = `${TMDB_API_BASE}/tv/episode_group/${encodeURIComponent(cleanId)}?api_key=${encodeURIComponent(key)}&language=pt-BR`;
+    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+    const json = await res.json();
+    const rawGroups = Array.isArray(json?.groups) ? json.groups : [];
+    const arcs = rawGroups
+      .filter((grp) => grp?.name && Array.isArray(grp.episodes) && grp.episodes.length > 0)
+      .map((grp, idx) => {
+        const eps = grp.episodes;
+        const firstEp = eps[0];
+        const lastEp = eps[eps.length - 1];
+        return {
+          id: `tmdb-arc-${grp.id || idx}`,
+          name: String(grp.name).trim(),
+          season: Math.max(1, Number(firstEp?.season_number) || 1),
+          startEp: Math.max(1, Number(firstEp?.episode_number) || 1),
+          endEp: Math.max(1, Number(lastEp?.episode_number) || 1),
+          episodeCount: eps.length,
+          isSuggestion: true,
+        };
+      });
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, arcs, {
+      ttlMs: getEpisodesTtlMs(showStatus),
+      now: nowFn(),
+    });
+    return { ok: true, arcs, fromCache: false };
+  } catch {
+    return cached.hit && allowStaleOffline && cached.data
+      ? { ok: true, arcs: cached.data, fromCache: true, isOfflineCache: true }
+      : { ok: false, arcs: [] };
+  }
+}
+
+export async function fetchOmdbSeasonEpisodes(
+  imdbId,
+  seasonNumber = 1,
+  {
+    apiKey = '',
+    showStatus = '',
+    allowStaleOffline = true,
+    mode = 'auto',
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    sleepFn = undefined,
+  } = {}
+) {
+  const cleanImdb = sanitizeImdbId(imdbId);
+  const cleanSeason = Math.max(1, Math.round(Number(seasonNumber) || 1));
+  if (!cleanImdb) return { ok: false, reason: 'MISSING_IMDB_ID', episodes: [] };
+
+  const cacheKey = `omdb:season:${cleanImdb}:s${cleanSeason}`;
+  const now = nowFn();
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+
+  if (cached.hit && !cached.stale && cached.data) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+      episodes: cached.data,
+    };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadOmdbApiKey();
+  if (!key) {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ok: true,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        episodes: cached.data,
+      };
+    }
+    return { ok: false, reason: 'MISSING_KEY', episodes: [] };
+  }
+
+  try {
+    const url = `${OMDB_API_BASE}/?apikey=${encodeURIComponent(key)}&i=${encodeURIComponent(cleanImdb)}&Season=${cleanSeason}`;
+    const res = await fetchWithTimeout(
+      url,
+      { signal, mode, nowFn, sleepFn },
+      timeoutMs,
+      fetchImpl,
+      'omdb'
+    );
+    if (!res.ok) throw new Error(`OMDb HTTP ${res.status}`);
+    const json = await res.json();
+    if (json?.Response === 'False') {
+      return {
+        ok: false,
+        reason: maskSecretsInText(json?.Error || 'OMDB_SEASON_NOT_FOUND', [key]),
+        episodes: [],
+      };
+    }
+
+    const rawList = Array.isArray(json?.Episodes) ? json.Episodes : [];
+    const episodes = rawList.map((ep) => {
+      const parsedNum = Number(ep.Episode);
+      const rawScore = String(ep.imdbRating || '').trim();
+      const scoreNum =
+        rawScore && !/^n\/a$/i.test(rawScore) && Number.isFinite(Number(rawScore))
+          ? Number(rawScore)
+          : null;
+      return {
+        season: cleanSeason,
+        number: Number.isInteger(parsedNum) && parsedNum > 0 ? parsedNum : null,
+        title: ep.Title && !/^n\/a$/i.test(String(ep.Title).trim()) ? ep.Title : null,
+        released: ep.Released && !/^n\/a$/i.test(ep.Released) ? ep.Released : null,
+        imdbRating:
+          scoreNum !== null && scoreNum > 0 && scoreNum <= 10
+            ? Math.round(scoreNum * 10) / 10
+            : null,
+        imdbId: sanitizeImdbId(ep.imdbID) || null,
+      };
+    });
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, episodes, {
+      ttlMs: getEpisodesTtlMs(showStatus),
+      now: nowFn(),
+    });
+
+    return {
+      ok: true,
+      fromCache: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      episodes,
+    };
+  } catch (err) {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ok: true,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        episodes: cached.data,
+      };
+    }
+    return {
+      ok: false,
+      reason: maskSecretsInText(err?.code || err?.message || 'OMDB_ERROR', [key]),
+      episodes: [],
+    };
+  }
+}
+
+/**
+ * Backfill silencioso de backdropUrl para o Hero da Home (Fase 5 / Regra Extra 2):
+ * - Nunca chama a OMDb.
+ * - Respeita fila de API e teto de concorrência (máx. 2 simultâneos).
+ * - Memoriza tentativa/falha via checkedAt (cooldown de 30 dias em backdropCheckedAt).
+ */
+export async function backfillWorkHeroBackdrop(
+  work,
+  {
+    tmdbApiKey = '',
+    signal,
+    fetchImpl = fetch,
+    nowFn = Date.now,
+    maxConcurrency = 2,
+  } = {}
+) {
+  if (!work || typeof work !== 'object') {
+    return { attempted: false, backdropUrl: null, checkedAt: null, failed: false };
+  }
+  if (work.backdropUrl && /^https?:\/\//i.test(String(work.backdropUrl).trim())) {
+    return {
+      attempted: false,
+      backdropUrl: String(work.backdropUrl).trim(),
+      checkedAt: Number(work.backdropCheckedAt) || null,
+      failed: false,
+    };
+  }
+
+  const now = nowFn();
+  const prevChecked = Number(work.backdropCheckedAt) || 0;
+  if (prevChecked > 0 && now - prevChecked < BACKDROP_RETRY_COOLDOWN_MS) {
+    return {
+      attempted: false,
+      skippedCooldown: true,
+      backdropUrl: null,
+      checkedAt: prevChecked,
+      failed: false,
+    };
+  }
+
+  const withIds = applyCanonicalIdsToWork(work);
+  const tmdbId = Number(withIds.ids?.tmdb || withIds.tmdbId) || null;
+  const anilistId = Number(withIds.ids?.anilist || withIds.anilistId) || null;
+  const key = sanitizeApiKey(tmdbApiKey) || loadTmdbApiKey();
+
+  const tasks = [];
+  let resolvedUrl = null;
+  let hadError = false;
+
+  if (tmdbId && key) {
+    tasks.push(async () => {
+      try {
+        const mediaType =
+          withIds.workType === 'series' ||
+          withIds.tmdbMediaType === 'tv' ||
+          (withIds.workType === 'anime' && withIds.tmdbMediaType === 'tv')
+            ? 'tv'
+            : 'movie';
+        const res = await fetchTmdbDetailsInternal(tmdbId, mediaType, {
+          apiKey: key,
+          signal,
+          fetchImpl,
+          nowFn,
+        });
+        if (res?.ok && res.data?.backdropUrl) {
+          resolvedUrl = resolvedUrl || res.data.backdropUrl;
+        } else if (res && !res.ok) {
+          hadError = true;
+        }
+      } catch {
+        hadError = true;
+      }
+    });
+  }
+
+  if (anilistId) {
+    tasks.push(async () => {
+      try {
+        const map = await fetchAniListMediaByIds([anilistId], {
+          signal,
+          fetchImpl,
+          nowFn,
+        });
+        const media = map.get(anilistId) || null;
+        if (media?.backdropUrl) {
+          resolvedUrl = resolvedUrl || media.backdropUrl;
+        }
+      } catch {
+        hadError = true;
+      }
+    });
+  }
+
+  if (tasks.length === 0) {
+    return {
+      attempted: false,
+      backdropUrl: null,
+      checkedAt: prevChecked || null,
+      failed: false,
+    };
+  }
+
+  const safeConc = Math.max(1, Math.min(2, Number(maxConcurrency) || 2));
+  await runBoundedConcurrency(tasks, safeConc);
+
+  return {
+    attempted: true,
+    backdropUrl: resolvedUrl,
+    checkedAt: now,
+    failed: !resolvedUrl && hadError,
+  };
+}
+
+/**
+ * Busca sugestões externas baseadas nos gêneros e focos escolhidos no onboarding (Fase 5):
+ * - Reutiliza TMDB /discover e AniList GraphQL com cache de 24 h (D4) e máx. 2 reqs simultâneas.
+ * - Nunca chama OMDb e nunca retorna obras já presentes no acervo.
+ */
+export async function fetchOnboardingGenreSuggestions(
+  profile = null,
+  existingItems = [],
+  {
+    tmdbApiKey = '',
+    forceRefresh = false,
+    allowStaleOffline = true,
+    signal,
+    fetchImpl = fetch,
+    nowFn = Date.now,
+    maxConcurrency = 2,
+  } = {}
+) {
+  const safeFocus = normalizeViewerFocusList(
+    profile?.viewerFocus ?? profile?.viewer_focus,
+    profile?.readerFocus ?? profile?.reader_focus
+  );
+  const genres = migrateFavoriteGenresToObjects(profile?.favoriteGenres);
+
+  const tmdbMovieGenres = Array.from(
+    new Set(
+      genres
+        .filter((g) => g.group === 'filmes' && Number(g.tmdbGenreId) > 0)
+        .map((g) => Number(g.tmdbGenreId))
+    )
+  );
+  const tmdbTvGenres = Array.from(
+    new Set(
+      genres
+        .filter((g) => g.group === 'series' && Number(g.tmdbGenreId) > 0)
+        .map((g) => Number(g.tmdbGenreId))
+    )
+  );
+  const anilistGenres = Array.from(
+    new Set(
+      genres
+        .filter((g) => g.group === 'animes' && g.kind === 'genre' && g.anilistKey)
+        .map((g) => String(g.anilistKey))
+    )
+  );
+  const anilistTags = Array.from(
+    new Set(
+      genres
+        .filter((g) => g.group === 'animes' && g.kind === 'tag' && g.anilistKey)
+        .map((g) => String(g.anilistKey))
+    )
+  );
+
+  const wantsAnime =
+    safeFocus.some((f) => /anime/i.test(f)) ||
+    anilistGenres.length > 0 ||
+    anilistTags.length > 0;
+  const wantsSeries =
+    safeFocus.some((f) => /s[eé]rie/i.test(f)) || tmdbTvGenres.length > 0;
+  const wantsMovies =
+    safeFocus.some((f) => /filme|cinema/i.test(f)) || tmdbMovieGenres.length > 0 || !wantsAnime;
+
+  const focusSig = safeFocus.join(',').toLowerCase();
+  const genresSig = genres.map((g) => g.id).sort().join(',');
+  const cacheKey = `home:discover:${focusSig}:${genresSig || 'default'}`;
+  const now = nowFn();
+
+  const cached = forceRefresh
+    ? { hit: false, stale: false, data: null }
+    : await getCachedEntry(CACHE_STORES.search, cacheKey, {
+        now,
+        allowStaleOffline,
+      });
+
+  const filterExistingOut = (rawCandidates = []) => {
+    const existingIds = new Set();
+    const existingTitles = new Set();
+    (Array.isArray(existingItems) ? existingItems : []).forEach((w) => {
+      if (!w) return;
+      const tmdb = Number(w.ids?.tmdb || w.tmdbId);
+      const ani = Number(w.ids?.anilist || w.anilistId);
+      const mal = Number(w.ids?.mal || w.malId);
+      const imdb = sanitizeImdbId(w.ids?.imdb || w.imdbId);
+      if (Number.isInteger(tmdb) && tmdb > 0) existingIds.add(`tmdb:${tmdb}`);
+      if (Number.isInteger(ani) && ani > 0) existingIds.add(`ani:${ani}`);
+      if (Number.isInteger(mal) && mal > 0) existingIds.add(`mal:${mal}`);
+      if (imdb) existingIds.add(`imdb:${imdb}`);
+      const nt = normalizeTitleForDedup(w.title || '');
+      const no = normalizeTitleForDedup(w.originalTitle || '');
+      if (nt) existingTitles.add(nt);
+      if (no) existingTitles.add(no);
+    });
+
+    return rawCandidates.filter((cand) => {
+      if (!cand || !cand.title) return false;
+      const tmdb = Number(cand.ids?.tmdb || cand.tmdbId);
+      const ani = Number(cand.ids?.anilist || cand.anilistId);
+      const mal = Number(cand.ids?.mal || cand.malId);
+      const imdb = sanitizeImdbId(cand.ids?.imdb || cand.imdbId);
+      if (Number.isInteger(tmdb) && existingIds.has(`tmdb:${tmdb}`)) return false;
+      if (Number.isInteger(ani) && existingIds.has(`ani:${ani}`)) return false;
+      if (Number.isInteger(mal) && existingIds.has(`mal:${mal}`)) return false;
+      if (imdb && existingIds.has(`imdb:${imdb}`)) return false;
+      const nt = normalizeTitleForDedup(cand.title);
+      if (nt && existingTitles.has(nt)) return false;
+      return true;
+    });
+  };
+
+  if (cached.hit && !cached.stale && Array.isArray(cached.data)) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+      results: filterExistingOut(cached.data),
+      failedSources: [],
+      partial: false,
+      allFailed: false,
+    };
+  }
+
+  const key = sanitizeApiKey(tmdbApiKey) || loadTmdbApiKey();
+  const tasks = [];
+  const collected = [];
+  const failedSources = [];
+
+  if (key && (wantsMovies || wantsSeries)) {
+    if (wantsMovies && (tmdbMovieGenres.length > 0 || safeFocus.some((f) => /filme|cinema/i.test(f)))) {
+      tasks.push(async () => {
+        try {
+          const genreParam =
+            tmdbMovieGenres.length > 0
+              ? `&with_genres=${encodeURIComponent(tmdbMovieGenres.slice(0, 3).join('|'))}`
+              : '';
+          const url = `${TMDB_API_BASE}/discover/movie?api_key=${encodeURIComponent(key)}&language=pt-BR&sort_by=popularity.desc&vote_count.gte=150${genreParam}`;
+          const res = await fetchWithTimeout(url, { signal, nowFn }, API_TIMEOUT_MS, fetchImpl, 'tmdb');
+          if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+          const json = await res.json();
+          const list = Array.isArray(json?.results) ? json.results.slice(0, 8) : [];
+          list.forEach((m) => {
+            if (!m?.title) return;
+            const year = m.release_date ? Number(String(m.release_date).slice(0, 4)) : null;
+            const poster = m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null;
+            const backdrop = m.backdrop_path ? `${TMDB_BACKDROP_BASE}${m.backdrop_path}` : null;
+            collected.push(
+              applyCanonicalIdsToWork({
+                id: `tmdb-movie-${m.id}`,
+                tmdbId: m.id,
+                tmdbMediaType: 'movie',
+                title: m.title,
+                originalTitle: m.original_title || m.title,
+                workType: 'movie',
+                releaseYear: Number.isFinite(year) ? year : null,
+                coverUrl: poster,
+                backdropUrl: backdrop,
+                synopsis: String(m.overview || '').trim(),
+                genres: [],
+                externalRatings: {
+                  ...createEmptyExternalRatings(),
+                  tmdb: buildTmdbRating(m.vote_average, m.vote_count, nowFn()),
+                },
+                sourceBadge: 'TMDB',
+                mergedSources: ['TMDB'],
+                monogram: buildMonogram(m.title),
+              })
+            );
+          });
+        } catch {
+          if (!failedSources.includes('tmdb')) failedSources.push('tmdb');
+        }
+      });
+    }
+
+    if (wantsSeries && (tmdbTvGenres.length > 0 || safeFocus.some((f) => /s[eé]rie/i.test(f)))) {
+      tasks.push(async () => {
+        try {
+          const genreParam =
+            tmdbTvGenres.length > 0
+              ? `&with_genres=${encodeURIComponent(tmdbTvGenres.slice(0, 3).join('|'))}`
+              : '';
+          const url = `${TMDB_API_BASE}/discover/tv?api_key=${encodeURIComponent(key)}&language=pt-BR&sort_by=popularity.desc&vote_count.gte=120${genreParam}`;
+          const res = await fetchWithTimeout(url, { signal, nowFn }, API_TIMEOUT_MS, fetchImpl, 'tmdb');
+          if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+          const json = await res.json();
+          const list = Array.isArray(json?.results) ? json.results.slice(0, 8) : [];
+          list.forEach((s) => {
+            if (!s?.name) return;
+            const year = s.first_air_date ? Number(String(s.first_air_date).slice(0, 4)) : null;
+            const poster = s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : null;
+            const backdrop = s.backdrop_path ? `${TMDB_BACKDROP_BASE}${s.backdrop_path}` : null;
+            collected.push(
+              applyCanonicalIdsToWork({
+                id: `tmdb-tv-${s.id}`,
+                tmdbId: s.id,
+                tmdbMediaType: 'tv',
+                title: s.name,
+                originalTitle: s.original_name || s.name,
+                workType: 'series',
+                releaseYear: Number.isFinite(year) ? year : null,
+                coverUrl: poster,
+                backdropUrl: backdrop,
+                synopsis: String(s.overview || '').trim(),
+                genres: [],
+                externalRatings: {
+                  ...createEmptyExternalRatings(),
+                  tmdb: buildTmdbRating(s.vote_average, s.vote_count, nowFn()),
+                },
+                sourceBadge: 'TMDB',
+                mergedSources: ['TMDB'],
+                monogram: buildMonogram(s.name),
+              })
+            );
+          });
+        } catch {
+          if (!failedSources.includes('tmdb')) failedSources.push('tmdb');
+        }
+      });
+    }
+  }
+
+  if (wantsAnime) {
+    tasks.push(async () => {
+      try {
+        const gql = `
+          query ($genres: [String], $tags: [String]) {
+            Page(page: 1, perPage: 10) {
+              media(type: ANIME, sort: SCORE_DESC, isAdult: false, genre_in: $genres, tag_in: $tags) {
+                id
+                idMal
+                type
+                format
+                status
+                episodes
+                duration
+                seasonYear
+                startDate { year }
+                averageScore
+                genres
+                bannerImage
+                description(asHtml: false)
+                title { romaji english native }
+                coverImage { extraLarge large medium }
+                studios(isMain: true) { nodes { name } }
+              }
+            }
+          }
+        `;
+        const variables = {
+          genres: anilistGenres.length > 0 ? anilistGenres.slice(0, 4) : undefined,
+          tags: anilistTags.length > 0 ? anilistTags.slice(0, 3) : undefined,
+        };
+        const res = await fetchWithTimeout(
+          ANILIST_GRAPHQL_URL,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ query: gql, variables }),
+            signal,
+            nowFn,
+          },
+          API_TIMEOUT_MS,
+          fetchImpl,
+          'anilist'
+        );
+        if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
+        const json = await res.json();
+        const list = Array.isArray(json?.data?.Page?.media) ? json.data.Page.media : [];
+        list.forEach((m) => {
+          const item = normalizeAniListMedia(m);
+          if (item) collected.push(item);
+        });
+      } catch {
+        if (!failedSources.includes('anilist')) failedSources.push('anilist');
+      }
+    });
+  }
+
+  if (tasks.length === 0) {
+    return {
+      ok: true,
+      fromCache: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      results: [],
+      failedSources: [],
+      partial: false,
+      allFailed: false,
+    };
+  }
+
+  const safeConc = Math.max(1, Math.min(2, Number(maxConcurrency) || 2));
+  await runBoundedConcurrency(tasks, safeConc);
+
+  const deduplicated = deduplicateCinemaResults(collected);
+  const allFailed = tasks.length > 0 && failedSources.length > 0 && deduplicated.length === 0;
+
+  if (allFailed && cached.hit && allowStaleOffline && Array.isArray(cached.data)) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: true,
+      cacheDateLabel: cached.cacheDateLabel,
+      results: filterExistingOut(cached.data),
+      failedSources,
+      partial: true,
+      allFailed: false,
+    };
+  }
+
+  if (deduplicated.length > 0) {
+    await setCachedEntry(CACHE_STORES.search, cacheKey, deduplicated, {
+      ttlMs: CACHE_TTL_MS.discovery,
+      now: nowFn(),
+    });
+  }
+
+  return {
+    ok: !allFailed,
+    fromCache: false,
+    isOfflineCache: false,
+    cacheDateLabel: '',
+    results: filterExistingOut(deduplicated),
+    failedSources,
+    partial: failedSources.length > 0 && deduplicated.length > 0,
+    allFailed,
+  };
+}
+
+export { getOmdbDailyUsage };

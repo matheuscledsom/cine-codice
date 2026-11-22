@@ -1,13 +1,13 @@
 import {
   AlertCircle,
   Bookmark,
-  CheckCircle2,
+  CalendarClock,
   Clapperboard,
   Download,
   Film,
   FolderOpen,
-  GitBranch,
   Heart,
+  ListVideo,
   MessageSquarePlus,
   Plus,
   Quote,
@@ -24,23 +24,29 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { domainConfig, getStatusList } from '../config/domainConfig';
+import { SOCIAL_ENABLED } from '../config/flags';
 import { useToast } from '../context/ToastContext';
+import { formatNextAiringBadge } from '../lib/episodeStats';
 import { searchReaderProfiles, sendDirectMessage } from '../services/codiceBackend';
-import {
-  buildMissingFranchiseEntryDraft,
-  findFranchiseForItem,
-} from '../services/franchiseEngine';
+import { findFranchiseForItem } from '../services/franchiseEngine';
 import {
   getDisplayTitles,
   getTodayLocalISO,
+  getVerdictForScore,
   getVerdictMeta,
+  isEpisodicWork,
   isLoanOverdue,
   normalizeTagsList,
 } from '../utils/backlogHelpers';
 import { downloadWorkMarkdown } from '../utils/markdownExport';
+import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
+import { enrichWorkWithExternalRatings } from '../services/cinemaApi';
 import { BuddyReadPanel } from './BuddyReadPanel';
 import { CollectionCreatorBar } from './CollectionCreatorBar';
 import { CoverArt } from './CoverArt';
+import { EpisodeListTab } from './EpisodeListTab';
+import { ExternalRatingsPanel } from './ExternalRatingsPanel';
+import { FranchiseRadarPanel } from './FranchiseRadarPanel';
 import { QuotesVaultTab } from './QuotesVaultTab';
 import { SmartCatalogButton } from './SmartCatalogButton';
 import { StatusBadge } from './StatusBadge';
@@ -55,6 +61,8 @@ export function ItemDetailSheet({
   posts = [],
   collections = [],
   geminiKey = '',
+  tmdbKey = '',
+  omdbKey = '',
   viewerId = null,
   onClose,
   onUpdateItem,
@@ -67,6 +75,7 @@ export function ItemDetailSheet({
   onOpenGeminiSettings,
   onRecommendToFeed,
   onSocialActivityChanged,
+  onFilterByCreator,
 }) {
   const { showToast } = useToast();
   const [activeSheetTab, setActiveSheetTab] = useState('catalog');
@@ -75,13 +84,181 @@ export function ItemDetailSheet({
   const [sharePeers, setSharePeers] = useState([]);
   const [sendingPeerId, setSendingPeerId] = useState(null);
   const [tagInput, setTagInput] = useState('');
+  const [ratingsLoading, setRatingsLoading] = useState(false);
+  const [ratingsMeta, setRatingsMeta] = useState({
+    failedSources: [],
+    omdbMissingKey: false,
+    isOfflineCache: false,
+    cacheDateLabel: '',
+    hasAttempted: false,
+  });
   const progressSectionRef = useRef(null);
+  const autoEnrichedIdsRef = useRef(new Set());
+  const enrichAbortRef = useRef(null);
+  const latestItemRef = useRef(item);
+  latestItemRef.current = item;
+
+  const runEnrichmentForWork = async (targetItem, { forceRefresh = false } = {}) => {
+    if (!targetItem?.id) return;
+    enrichAbortRef.current?.abort();
+    const controller = new AbortController();
+    enrichAbortRef.current = controller;
+
+    if (!workHasAnyExternalIds(targetItem)) {
+      setRatingsLoading(false);
+      setRatingsMeta({
+        failedSources: [],
+        omdbMissingKey: false,
+        isOfflineCache: false,
+        cacheDateLabel: '',
+        hasAttempted: true,
+      });
+      return;
+    }
+
+    setRatingsLoading(true);
+    try {
+      const res = await enrichWorkWithExternalRatings(targetItem, {
+        tmdbApiKey: tmdbKey,
+        omdbApiKey: omdbKey,
+        forceRefresh,
+        allowStaleOffline: true,
+        signal: controller.signal,
+        maxConcurrency: 2,
+      });
+      if (controller.signal.aborted) return;
+
+      const updatedWork = res?.work;
+      if (updatedWork) {
+        const patch = {};
+        if (JSON.stringify(updatedWork.ids || {}) !== JSON.stringify(targetItem.ids || {})) {
+          patch.ids = updatedWork.ids;
+          patch.tmdbId = updatedWork.tmdbId ?? null;
+          patch.imdbId = updatedWork.imdbId ?? '';
+          patch.tvmazeId = updatedWork.tvmazeId ?? null;
+          patch.anilistId = updatedWork.anilistId ?? null;
+          patch.malId = updatedWork.malId ?? null;
+          if (updatedWork.tmdbMediaType) patch.tmdbMediaType = updatedWork.tmdbMediaType;
+        }
+        if (updatedWork.backdropUrl && updatedWork.backdropUrl !== targetItem.backdropUrl) {
+          patch.backdropUrl = updatedWork.backdropUrl;
+        }
+        if (
+          JSON.stringify(updatedWork.externalRatings || {}) !==
+          JSON.stringify(targetItem.externalRatings || {})
+        ) {
+          patch.externalRatings = updatedWork.externalRatings;
+        }
+        if (updatedWork.belongsToCollection && !targetItem.belongsToCollection) {
+          patch.belongsToCollection = updatedWork.belongsToCollection;
+        }
+        if (updatedWork.tmdbStatus && updatedWork.tmdbStatus !== targetItem.tmdbStatus) {
+          patch.tmdbStatus = updatedWork.tmdbStatus;
+        }
+        if (updatedWork.showStatus && updatedWork.showStatus !== targetItem.showStatus) {
+          patch.showStatus = updatedWork.showStatus;
+        }
+        if (
+          JSON.stringify(updatedWork.nextEpisode || null) !==
+          JSON.stringify(targetItem.nextEpisode || null)
+        ) {
+          patch.nextEpisode = updatedWork.nextEpisode;
+        }
+        if (
+          JSON.stringify(updatedWork.nextAiringEpisode || null) !==
+          JSON.stringify(targetItem.nextAiringEpisode || null)
+        ) {
+          patch.nextAiringEpisode = updatedWork.nextAiringEpisode;
+        }
+        if (updatedWork.franchiseName && !targetItem.franchiseName) {
+          patch.franchiseName = updatedWork.franchiseName;
+        }
+        if (
+          Array.isArray(updatedWork.franchiseRelations) &&
+          updatedWork.franchiseRelations.length > 0 &&
+          (!Array.isArray(targetItem.franchiseRelations) ||
+            targetItem.franchiseRelations.length === 0)
+        ) {
+          patch.franchiseRelations = updatedWork.franchiseRelations;
+        }
+        if (updatedWork.director && !targetItem.director) {
+          patch.director = updatedWork.director;
+        }
+        if (updatedWork.studio && !targetItem.studio) {
+          patch.studio = updatedWork.studio;
+        }
+        if (
+          String(updatedWork.synopsis || '').length >
+          String(targetItem.synopsis || '').length
+        ) {
+          patch.synopsis = updatedWork.synopsis;
+        }
+        if (Object.keys(patch).length > 0) {
+          onUpdateItem(targetItem.id, patch);
+        }
+      }
+
+      setRatingsMeta({
+        failedSources: res?.meta?.failedSources || [],
+        omdbMissingKey: Boolean(res?.meta?.omdbMissingKey),
+        isOfflineCache: Boolean(res?.meta?.isOfflineCache),
+        cacheDateLabel: res?.meta?.cacheDateLabel || '',
+        hasAttempted: true,
+      });
+    } catch {
+      if (!controller.signal.aborted) {
+        setRatingsMeta((prev) => ({
+          ...prev,
+          failedSources: ['rede'],
+          hasAttempted: true,
+        }));
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setRatingsLoading(false);
+      }
+    }
+  };
 
   useEffect(() => {
     setActiveSheetTab('catalog');
     setShareOpen(false);
     setShareNote('');
     setTagInput('');
+    setRatingsMeta({
+      failedSources: [],
+      omdbMissingKey: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      hasAttempted: false,
+    });
+
+    const current = latestItemRef.current;
+    if (!current?.id) return undefined;
+
+    const badges = getPresentExternalRatingBadges(current.externalRatings);
+    const hasMissingExpected =
+      current.workType === 'anime'
+        ? !current.externalRatings?.anilist ||
+          (Boolean(current.ids?.mal || current.malId) && !current.externalRatings?.mal) ||
+          !Array.isArray(current.franchiseRelations) ||
+          current.franchiseRelations.length === 0
+        : !current.externalRatings?.tmdb ||
+          (Boolean(current.ids?.imdb || current.imdbId) && !current.externalRatings?.imdb);
+    const needsAutoFetch =
+      workHasAnyExternalIds(current) &&
+      !autoEnrichedIdsRef.current.has(current.id) &&
+      (!current.backdropUrl || badges.length === 0 || hasMissingExpected);
+
+    if (needsAutoFetch) {
+      autoEnrichedIdsRef.current.add(current.id);
+      runEnrichmentForWork(current, { forceRefresh: false });
+    }
+
+    return () => {
+      enrichAbortRef.current?.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.id]);
 
   useEffect(() => {
@@ -159,6 +336,20 @@ export function ItemDetailSheet({
   const linkedPosts = posts.filter((post) => post.itemId === item.id);
   const displayTitles = getDisplayTitles(item, 'bilingual');
   const creatorLabel = item.director || item.studio || item.author || '';
+  const episodic = isEpisodicWork(item);
+  const nextAiringBadge = episodic ? formatNextAiringBadge(item) : null;
+  const clickableCreators = Array.from(
+    new Set(
+      [item.director, item.studio, item.author]
+        .filter(Boolean)
+        .flatMap((raw) =>
+          String(raw)
+            .split(/[;,]/)
+            .map((part) => part.trim())
+            .filter(Boolean)
+        )
+    )
+  );
 
   return (
     <div
@@ -195,16 +386,39 @@ export function ItemDetailSheet({
                 type="button"
                 onClick={onClose}
                 aria-label={ui.detail.closeLabel}
-                className="flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-full p-1 text-muted hover:bg-elevated hover:text-ink"
+                className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-full p-1 text-muted hover:bg-elevated hover:text-ink"
               >
                 <X className="h-4 w-4" strokeWidth={1.5} />
               </button>
             </div>
-            <p className="mt-0.5 text-xs text-muted">
-              {[creatorLabel, item.releaseYear, item.franchiseName || item.seriesName]
-                .filter(Boolean)
-                .join(' · ')}
-            </p>
+            {clickableCreators.length > 0 && onFilterByCreator ? (
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                {clickableCreators.map((creatorName) => (
+                  <button
+                    key={creatorName}
+                    type="button"
+                    onClick={() => onFilterByCreator(creatorName)}
+                    aria-label={`Filtrar acervo e buscar mais títulos de ${creatorName}`}
+                    className="inline-flex min-h-[44px] items-center rounded-[4px] border border-line bg-app px-2.5 py-1 text-left text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+                  >
+                    {creatorName}
+                  </button>
+                ))}
+                {(item.releaseYear || item.franchiseName || item.seriesName) && (
+                  <span className="text-xs text-muted tabular-nums">
+                    {[item.releaseYear, item.franchiseName || item.seriesName]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <p className="mt-0.5 text-xs text-muted">
+                {[creatorLabel, item.releaseYear, item.franchiseName || item.seriesName]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </p>
+            )}
             {genres.length > 0 && (
               <p className="mt-1 truncate text-[11px] text-subtle">
                 {genres.slice(0, 3).join(' · ')}
@@ -212,11 +426,36 @@ export function ItemDetailSheet({
             )}
             <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
               <StatusBadge statusId={item.status} />
-              {typeof item.rating === 'number' && (
-                <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
-                  <Star className="h-3 w-3 fill-current" />
-                  {item.rating}/100
+              {nextAiringBadge && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
+                  <CalendarClock className="h-3 w-3 shrink-0" strokeWidth={1.5} />
+                  <span>{nextAiringBadge.text}</span>
                 </span>
+              )}
+              {typeof item.rating === 'number' && (
+                item.ratingSource === 'legacy-default' ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateItem(item.id, {
+                        rating: item.rating,
+                        ratingSource: 'manual',
+                        verdict: item.verdict || getVerdictForScore(item.rating),
+                      })
+                    }
+                    title="Nota padrão criada automaticamente na versão anterior — toque para confirmar"
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-full border border-dashed border-line bg-app px-3 py-1 text-[10px] font-medium tabular-nums text-muted opacity-75 transition-opacity hover:border-accent hover:text-ink hover:opacity-100"
+                  >
+                    <Star className="h-3 w-3 text-subtle" strokeWidth={1.5} />
+                    <span>{item.rating}/100 · nota padrão</span>
+                    <span className="font-semibold text-accent">Confirmar</span>
+                  </button>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
+                    <Star className="h-3 w-3 fill-current" strokeWidth={1.5} />
+                    {item.rating}/100
+                  </span>
+                )
               )}
               {Number(item.rewatchCount) > 0 && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-line bg-app px-2 py-0.5 text-[10px] font-medium tabular-nums text-ink">
@@ -240,8 +479,12 @@ export function ItemDetailSheet({
           </div>
         </div>
 
-        {/* Ações principais no topo: Atualizar Progresso & Indicar */}
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {/* Ações principais no topo: Atualizar Progresso (& Indicar quando SOCIAL_ENABLED) */}
+        <div
+          className={`mt-4 grid grid-cols-1 gap-2 ${
+            SOCIAL_ENABLED ? 'sm:grid-cols-2' : ''
+          }`}
+        >
           <button
             type="button"
             onClick={() => {
@@ -259,22 +502,24 @@ export function ItemDetailSheet({
             <span>Atualizar Progresso</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setShareOpen((prev) => !prev)}
-            aria-expanded={shareOpen}
-            className={`flex min-h-[44px] w-full items-center justify-center gap-2 rounded-[4px] border px-3.5 py-2 text-xs font-medium transition-colors ${
-              shareOpen
-                ? 'border-accent bg-accent/10 text-accent'
-                : 'border-line bg-app text-ink hover:border-accent hover:text-accent'
-            }`}
-          >
-            <Share2 className="h-4 w-4 text-accent" strokeWidth={1.5} />
-            <span>Indicar Obra</span>
-          </button>
+          {SOCIAL_ENABLED && (
+            <button
+              type="button"
+              onClick={() => setShareOpen((prev) => !prev)}
+              aria-expanded={shareOpen}
+              className={`flex min-h-[44px] w-full items-center justify-center gap-2 rounded-[4px] border px-3.5 py-2 text-xs font-medium transition-colors ${
+                shareOpen
+                  ? 'border-accent bg-accent/10 text-accent'
+                  : 'border-line bg-app text-ink hover:border-accent hover:text-accent'
+              }`}
+            >
+              <Share2 className="h-4 w-4 text-accent" strokeWidth={1.5} />
+              <span>Indicar Obra</span>
+            </button>
+          )}
         </div>
 
-        {shareOpen && (
+        {SOCIAL_ENABLED && shareOpen && (
           <div className="mt-2.5 space-y-3 rounded-[4px] border border-line bg-app p-3">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] font-semibold text-ink">
@@ -337,12 +582,22 @@ export function ItemDetailSheet({
           </div>
         )}
 
-        {/* Abas da Obra: Ficha | Falas & Cenas | Sessão Conjunta */}
-        <div className="mt-4 grid grid-cols-3 gap-1 rounded-2xl border border-line bg-app p-1">
+        {/* Abas da Obra: Ficha | (Episódios) | Falas & Cenas | (Sessão Conjunta se SOCIAL_ENABLED) */}
+        <div
+          className={`mt-4 grid gap-1 rounded-2xl border border-line bg-app p-1 ${
+            episodic
+              ? SOCIAL_ENABLED
+                ? 'grid-cols-4'
+                : 'grid-cols-3'
+              : SOCIAL_ENABLED
+                ? 'grid-cols-3'
+                : 'grid-cols-2'
+          }`}
+        >
           <button
             type="button"
             onClick={() => setActiveSheetTab('catalog')}
-            className={`flex min-h-[40px] items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[11px] font-semibold transition-colors ${
+            className={`flex min-h-[44px] items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[11px] font-semibold transition-colors ${
               activeSheetTab === 'catalog'
                 ? 'bg-accent text-accent-ink'
                 : 'text-muted hover:text-ink'
@@ -351,10 +606,24 @@ export function ItemDetailSheet({
             <Film className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
             <span className="truncate">Ficha</span>
           </button>
+          {episodic && (
+            <button
+              type="button"
+              onClick={() => setActiveSheetTab('episodes')}
+              className={`flex min-h-[44px] items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[11px] font-semibold transition-colors ${
+                activeSheetTab === 'episodes'
+                  ? 'bg-accent text-accent-ink'
+                  : 'text-muted hover:text-ink'
+              }`}
+            >
+              <ListVideo className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
+              <span className="truncate">Episódios</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setActiveSheetTab('quotes')}
-            className={`flex min-h-[40px] items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[11px] font-semibold transition-colors ${
+            className={`flex min-h-[44px] items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[11px] font-semibold transition-colors ${
               activeSheetTab === 'quotes'
                 ? 'bg-accent text-accent-ink'
                 : 'text-muted hover:text-ink'
@@ -374,23 +643,34 @@ export function ItemDetailSheet({
               </span>
             )}
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveSheetTab('buddy')}
-            className={`flex min-h-[40px] items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[11px] font-semibold transition-colors ${
-              activeSheetTab === 'buddy'
-                ? 'bg-accent text-accent-ink'
-                : 'text-muted hover:text-ink'
-            }`}
-          >
-            <Users className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
-            <span className="truncate">Conjunta</span>
-          </button>
+          {SOCIAL_ENABLED && (
+            <button
+              type="button"
+              onClick={() => setActiveSheetTab('buddy')}
+              className={`flex min-h-[44px] items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-[11px] font-semibold transition-colors ${
+                activeSheetTab === 'buddy'
+                  ? 'bg-accent text-accent-ink'
+                  : 'text-muted hover:text-ink'
+              }`}
+            >
+              <Users className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
+              <span className="truncate">Conjunta</span>
+            </button>
+          )}
         </div>
 
-        {activeSheetTab === 'buddy' ? (
+        {SOCIAL_ENABLED && activeSheetTab === 'buddy' ? (
           <div className="mt-4">
             <BuddyReadPanel item={item} profile={profile} />
+          </div>
+        ) : activeSheetTab === 'episodes' && episodic ? (
+          <div className="mt-4">
+            <EpisodeListTab
+              item={item}
+              tmdbKey={tmdbKey}
+              omdbKey={omdbKey}
+              onUpdateItem={onUpdateItem}
+            />
           </div>
         ) : activeSheetTab === 'quotes' ? (
           <div className="mt-4">
@@ -401,6 +681,24 @@ export function ItemDetailSheet({
           </div>
         ) : (
           <>
+            <ExternalRatingsPanel
+              item={item}
+              loading={ratingsLoading}
+              failedSources={ratingsMeta.failedSources}
+              omdbMissingKey={ratingsMeta.omdbMissingKey}
+              isOfflineCache={ratingsMeta.isOfflineCache}
+              cacheDateLabel={ratingsMeta.cacheDateLabel}
+              hasAttempted={ratingsMeta.hasAttempted}
+              onRetryRefresh={() => {
+                autoEnrichedIdsRef.current.add(item.id);
+                runEnrichmentForWork(item, { forceRefresh: true });
+              }}
+              onOpenApiSettings={() => {
+                onClose();
+                onOpenGeminiSettings?.();
+              }}
+            />
+
             <div className="mt-4">
               <WorkTypeSelector
                 label={ui.detail.workTypeTitle}
@@ -557,99 +855,16 @@ export function ItemDetailSheet({
               />
             </div>
 
-            {/* Radar de Franquia, Sagas & Ordem Cronológica */}
-            {franchise && franchise.timeline.length > 0 && (
-              <section
-                aria-label="Radar de Franquias e Ordem Cronológica"
-                className="mt-4 rounded-xl border border-line bg-app p-3.5 space-y-3"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <GitBranch className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
-                    <div className="min-w-0">
-                      <h4 className="truncate text-xs font-semibold text-ink">
-                        Saga: {franchise.name}
-                      </h4>
-                      <p className="text-[10px] tabular-nums text-subtle">
-                        {franchise.completedCount}/{franchise.totalCount} concluídas ({franchise.completionPct}%)
-                      </p>
-                    </div>
-                  </div>
-                  <span className="rounded-[4px] border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
-                    {franchise.completionPct}%
-                  </span>
-                </div>
-
-                <div className="space-y-1.5">
-                  {franchise.timeline.map((node, idx) => {
-                    const isCurrent = node.id === item.id;
-                    return (
-                      <div
-                        key={node.id || `${node.title}-${idx}`}
-                        className={`flex items-center justify-between gap-2 rounded-[4px] border px-2.5 py-2 ${
-                          isCurrent
-                            ? 'border-accent bg-accent/10'
-                            : 'border-line bg-card'
-                        }`}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] font-semibold tabular-nums text-subtle">
-                              {String(idx + 1).padStart(2, '0')}.
-                            </span>
-                            {node.isCompleted && (
-                              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.5} />
-                            )}
-                            {node.isCataloged && !isCurrent && onSelectItem ? (
-                              <button
-                                type="button"
-                                onClick={() => onSelectItem(node.item)}
-                                className="truncate text-left text-xs font-medium text-ink hover:text-accent"
-                              >
-                                {node.title}
-                              </button>
-                            ) : (
-                              <span className="truncate text-xs font-medium text-ink">
-                                {node.title}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-[10px] text-subtle tabular-nums">
-                            {[node.entryKind, node.releaseYear, node.totalEpisodes ? `${node.totalEpisodes} eps` : '']
-                              .filter(Boolean)
-                              .join(' · ')}
-                          </p>
-                        </div>
-
-                        {node.isCataloged ? (
-                          <StatusBadge statusId={node.status} size="xs" />
-                        ) : (
-                          onQuickCatalogItem && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const draft = buildMissingFranchiseEntryDraft(franchise, node);
-                                if (draft) {
-                                  onQuickCatalogItem(draft);
-                                  showToast({
-                                    message: `"${node.title}" adicionado à fila Quero Ver`,
-                                    type: 'success',
-                                  });
-                                }
-                              }}
-                              className="inline-flex min-h-[34px] shrink-0 items-center gap-1 rounded-[4px] border border-accent bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
-                            >
-                              <Plus className="h-3 w-3" strokeWidth={1.5} />
-                              <span>+ Catalogar</span>
-                            </button>
-                          )
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
+            {/* Radar de Franquia, Sagas & Universo */}
+            <FranchiseRadarPanel
+              item={item}
+              allItems={allItems}
+              franchise={franchise}
+              onSelectItem={onSelectItem}
+              onQuickCatalogItem={onQuickCatalogItem}
+              onUpdateItem={onUpdateItem}
+              onShowToast={showToast}
+            />
 
             <div className="mt-4">
               <TechnicalAtmosphereSection
@@ -785,6 +1000,34 @@ export function ItemDetailSheet({
                     ))}
                   </div>
                 )}
+              </div>
+
+              <div className="border-t border-line pt-2.5 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label
+                    htmlFor={`fav-scene-${item.id}`}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-ink"
+                  >
+                    <Quote className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                    <span>Citação ou cena favorita (opcional)</span>
+                  </label>
+                  <span className="text-[10px] tabular-nums text-subtle">
+                    {String(item.favoriteScene || '').length}/200
+                  </span>
+                </div>
+                <textarea
+                  id={`fav-scene-${item.id}`}
+                  rows={2}
+                  maxLength={200}
+                  value={item.favoriteScene || ''}
+                  onChange={(e) =>
+                    onUpdateItem(item.id, {
+                      favoriteScene: e.target.value.slice(0, 200),
+                    })
+                  }
+                  placeholder="Frase marcante ou cena que definiu a obra para destacar na Home..."
+                  className="w-full resize-none rounded-[4px] border border-line bg-app px-2.5 py-2 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                />
               </div>
 
               <div className="border-t border-line pt-2.5 space-y-2">

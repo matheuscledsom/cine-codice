@@ -7,6 +7,7 @@ import {
   buildGeneratedPosterDataUri,
   generateEditorialPosterSvg,
 } from '../src/graphics/posterGenerator.js';
+import { findForbiddenEmojisOrSymbols } from '../src/lib/emojiCheck.js';
 import {
   EMERGENCY_MIRROR_KEY,
   exportSignedBackupPayload,
@@ -446,7 +447,6 @@ describe('Cine Códice — Diretrizes Visuais & Integridade sem IA/Emojis', () =
     const uri = buildGeneratedPosterDataUri({ title: 'Solaris' });
     assert.match(uri, /^data:image\/svg\+xml/);
 
-    const emojiRegex = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/u;
     const walkDir = (dirPath) => {
       for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
         const fullPath = path.join(dirPath, entry.name);
@@ -454,10 +454,11 @@ describe('Cine Códice — Diretrizes Visuais & Integridade sem IA/Emojis', () =
           walkDir(fullPath);
         } else if (/\.(js|jsx|ts|tsx|css)$/i.test(entry.name)) {
           const content = fs.readFileSync(fullPath, 'utf8');
+          const violations = findForbiddenEmojisOrSymbols(content);
           assert.equal(
-            emojiRegex.test(content),
-            false,
-            `Emoji detectado em arquivo proibido: ${fullPath}`
+            violations.length,
+            0,
+            `Emoji ou símbolo proibido detectado em ${fullPath}: ${violations.map((v) => v.char).join(', ')}`
           );
         }
       }
