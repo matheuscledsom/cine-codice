@@ -39,9 +39,12 @@ import {
   normalizeTagsList,
 } from '../utils/backlogHelpers';
 import { downloadWorkMarkdown } from '../utils/markdownExport';
+import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
+import { enrichWorkWithExternalRatings } from '../services/cinemaApi';
 import { BuddyReadPanel } from './BuddyReadPanel';
 import { CollectionCreatorBar } from './CollectionCreatorBar';
 import { CoverArt } from './CoverArt';
+import { ExternalRatingsPanel } from './ExternalRatingsPanel';
 import { QuotesVaultTab } from './QuotesVaultTab';
 import { SmartCatalogButton } from './SmartCatalogButton';
 import { StatusBadge } from './StatusBadge';
@@ -56,6 +59,8 @@ export function ItemDetailSheet({
   posts = [],
   collections = [],
   geminiKey = '',
+  tmdbKey = '',
+  omdbKey = '',
   viewerId = null,
   onClose,
   onUpdateItem,
@@ -76,13 +81,162 @@ export function ItemDetailSheet({
   const [sharePeers, setSharePeers] = useState([]);
   const [sendingPeerId, setSendingPeerId] = useState(null);
   const [tagInput, setTagInput] = useState('');
+  const [ratingsLoading, setRatingsLoading] = useState(false);
+  const [ratingsMeta, setRatingsMeta] = useState({
+    failedSources: [],
+    omdbMissingKey: false,
+    isOfflineCache: false,
+    cacheDateLabel: '',
+    hasAttempted: false,
+  });
   const progressSectionRef = useRef(null);
+  const autoEnrichedIdsRef = useRef(new Set());
+  const enrichAbortRef = useRef(null);
+  const latestItemRef = useRef(item);
+  latestItemRef.current = item;
+
+  const runEnrichmentForWork = async (targetItem, { forceRefresh = false } = {}) => {
+    if (!targetItem?.id) return;
+    enrichAbortRef.current?.abort();
+    const controller = new AbortController();
+    enrichAbortRef.current = controller;
+
+    if (!workHasAnyExternalIds(targetItem)) {
+      setRatingsLoading(false);
+      setRatingsMeta({
+        failedSources: [],
+        omdbMissingKey: false,
+        isOfflineCache: false,
+        cacheDateLabel: '',
+        hasAttempted: true,
+      });
+      return;
+    }
+
+    setRatingsLoading(true);
+    try {
+      const res = await enrichWorkWithExternalRatings(targetItem, {
+        tmdbApiKey: tmdbKey,
+        omdbApiKey: omdbKey,
+        forceRefresh,
+        allowStaleOffline: true,
+        signal: controller.signal,
+        maxConcurrency: 2,
+      });
+      if (controller.signal.aborted) return;
+
+      const updatedWork = res?.work;
+      if (updatedWork) {
+        const patch = {};
+        if (JSON.stringify(updatedWork.ids || {}) !== JSON.stringify(targetItem.ids || {})) {
+          patch.ids = updatedWork.ids;
+          patch.tmdbId = updatedWork.tmdbId ?? null;
+          patch.imdbId = updatedWork.imdbId ?? '';
+          patch.tvmazeId = updatedWork.tvmazeId ?? null;
+          patch.anilistId = updatedWork.anilistId ?? null;
+          patch.malId = updatedWork.malId ?? null;
+          if (updatedWork.tmdbMediaType) patch.tmdbMediaType = updatedWork.tmdbMediaType;
+        }
+        if (updatedWork.backdropUrl && updatedWork.backdropUrl !== targetItem.backdropUrl) {
+          patch.backdropUrl = updatedWork.backdropUrl;
+        }
+        if (
+          JSON.stringify(updatedWork.externalRatings || {}) !==
+          JSON.stringify(targetItem.externalRatings || {})
+        ) {
+          patch.externalRatings = updatedWork.externalRatings;
+        }
+        if (updatedWork.belongsToCollection && !targetItem.belongsToCollection) {
+          patch.belongsToCollection = updatedWork.belongsToCollection;
+        }
+        if (updatedWork.tmdbStatus && updatedWork.tmdbStatus !== targetItem.tmdbStatus) {
+          patch.tmdbStatus = updatedWork.tmdbStatus;
+        }
+        if (updatedWork.franchiseName && !targetItem.franchiseName) {
+          patch.franchiseName = updatedWork.franchiseName;
+        }
+        if (
+          Array.isArray(updatedWork.franchiseRelations) &&
+          updatedWork.franchiseRelations.length > 0 &&
+          (!Array.isArray(targetItem.franchiseRelations) ||
+            targetItem.franchiseRelations.length === 0)
+        ) {
+          patch.franchiseRelations = updatedWork.franchiseRelations;
+        }
+        if (updatedWork.director && !targetItem.director) {
+          patch.director = updatedWork.director;
+        }
+        if (updatedWork.studio && !targetItem.studio) {
+          patch.studio = updatedWork.studio;
+        }
+        if (
+          String(updatedWork.synopsis || '').length >
+          String(targetItem.synopsis || '').length
+        ) {
+          patch.synopsis = updatedWork.synopsis;
+        }
+        if (Object.keys(patch).length > 0) {
+          onUpdateItem(targetItem.id, patch);
+        }
+      }
+
+      setRatingsMeta({
+        failedSources: res?.meta?.failedSources || [],
+        omdbMissingKey: Boolean(res?.meta?.omdbMissingKey),
+        isOfflineCache: Boolean(res?.meta?.isOfflineCache),
+        cacheDateLabel: res?.meta?.cacheDateLabel || '',
+        hasAttempted: true,
+      });
+    } catch {
+      if (!controller.signal.aborted) {
+        setRatingsMeta((prev) => ({
+          ...prev,
+          failedSources: ['rede'],
+          hasAttempted: true,
+        }));
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setRatingsLoading(false);
+      }
+    }
+  };
 
   useEffect(() => {
     setActiveSheetTab('catalog');
     setShareOpen(false);
     setShareNote('');
     setTagInput('');
+    setRatingsMeta({
+      failedSources: [],
+      omdbMissingKey: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      hasAttempted: false,
+    });
+
+    const current = latestItemRef.current;
+    if (!current?.id) return undefined;
+
+    const badges = getPresentExternalRatingBadges(current.externalRatings);
+    const hasMissingExpected =
+      current.workType === 'anime'
+        ? !current.externalRatings?.anilist || (Boolean(current.ids?.mal || current.malId) && !current.externalRatings?.mal)
+        : !current.externalRatings?.tmdb || (Boolean(current.ids?.imdb || current.imdbId) && !current.externalRatings?.imdb);
+    const needsAutoFetch =
+      workHasAnyExternalIds(current) &&
+      !autoEnrichedIdsRef.current.has(current.id) &&
+      (!current.backdropUrl || badges.length === 0 || hasMissingExpected);
+
+    if (needsAutoFetch) {
+      autoEnrichedIdsRef.current.add(current.id);
+      runEnrichmentForWork(current, { forceRefresh: false });
+    }
+
+    return () => {
+      enrichAbortRef.current?.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.id]);
 
   useEffect(() => {
@@ -196,7 +350,7 @@ export function ItemDetailSheet({
                 type="button"
                 onClick={onClose}
                 aria-label={ui.detail.closeLabel}
-                className="flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-full p-1 text-muted hover:bg-elevated hover:text-ink"
+                className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-full p-1 text-muted hover:bg-elevated hover:text-ink"
               >
                 <X className="h-4 w-4" strokeWidth={1.5} />
               </button>
@@ -421,6 +575,24 @@ export function ItemDetailSheet({
           </div>
         ) : (
           <>
+            <ExternalRatingsPanel
+              item={item}
+              loading={ratingsLoading}
+              failedSources={ratingsMeta.failedSources}
+              omdbMissingKey={ratingsMeta.omdbMissingKey}
+              isOfflineCache={ratingsMeta.isOfflineCache}
+              cacheDateLabel={ratingsMeta.cacheDateLabel}
+              hasAttempted={ratingsMeta.hasAttempted}
+              onRetryRefresh={() => {
+                autoEnrichedIdsRef.current.add(item.id);
+                runEnrichmentForWork(item, { forceRefresh: true });
+              }}
+              onOpenApiSettings={() => {
+                onClose();
+                onOpenGeminiSettings?.();
+              }}
+            />
+
             <div className="mt-4">
               <WorkTypeSelector
                 label={ui.detail.workTypeTitle}

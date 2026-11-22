@@ -230,6 +230,16 @@ export function formatExternalRatingValue(sourceId, entry) {
   return String(norm.value);
 }
 
+export function formatRatingFetchedDate(timestampMs) {
+  const ts = Number(timestampMs);
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}`;
+}
+
 export function getPresentExternalRatingBadges(externalRatings) {
   const normalized = normalizeExternalRatings(externalRatings);
   const badges = [];
@@ -249,6 +259,7 @@ export function getPresentExternalRatingBadges(externalRatings) {
       normalized100: normalizeScoreTo100(entry),
       votes: entry.votes ?? null,
       fetchedAt: entry.fetchedAt ?? null,
+      fetchedDateLabel: formatRatingFetchedDate(entry.fetchedAt),
     });
   }
   return badges;
@@ -298,6 +309,13 @@ export function compareUserRatingWithPublic(
 
   const delta = userScore100 - publicAvg.average100;
   const deltaText = delta > 0 ? `+${delta}` : String(delta);
+  const alignment = delta > 0 ? 'above' : delta < 0 ? 'below' : 'equal';
+  const alignmentText =
+    delta > 0
+      ? `${deltaText} pts acima do público`
+      : delta < 0
+        ? `${deltaText} pts abaixo do público`
+        : '0 pts (alinhada ao público)';
 
   return {
     userScore100,
@@ -305,7 +323,109 @@ export function compareUserRatingWithPublic(
     delta,
     deltaText,
     sourceCount: publicAvg.sourceCount,
-    alignment: delta > 0 ? 'above' : delta < 0 ? 'below' : 'equal',
+    alignment,
+    alignmentText,
+  };
+}
+
+/**
+ * Fontes esperadas por tipo de obra conforme D1 (para skeleton individual durante carregamento).
+ */
+export function getExpectedExternalSourcesForWork(work = {}) {
+  const workType = work?.workType || 'movie';
+  const ids = work?.ids || {};
+  const hasTmdb = Boolean(ids.tmdb || work?.tmdbId || work?.externalRatings?.tmdb);
+
+  if (workType === 'anime') {
+    const list = ['anilist', 'mal'];
+    if (hasTmdb) list.push('tmdb');
+    return list;
+  }
+
+  return ['tmdb', 'imdb', 'rottenTomatoes', 'metacritic'];
+}
+
+export function workHasAnyExternalIds(work = {}) {
+  const ids = work?.ids || {};
+  return Boolean(
+    ids.tmdb ||
+      work?.tmdbId ||
+      ids.imdb ||
+      work?.imdbId ||
+      ids.anilist ||
+      work?.anilistId ||
+      ids.mal ||
+      work?.malId ||
+      ids.tvmaze ||
+      work?.tvmazeId
+  );
+}
+
+/**
+ * Planeja estado unificado da seção "Notas do Público" e "Sua Nota vs. Público" na ficha (D5 / D6 / D7).
+ */
+export function buildExternalRatingsViewModel(
+  work = {},
+  {
+    loading = false,
+    pendingSources = null,
+    failedSources = [],
+    omdbMissingKey = false,
+    isOfflineCache = false,
+    cacheDateLabel = '',
+    hasAttempted = false,
+  } = {}
+) {
+  const badges = getPresentExternalRatingBadges(work?.externalRatings);
+  const presentSet = new Set(badges.map((b) => b.id));
+  const expected = getExpectedExternalSourcesForWork(work);
+
+  let skeletonSourceIds = [];
+  if (loading) {
+    const candidatePending = Array.isArray(pendingSources) ? pendingSources : expected;
+    skeletonSourceIds = candidatePending.filter((id) => !presentSet.has(id));
+  }
+
+  const comparison = compareUserRatingWithPublic(
+    work?.rating,
+    work?.externalRatings,
+    work?.ratingSource
+  );
+
+  const safeFailed = Array.isArray(failedSources) ? failedSources.filter(Boolean) : [];
+  const hasIds = workHasAnyExternalIds(work);
+
+  let state = 'ready';
+  if (loading && badges.length === 0) {
+    state = 'loading';
+  } else if (badges.length > 0 && isOfflineCache) {
+    state = 'offline';
+  } else if (
+    badges.length > 0 &&
+    (loading || safeFailed.length > 0 || omdbMissingKey)
+  ) {
+    state = 'partial';
+  } else if (badges.length === 0 && safeFailed.length > 0) {
+    state = 'error';
+  } else if (badges.length === 0 && hasAttempted) {
+    state = 'empty';
+  } else if (badges.length === 0 && !hasIds) {
+    state = 'empty';
+  }
+
+  return {
+    state,
+    badges,
+    skeletonSourceIds: skeletonSourceIds.map((id) => ({
+      id,
+      label: RATING_SOURCE_META[id]?.label || id,
+    })),
+    comparison,
+    omdbMissingKey: Boolean(omdbMissingKey),
+    failedSources: safeFailed,
+    isOfflineCache: Boolean(isOfflineCache),
+    cacheDateLabel: String(cacheDateLabel || ''),
+    hasAnyIds: hasIds,
   };
 }
 

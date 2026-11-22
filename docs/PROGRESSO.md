@@ -1,8 +1,8 @@
 # Progresso — Cine Códice v1.1.0 · Lumière
 
 **Branch ativa:** `feat/v1.1.0-lumiere`
-**Última fase concluída:** `2`
-**Próxima fase:** `3` (Notas externas e backdrops)
+**Última fase concluída:** `3`
+**Próxima fase:** `4` (Episódios, Obra e Franquia)
 
 ## Linha do Tempo das Fases
 - [x] **Fase 0 — Auditoria (somente leitura)** — concluída na `main` sem alterações.
@@ -25,7 +25,12 @@
   - Removido o bloco de Meta Anual de [`src/screens/HomeScreen.jsx`](../src/screens/HomeScreen.jsx) e mantidos `annualGoal`/`preferredFormat` salvos no perfil sem leitura na interface.
   - Atualizados [`src/components/ProfileSettingsDrawer.jsx`](../src/components/ProfileSettingsDrawer.jsx), [`src/services/recommendationEngine.js`](../src/services/recommendationEngine.js), [`src/components/OracleWidget.jsx`](../src/components/OracleWidget.jsx), [`src/services/aiProvider.js`](../src/services/aiProvider.js) e [`src/services/geminiApi.js`](../src/services/geminiApi.js) para ler `viewerFocus` (mantendo `readerFocus` derivado para legados) e gêneros estruturados.
   - Criada suíte [`tests/fase2-onboarding.test.mjs`](../tests/fase2-onboarding.test.mjs).
-- [ ] **Fase 3 — Notas externas e backdrops**
+- [x] **Fase 3 — Notas externas e backdrops** — concluída na branch `feat/v1.1.0-lumiere`.
+  - Adicionado [`runBoundedConcurrency`](../src/api/httpClient.js) (limite estrito de **no máx. 2 requisições simultâneas**) aplicado em `fetchTvMazeShowDetails` e no enriquecimento completo [`enrichWorkWithExternalRatings`](../src/services/cinemaApi.js) / `enrichCinemaCandidate`.
+  - Adicionado `fetchJikanAnimeRating` em [`src/services/cinemaApi.js`](../src/services/cinemaApi.js) e cache em `IndexedDB` (`CACHE_STORES.ratings`, TTL 7 dias + fallback offline) para TMDB, OMDb, AniList e Jikan, gravando sempre `backdropUrl` (TMDB `w1280` ou banner da AniList) e `externalRatings`.
+  - Cards de resultado em [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx) exibem apenas a nota que já vem da busca; o carregamento completo das notas e backdrop ocorre ao abrir a ficha/drawer ou ao salvar a obra em segundo plano.
+  - Criado [`src/components/ExternalRatingsPanel.jsx`](../src/components/ExternalRatingsPanel.jsx) e [`buildExternalRatingsViewModel`](../src/lib/ratings.js) integrados em [`src/components/ItemDetailSheet.jsx`](../src/components/ItemDetailSheet.jsx): selo individual por fonte (`IMDb`, `RT`, `Metacritic`, `TMDB`, `AniList`, `MAL`) com skeleton por fonte e data da coleta, 5 estados de tela (carregando, vazio, erro com "Tentar de novo", offline `"dados de DD/MM"`, parcial/sem chave OMDb) e comparativo `"Sua Nota vs. Público"` exclusivo para notas confirmadas (`ratingSource !== 'legacy-default'`) com diferença em sinal + texto.
+  - Criada suíte [`tests/fase3-ratings.test.mjs`](../tests/fase3-ratings.test.mjs).
 - [ ] **Fase 4 — Episódios, Obra e Franquia**
 - [ ] **Fase 5 — Home**
 - [ ] **Fase 6 — Perfil, social oculto e resíduos de livro**

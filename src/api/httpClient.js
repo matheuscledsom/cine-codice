@@ -692,3 +692,32 @@ export async function apiRequestJson(url, options = {}) {
   }
   return res.json();
 }
+
+/**
+ * Executa uma lista de fábricas assíncronas limitando estritamente a concorrência simultânea
+ * (por padrão no máx. 2 requisições em voo, conforme D4 / Fase 3).
+ */
+export async function runBoundedConcurrency(taskFns = [], maxConcurrency = 2) {
+  const list = Array.isArray(taskFns) ? taskFns : [];
+  if (list.length === 0) return [];
+  const cap = Math.max(1, Number(maxConcurrency) || 2);
+  const results = new Array(list.length);
+  let cursor = 0;
+
+  const worker = async () => {
+    while (cursor < list.length) {
+      const idx = cursor;
+      cursor += 1;
+      const fn = list[idx];
+      if (typeof fn !== 'function') {
+        results[idx] = undefined;
+        continue;
+      }
+      results[idx] = await fn();
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(cap, list.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}

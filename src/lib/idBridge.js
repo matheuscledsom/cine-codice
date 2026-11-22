@@ -33,11 +33,11 @@ export function normalizeIdsBlock(raw = {}) {
   const nested = src.ids && typeof src.ids === 'object' ? src.ids : {};
 
   return {
-    tmdb: sanitizePositiveIntId(nested.tmdb ?? src.tmdbId),
-    imdb: sanitizeImdbId(nested.imdb ?? src.imdbId),
-    tvmaze: sanitizePositiveIntId(nested.tvmaze ?? src.tvmazeId),
-    anilist: sanitizePositiveIntId(nested.anilist ?? src.anilistId),
-    mal: sanitizePositiveIntId(nested.mal ?? src.malId),
+    tmdb: sanitizePositiveIntId(nested.tmdb ?? src.tmdbId ?? src.tmdb),
+    imdb: sanitizeImdbId(nested.imdb ?? src.imdbId ?? src.imdb),
+    tvmaze: sanitizePositiveIntId(nested.tvmaze ?? src.tvmazeId ?? src.tvmaze),
+    anilist: sanitizePositiveIntId(nested.anilist ?? src.anilistId ?? src.anilist),
+    mal: sanitizePositiveIntId(nested.mal ?? src.malId ?? src.mal),
   };
 }
 

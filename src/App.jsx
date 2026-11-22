@@ -1528,7 +1528,9 @@ export function App() {
                   items={items}
                   geminiKey={geminiKey}
                   tmdbKey={aiConfig.tmdbKey}
+                  omdbKey={aiConfig.omdbKey}
                   onAddItem={handleAddItem}
+                  onUpdateItem={handleUpdateItem}
                   onSelectExisting={(item) => setSelectedItemId(item.id)}
                   onOpenGeminiSettings={() => setGeminiModalOpen(true)}
                   onOpenImportCatalog={() => setImportCatalogOpen(true)}
@@ -1671,6 +1673,8 @@ export function App() {
               posts={posts}
               collections={collections}
               geminiKey={geminiKey}
+              tmdbKey={aiConfig.tmdbKey}
+              omdbKey={aiConfig.omdbKey}
               viewerId={activeViewerId}
               onClose={() => setSelectedItemId(null)}
               onUpdateItem={handleUpdateItem}

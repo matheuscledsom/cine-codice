@@ -25,7 +25,7 @@ import {
 import {
   CINEMA_API_SOURCES,
   CINEMA_SOURCE_PRESETS,
-  enrichCinemaCandidate,
+  enrichWorkWithExternalRatings,
   getCachedCinemaSearch,
   getDefaultSourcesForFilter,
   loadActiveCinemaSources,
@@ -33,6 +33,8 @@ import {
   searchCinemaMedia,
   searchMockCinema,
 } from '../services/cinemaApi';
+import { getPresentExternalRatingBadges } from '../lib/ratings';
+import { workHasAnyExternalIds } from '../lib/ratings';
 import { createUuid } from '../services/codiceDatabase';
 import {
   calculateSmartRating,
@@ -142,7 +144,9 @@ export function AddScreen({
   items = [],
   geminiKey = '',
   tmdbKey = '',
+  omdbKey = '',
   onAddItem,
+  onUpdateItem,
   onSelectExisting,
   onOpenGeminiSettings,
   onOpenImportCatalog,
@@ -158,6 +162,9 @@ export function AddScreen({
   );
   const [isLoading, setIsLoading] = useState(false);
   const [enrichingCandidate, setEnrichingCandidate] = useState(false);
+
+  const enrichAbortRef = useRef(null);
+  const candidateEnrichedRef = useRef(false);
   const [partialFailure, setPartialFailure] = useState(false);
   const [failedSourcesCount, setFailedSourcesCount] = useState(0);
   const [allFailed, setAllFailed] = useState(false);
@@ -356,11 +363,55 @@ export function AddScreen({
     };
   }, [query, searchFilter, activeSources, executeSearch]);
 
+  const applyEnrichedFieldsToWork = (base, enriched) => ({
+    ...base,
+    ids: enriched.ids || base.ids,
+    tmdbId: enriched.tmdbId ?? base.tmdbId ?? null,
+    imdbId: enriched.imdbId ?? base.imdbId ?? '',
+    tvmazeId: enriched.tvmazeId ?? base.tvmazeId ?? null,
+    anilistId: enriched.anilistId ?? base.anilistId ?? null,
+    malId: enriched.malId ?? base.malId ?? null,
+    tmdbMediaType: enriched.tmdbMediaType || base.tmdbMediaType || null,
+    backdropUrl: enriched.backdropUrl || base.backdropUrl || null,
+    externalRatings: enriched.externalRatings || base.externalRatings,
+    belongsToCollection: enriched.belongsToCollection || base.belongsToCollection || null,
+    tmdbStatus: enriched.tmdbStatus || base.tmdbStatus || null,
+    franchiseName: base.franchiseName || enriched.franchiseName || '',
+    franchiseRelations:
+      Array.isArray(enriched.franchiseRelations) && enriched.franchiseRelations.length > 0
+        ? enriched.franchiseRelations
+        : base.franchiseRelations || [],
+    director: base.director || enriched.director || '',
+    author: base.director || enriched.director || '',
+    studio: base.studio || enriched.studio || '',
+    totalSeasons: enriched.totalSeasons || base.totalSeasons,
+    totalEpisodes: enriched.totalEpisodes || base.totalEpisodes,
+    episodesPerSeason: enriched.episodesPerSeason || base.episodesPerSeason,
+    episodeList: enriched.episodeList || base.episodeList,
+    episodeDurationMinutes:
+      enriched.episodeDurationMinutes || base.episodeDurationMinutes,
+    durationMinutes: enriched.durationMinutes || base.durationMinutes,
+    totalSeconds:
+      enriched.durationMinutes && base.workType === 'movie'
+        ? enriched.durationMinutes * 60
+        : base.totalSeconds,
+    synopsis:
+      String(enriched.synopsis || '').length > String(base.synopsis || '').length
+        ? enriched.synopsis
+        : base.synopsis,
+  });
+
   const handleOpenCandidateDrawer = async (candidate) => {
+    enrichAbortRef.current?.abort();
+    const controller = new AbortController();
+    enrichAbortRef.current = controller;
+    candidateEnrichedRef.current = false;
+
     const draftBase = buildPrefilledCatalogDraft(candidate);
     const initialDraft = buildDraftWithStatus(
       {
         ...draftBase,
+        id: draftBase.id || candidate.id || createUuid(),
         format: mediaFormats[0],
         audioFormat: candidate.workType === 'anime' ? 'Legendado' : audioFormatTags[0],
       },
@@ -368,48 +419,79 @@ export function AddScreen({
     );
     setDraftItem(initialDraft);
 
-    if (candidate.tvmazeId || candidate.tmdbId) {
+    if (workHasAnyExternalIds(candidate)) {
       setEnrichingCandidate(true);
       try {
-        const enriched = await enrichCinemaCandidate(candidate, {
+        const res = await enrichWorkWithExternalRatings(candidate, {
           tmdbApiKey: tmdbKey,
+          omdbApiKey: omdbKey,
+          signal: controller.signal,
+          maxConcurrency: 2,
         });
+        if (controller.signal.aborted) return;
+        candidateEnrichedRef.current = true;
         setDraftItem((curr) => {
           if (!curr || curr.id !== initialDraft.id) return curr;
-          return {
-            ...curr,
-            director: curr.director || enriched.director || '',
-            author: curr.director || enriched.director || '',
-            studio: curr.studio || enriched.studio || '',
-            totalSeasons: enriched.totalSeasons || curr.totalSeasons,
-            totalEpisodes: enriched.totalEpisodes || curr.totalEpisodes,
-            episodesPerSeason: enriched.episodesPerSeason || curr.episodesPerSeason,
-            episodeList: enriched.episodeList || curr.episodeList,
-            episodeDurationMinutes:
-              enriched.episodeDurationMinutes || curr.episodeDurationMinutes,
-            durationMinutes: enriched.durationMinutes || curr.durationMinutes,
-            totalSeconds:
-              enriched.durationMinutes && curr.workType === 'movie'
-                ? enriched.durationMinutes * 60
-                : curr.totalSeconds,
-            synopsis:
-              String(enriched.synopsis || '').length > String(curr.synopsis || '').length
-                ? enriched.synopsis
-                : curr.synopsis,
-          };
+          return applyEnrichedFieldsToWork(curr, res.work);
         });
       } catch {
         // Mantém rascunho inicial sem travar
       } finally {
-        setEnrichingCandidate(false);
+        if (!controller.signal.aborted) {
+          setEnrichingCandidate(false);
+        }
       }
     }
   };
 
   const handleSaveDraft = () => {
     if (!draftItem) return;
-    onAddItem(draftItem);
+    enrichAbortRef.current?.abort();
+    const finalDraft = {
+      ...draftItem,
+      id: draftItem.id || createUuid(),
+    };
+    const alreadyEnriched = candidateEnrichedRef.current;
+    onAddItem(finalDraft);
     setDraftItem(null);
+
+    if (!alreadyEnriched && onUpdateItem && workHasAnyExternalIds(finalDraft)) {
+      enrichWorkWithExternalRatings(finalDraft, {
+        tmdbApiKey: tmdbKey,
+        omdbApiKey: omdbKey,
+        maxConcurrency: 2,
+      })
+        .then((res) => {
+          if (!res?.work) return;
+          const patched = applyEnrichedFieldsToWork(finalDraft, res.work);
+          onUpdateItem(finalDraft.id, {
+            ids: patched.ids,
+            tmdbId: patched.tmdbId,
+            imdbId: patched.imdbId,
+            tvmazeId: patched.tvmazeId,
+            anilistId: patched.anilistId,
+            malId: patched.malId,
+            tmdbMediaType: patched.tmdbMediaType,
+            backdropUrl: patched.backdropUrl,
+            externalRatings: patched.externalRatings,
+            belongsToCollection: patched.belongsToCollection,
+            tmdbStatus: patched.tmdbStatus,
+            franchiseName: patched.franchiseName,
+            franchiseRelations: patched.franchiseRelations,
+            director: patched.director,
+            studio: patched.studio,
+            totalSeasons: patched.totalSeasons,
+            totalEpisodes: patched.totalEpisodes,
+            episodesPerSeason: patched.episodesPerSeason,
+            episodeList: patched.episodeList,
+            episodeDurationMinutes: patched.episodeDurationMinutes,
+            durationMinutes: patched.durationMinutes,
+            totalSeconds: patched.totalSeconds,
+            synopsis: patched.synopsis,
+          });
+        })
+        .catch(() => {});
+    }
   };
 
   const handleOpenManualModal = () => {
@@ -766,6 +848,9 @@ export function AddScreen({
                 : candidate.sourceBadge
                   ? [candidate.sourceBadge]
                   : [];
+              const searchRatings = getPresentExternalRatingBadges(
+                candidate.externalRatings
+              ).slice(0, 2);
 
               return (
                 <article
@@ -791,6 +876,14 @@ export function AddScreen({
                       </div>
 
                       <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                        {searchRatings.map((rb) => (
+                          <span
+                            key={rb.id}
+                            className="rounded-[3px] border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-accent"
+                          >
+                            {rb.displayText}
+                          </span>
+                        ))}
                         {badges.map((srcName) => (
                           <span
                             key={srcName}
@@ -830,7 +923,7 @@ export function AddScreen({
                         <button
                           type="button"
                           onClick={() => onSelectExisting?.(existing)}
-                          className="inline-flex min-h-[40px] items-center gap-1 rounded-[4px] border border-line bg-app px-3 text-xs font-medium text-accent hover:border-accent"
+                          className="inline-flex min-h-[44px] items-center gap-1 rounded-[4px] border border-line bg-app px-3 text-xs font-medium text-accent hover:border-accent"
                         >
                           <Check className="h-3.5 w-3.5" strokeWidth={1.5} />
                           <span>{add.inListBadge}</span>
@@ -839,7 +932,7 @@ export function AddScreen({
                         <button
                           type="button"
                           onClick={() => handleOpenCandidateDrawer(candidate)}
-                          className="inline-flex min-h-[40px] items-center gap-1 rounded-[4px] bg-accent px-3.5 text-xs font-semibold text-accent-ink hover:opacity-90"
+                          className="inline-flex min-h-[44px] items-center gap-1 rounded-[4px] bg-accent px-3.5 text-xs font-semibold text-accent-ink hover:opacity-90"
                         >
                           <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
                           <span>Catalogar</span>
@@ -858,7 +951,10 @@ export function AddScreen({
       {draftItem && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-black/65 sm:items-center sm:p-4"
-          onClick={() => setDraftItem(null)}
+          onClick={() => {
+            enrichAbortRef.current?.abort();
+            setDraftItem(null);
+          }}
           role="dialog"
           aria-modal="true"
           aria-label={add.drawerTitle}
@@ -873,7 +969,7 @@ export function AddScreen({
                 <div className="min-w-0">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
                     {add.drawerTitle}
-                    {enrichingCandidate ? ' · Buscando episódios...' : ''}
+                    {enrichingCandidate ? ' · Buscando detalhes...' : ''}
                   </p>
                   <h2 className="mt-0.5 line-clamp-2 text-sm font-semibold text-ink">
                     {draftItem.title}
@@ -890,9 +986,12 @@ export function AddScreen({
               </div>
               <button
                 type="button"
-                onClick={() => setDraftItem(null)}
+                onClick={() => {
+                  enrichAbortRef.current?.abort();
+                  setDraftItem(null);
+                }}
                 aria-label={add.drawerCancelLabel}
-                className="flex min-h-[40px] min-w-[40px] items-center justify-center rounded-[4px] text-muted hover:text-ink"
+                className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[4px] text-muted hover:text-ink"
               >
                 <X className="h-4 w-4" strokeWidth={1.5} />
               </button>
