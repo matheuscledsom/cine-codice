@@ -238,8 +238,12 @@ export function ItemDetailSheet({
     const badges = getPresentExternalRatingBadges(current.externalRatings);
     const hasMissingExpected =
       current.workType === 'anime'
-        ? !current.externalRatings?.anilist || (Boolean(current.ids?.mal || current.malId) && !current.externalRatings?.mal)
-        : !current.externalRatings?.tmdb || (Boolean(current.ids?.imdb || current.imdbId) && !current.externalRatings?.imdb);
+        ? !current.externalRatings?.anilist ||
+          (Boolean(current.ids?.mal || current.malId) && !current.externalRatings?.mal) ||
+          !Array.isArray(current.franchiseRelations) ||
+          current.franchiseRelations.length === 0
+        : !current.externalRatings?.tmdb ||
+          (Boolean(current.ids?.imdb || current.imdbId) && !current.externalRatings?.imdb);
     const needsAutoFetch =
       workHasAnyExternalIds(current) &&
       !autoEnrichedIdsRef.current.has(current.id) &&

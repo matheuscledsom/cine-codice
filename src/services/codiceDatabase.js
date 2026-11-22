@@ -8,6 +8,7 @@ import { migrateFavoriteGenresToObjects } from '../lib/genreCatalog.js';
 import { applyCanonicalIdsToWork } from '../lib/idBridge.js';
 import { classifyLegacyRatingSource, normalizeViewerFocusList } from '../lib/migrations.js';
 import { createEmptyExternalRatings, normalizeExternalRatings } from '../lib/ratings.js';
+import { safeSetLocalStorageJson } from '../lib/storagePersistence.js';
 import {
   calculateSmartRating,
   calculateWorkProgress,
@@ -704,12 +705,9 @@ export function hydrateAppSnapshotFromDatabase(db) {
 }
 
 export function persistCodiceDatabase(db) {
-  try {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(CODICE_DB_STORAGE_KEY, JSON.stringify(db));
-  } catch {
-    // Quota indisponível
-  }
+  return safeSetLocalStorageJson(CODICE_DB_STORAGE_KEY, db, {
+    label: 'banco relacional',
+  });
 }
 
 export function loadStoredCodiceDatabase() {

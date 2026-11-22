@@ -716,7 +716,10 @@ const MIRROR_ITEM_ALLOWED_KEYS = [
   'backdropUrl',
   'externalRatings',
   'ratingSource',
+  'franchiseRelations',
   'franchiseLinks',
+  'animeFormat',
+  'animeStatus',
   'anilistId',
   'malId',
   'tvmazeId',
@@ -802,11 +805,57 @@ export async function requestPersistentStorage() {
   }
 }
 
+function compactMirrorProfile(profile) {
+  if (!profile || typeof profile !== 'object') return null;
+  const clean = stripDataUrls({
+    id: profile.id || null,
+    displayName: profile.displayName || '',
+    handle: profile.handle || '',
+    avatarInitials: profile.avatarInitials || '',
+    bio: profile.bio || '',
+    viewerFocus: Array.isArray(profile.viewerFocus) ? profile.viewerFocus : [],
+    readerFocus: profile.readerFocus || '',
+    favoriteGenres: Array.isArray(profile.favoriteGenres) ? profile.favoriteGenres : [],
+    preferredCriteria: Array.isArray(profile.preferredCriteria) ? profile.preferredCriteria : [],
+    preferredAtmosphere: profile.preferredAtmosphere || '',
+    readerDna: profile.readerDna || null,
+    onboardingCompleted: Boolean(profile.onboardingCompleted),
+    annualGoal: Number(profile.annualGoal) || 24,
+    preferredFormat: profile.preferredFormat || 'Streaming',
+    privacyLevel: profile.privacyLevel || 'private',
+    gamificationEnabled:
+      profile.gamificationEnabled !== undefined ? Boolean(profile.gamificationEnabled) : true,
+    calmMode: Boolean(profile.calmMode),
+  });
+  return clean && typeof clean === 'object' ? clean : null;
+}
+
+function compactMirrorEpisodeEvaluations(list = []) {
+  if (!Array.isArray(list) || list.length === 0) return [];
+  return list
+    .filter((ev) => ev && ev.workId)
+    .map((ev) => ({
+      evalKey: ev.evalKey || `${ev.workId}:${ev.season || 1}:${ev.episode || 1}`,
+      workId: String(ev.workId),
+      season: Math.max(1, Math.round(Number(ev.season) || 1)),
+      episode: Math.max(1, Math.round(Number(ev.episode) || 1)),
+      rating:
+        ev.rating !== null && ev.rating !== undefined && ev.rating !== ''
+          ? Math.max(0, Math.min(100, Math.round(Number(ev.rating))))
+          : null,
+      tag: ev.tag || null,
+      reaction: String(ev.reaction || '').slice(0, 280),
+      updatedAt: ev.updatedAt || null,
+    }));
+}
+
 export function saveEmergencyMirror({
   items = [],
+  profile = null,
   collections = [],
   streak = null,
   readingSessions = [],
+  episodeEvaluations = [],
   updatedAt = null,
 } = {}) {
   try {
@@ -816,9 +865,10 @@ export function saveEmergencyMirror({
       .filter(Boolean);
 
     const payload = {
-      v: 1,
+      v: 2,
       updatedAt: updatedAt || new Date().toISOString(),
       items: compactItems,
+      profile: compactMirrorProfile(profile),
       collections: normalizeCollectionList(collections),
       streak:
         streak && typeof streak === 'object'
@@ -835,6 +885,7 @@ export function saveEmergencyMirror({
       readingSessions: Array.isArray(readingSessions)
         ? readingSessions.slice(0, 200)
         : [],
+      episodeEvaluations: compactMirrorEpisodeEvaluations(episodeEvaluations),
     };
 
     const encoded = compressMirrorText(JSON.stringify(payload));
@@ -852,29 +903,33 @@ export function saveEmergencyMirror({
 export function loadEmergencyMirror() {
   try {
     if (typeof localStorage === 'undefined') {
-      return { ok: false, items: [] };
+      return { ok: false, items: [], profile: null, episodeEvaluations: [] };
     }
     const raw = localStorage.getItem(EMERGENCY_MIRROR_KEY);
-    if (!raw) return { ok: false, items: [] };
+    if (!raw) return { ok: false, items: [], profile: null, episodeEvaluations: [] };
     const jsonText = decompressMirrorText(raw);
-    if (!jsonText) return { ok: false, items: [] };
+    if (!jsonText) return { ok: false, items: [], profile: null, episodeEvaluations: [] };
     const parsed = JSON.parse(jsonText);
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.items)) {
-      return { ok: false, items: [] };
+      return { ok: false, items: [], profile: null, episodeEvaluations: [] };
     }
 
     return {
       ok: true,
       updatedAt: parsed.updatedAt || null,
       items: parsed.items,
+      profile: parsed.profile || null,
       collections: normalizeCollectionList(parsed.collections),
       streak: parsed.streak || null,
       readingSessions: Array.isArray(parsed.readingSessions)
         ? parsed.readingSessions
         : [],
+      episodeEvaluations: Array.isArray(parsed.episodeEvaluations)
+        ? parsed.episodeEvaluations
+        : [],
     };
   } catch {
-    return { ok: false, items: [] };
+    return { ok: false, items: [], profile: null, episodeEvaluations: [] };
   }
 }
 

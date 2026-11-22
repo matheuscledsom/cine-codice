@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { buildPublicProfileLink, domainConfig } from '../config/domainConfig';
 import { migrateFavoriteGenresToObjects } from '../lib/genreCatalog';
 import { normalizeViewerFocusList } from '../lib/migrations';
+import { loadEmergencyMirror } from '../services/backupEngine';
 import {
   normalizePreferredCriteria,
 } from '../utils/readerPreferences';
@@ -132,7 +133,13 @@ function loadProfile() {
   const fallback = getDefaultProfile();
   try {
     const raw = localStorage.getItem(PROFILE_KEY);
-    if (!raw) return fallback;
+    if (!raw) {
+      const mirror = loadEmergencyMirror();
+      if (mirror.ok && mirror.profile && typeof mirror.profile === 'object') {
+        return normalizeProfileObject(mirror.profile, fallback);
+      }
+      return fallback;
+    }
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return fallback;
     return normalizeProfileObject(parsed, fallback);

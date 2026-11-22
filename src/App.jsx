@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, UserCheck, UserPlus, X } from 'lucide-react';
+import { AlertTriangle, Download, RefreshCw, UserCheck, UserPlus, X } from 'lucide-react';
 import { getAllEpisodeEvaluations, importEpisodeEvaluations } from './api/cacheDb';
 import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -23,6 +23,7 @@ import {
 import {
   getBackupReminderStatus,
   listAutoSnapshots,
+  loadEmergencyMirror,
   mergeSnapshots,
   requestPersistentStorage,
   saveAutoSnapshot,
@@ -370,9 +371,12 @@ export function App() {
     exportCatalogCsv,
     exportCatalogMarkdown,
     importBackup,
+    storageError,
+    retryPersistStorage,
   } = useBacklog(profile?.readerDna || null, {
     migrationLocked: migrationState.locked,
   });
+  const [secondaryStorageWarning, setSecondaryStorageWarning] = useState('');
 
   const {
     streakData,
@@ -914,23 +918,64 @@ export function App() {
     ]
   );
 
+  const mirrorRecoveryDoneRef = useRef(false);
+
   useEffect(() => {
-    if (migrationState.locked) return;
-    const db = buildCodiceDatabase({
-      items,
-      profile,
-      posts,
-      streak: streakData,
-      readingSessions,
-      collections,
-    });
-    persistCodiceDatabase(db);
-    saveEmergencyMirror({
-      items,
-      collections,
-      streak: streakData,
-      readingSessions,
-    });
+    if (migrationState.locked) return undefined;
+    let cancelled = false;
+
+    const syncLocalMirrors = async () => {
+      let episodeEvaluations = await getAllEpisodeEvaluations().catch(() => []);
+      if (!mirrorRecoveryDoneRef.current) {
+        mirrorRecoveryDoneRef.current = true;
+        if (episodeEvaluations.length === 0) {
+          const mirror = loadEmergencyMirror();
+          if (mirror.ok && Array.isArray(mirror.episodeEvaluations) && mirror.episodeEvaluations.length > 0) {
+            await importEpisodeEvaluations(mirror.episodeEvaluations).catch(() => {});
+            episodeEvaluations = mirror.episodeEvaluations;
+          }
+        }
+      }
+      if (cancelled) return;
+
+      const db = buildCodiceDatabase({
+        items,
+        profile,
+        posts,
+        streak: streakData,
+        readingSessions,
+        collections,
+        episodeEvaluations,
+      });
+      const dbRes = persistCodiceDatabase(db);
+      if (!dbRes?.persisted) {
+        setSecondaryStorageWarning(
+          dbRes?.warning ||
+            'Falha ao gravar cópia relacional no localStorage: alterações recentes estão provisórias até liberar espaço ou exportar backup.'
+        );
+      } else {
+        setSecondaryStorageWarning((prev) => (prev ? '' : prev));
+      }
+
+      const mirrorOk = saveEmergencyMirror({
+        items,
+        profile,
+        collections,
+        streak: streakData,
+        readingSessions,
+        episodeEvaluations,
+      });
+      if (!mirrorOk && dbRes?.persisted) {
+        setSecondaryStorageWarning(
+          'Cota do localStorage atingida ao atualizar o espelho de emergência LZW. Exporte um backup (.json) por segurança.'
+        );
+      }
+    };
+
+    syncLocalMirrors();
+    return () => {
+      cancelled = true;
+    };
   }, [migrationState.locked, items, profile, posts, streakData, readingSessions, collections]);
 
   useEffect(() => {
@@ -939,11 +984,19 @@ export function App() {
 
   useEffect(() => {
     if (migrationState.locked || !items || items.length === 0) return undefined;
-    listAutoSnapshots()
-      .then((snaps) => {
+    Promise.all([listAutoSnapshots(), getAllEpisodeEvaluations().catch(() => [])])
+      .then(([snaps, episodeEvaluations]) => {
         if (!Array.isArray(snaps) || snaps.length === 0) {
           return saveAutoSnapshot(
-            { items, profile, posts, streak: streakData, readingSessions, collections },
+            {
+              items,
+              profile,
+              posts,
+              streak: streakData,
+              readingSessions,
+              collections,
+              episodeEvaluations,
+            },
             { reason: 'auto', label: 'Recuperação automática do espelho local' }
           );
         }
@@ -1475,6 +1528,72 @@ export function App() {
           tabIndex={-1}
           className="px-4 sm:px-6 pt-4 pb-[env(safe-area-inset-bottom)] focus:outline-none"
         >
+          {(storageError?.warning || secondaryStorageWarning) && (
+            <div
+              role="alert"
+              className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-accent bg-card p-3 text-xs text-ink"
+            >
+              <div className="flex min-w-0 flex-1 items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                <div className="min-w-0">
+                  <p className="font-semibold">
+                    Atenção: Provisório (não salvo no localStorage)
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-muted">
+                    {storageError?.warning || secondaryStorageWarning}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const primaryRes = retryPersistStorage();
+                    const epEvals = await getAllEpisodeEvaluations().catch(() => []);
+                    const db = buildCodiceDatabase({
+                      items,
+                      profile,
+                      posts,
+                      streak: streakData,
+                      readingSessions,
+                      collections,
+                      episodeEvaluations: epEvals,
+                    });
+                    const dbRes = persistCodiceDatabase(db);
+                    const mirrorOk = saveEmergencyMirror({
+                      items,
+                      profile,
+                      collections,
+                      streak: streakData,
+                      readingSessions,
+                      episodeEvaluations: epEvals,
+                    });
+                    if (primaryRes.persisted && dbRes.persisted && mirrorOk) {
+                      setSecondaryStorageWarning('');
+                      showToast({
+                        message: 'Acervo gravado no aparelho com sucesso.',
+                        type: 'success',
+                      });
+                    } else if (!dbRes.persisted) {
+                      setSecondaryStorageWarning(dbRes.warning || 'Falha ao gravar cópia relacional.');
+                    }
+                  }}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent px-3 text-xs font-semibold text-accent-ink"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  <span>Tentar de novo</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveBackupCopyNow}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-app px-3 text-xs font-semibold text-ink hover:border-accent"
+                >
+                  <Download className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                  <span>Baixar cópia (.json)</span>
+                </button>
+              </div>
+            </div>
+          )}
           <ErrorBoundary
             key={activeTab}
             screenName={

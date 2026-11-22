@@ -1596,6 +1596,128 @@ export async function fetchJikanAnimeRating(
   }
 }
 
+function mapJikanRelationType(raw = '') {
+  const clean = String(raw || '').trim().toLowerCase();
+  if (clean === 'sequel') return 'SEQUEL';
+  if (clean === 'prequel') return 'PREQUEL';
+  if (clean === 'spin-off' || clean === 'spinoff') return 'SPIN_OFF';
+  if (clean === 'side story') return 'SIDE_STORY';
+  if (clean.includes('parent')) return 'PARENT';
+  if (clean.includes('summary')) return 'SUMMARY';
+  if (clean.includes('alternative')) return 'ALTERNATIVE';
+  if (clean.includes('character') || clean === 'other') return 'OTHER';
+  return 'SIDE_STORY';
+}
+
+export async function fetchJikanAnimeRelations(
+  malId,
+  {
+    allowStaleOffline = true,
+    forceRefresh = false,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    sleepFn = undefined,
+  } = {}
+) {
+  const cleanId = Number(malId);
+  if (!Number.isInteger(cleanId) || cleanId <= 0) {
+    return { ok: false, reason: 'MISSING_MAL_ID', relations: [] };
+  }
+
+  const cacheKey = `jikan:relations:${cleanId}`;
+  const now = nowFn();
+  const cached = forceRefresh
+    ? { hit: false, stale: false, data: null }
+    : await getCachedEntry(CACHE_STORES.relations, cacheKey, {
+        now,
+        allowStaleOffline,
+      });
+
+  if (cached.hit && !cached.stale && Array.isArray(cached.data)) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+      relations: cached.data,
+    };
+  }
+
+  try {
+    const url = `${JIKAN_ANIME_URL}/${cleanId}/relations`;
+    const res = await fetchWithTimeout(
+      url,
+      { signal, nowFn, sleepFn },
+      timeoutMs,
+      fetchImpl,
+      'jikan'
+    );
+    if (!res.ok) {
+      throw new Error(`Jikan HTTP ${res.status}`);
+    }
+    const json = await res.json();
+    const list = Array.isArray(json?.data) ? json.data : [];
+
+    const relations = [];
+    for (const group of list) {
+      const relationType = mapJikanRelationType(group?.relation);
+      const entries = Array.isArray(group?.entry) ? group.entry : [];
+      for (const entry of entries) {
+        if (!entry || String(entry.type || '').toLowerCase() !== 'anime') continue;
+        const entryMalId = Number(entry.mal_id);
+        const title = String(entry.name || '').trim();
+        if (!title) continue;
+        relations.push({
+          relationType,
+          malId: Number.isInteger(entryMalId) && entryMalId > 0 ? entryMalId : null,
+          anilistId: null,
+          title,
+          originalTitle: title,
+          format: /\bmovie\b|\bfilme\b/i.test(title)
+            ? 'MOVIE'
+            : /\bova\b/i.test(title)
+              ? 'OVA'
+              : /\bona\b/i.test(title)
+                ? 'ONA'
+                : /\bspecial\b/i.test(title)
+                  ? 'SPECIAL'
+                  : 'TV',
+        });
+      }
+    }
+
+    await setCachedEntry(CACHE_STORES.relations, cacheKey, relations, {
+      ttlMs: CACHE_TTL_MS.relations,
+      now: nowFn(),
+    });
+
+    return {
+      ok: true,
+      fromCache: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      relations,
+    };
+  } catch (err) {
+    if (cached.hit && allowStaleOffline && Array.isArray(cached.data)) {
+      return {
+        ok: true,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        relations: cached.data,
+      };
+    }
+    return {
+      ok: false,
+      reason: err?.code || err?.message || 'JIKAN_RELATIONS_ERROR',
+      relations: [],
+    };
+  }
+}
+
 export async function enrichWorkWithExternalRatings(
   work,
   {
@@ -1817,6 +1939,13 @@ export async function enrichWorkWithExternalRatings(
         ...enriched,
         workType: 'anime',
         ids: mergedIds,
+        animeFormat: enriched.animeFormat || aniMedia?.animeFormat || 'TV',
+        animeStatus: aniMedia?.animeStatus || enriched.animeStatus || null,
+        nextAiringEpisode: aniMedia?.nextAiringEpisode || enriched.nextAiringEpisode || null,
+        franchiseRelations:
+          Array.isArray(aniMedia?.franchiseRelations) && aniMedia.franchiseRelations.length > 0
+            ? aniMedia.franchiseRelations
+            : enriched.franchiseRelations || [],
         backdropUrl: enriched.backdropUrl || aniMedia?.backdropUrl || null,
         externalRatings: mergeExternalRatings(
           enriched.externalRatings,
@@ -1830,6 +1959,7 @@ export async function enrichWorkWithExternalRatings(
   const stage2Tasks = [];
   let omdbRes = null;
   let malRes = null;
+  let malRelationsRes = null;
   let tvLookupRes = null;
 
   if (enriched.ids.imdb && enriched.workType !== 'anime') {
@@ -1859,6 +1989,17 @@ export async function enrichWorkWithExternalRatings(
         nowFn,
       });
     });
+    if (!Array.isArray(enriched.franchiseRelations) || enriched.franchiseRelations.length === 0) {
+      stage2Tasks.push(async () => {
+        malRelationsRes = await fetchJikanAnimeRelations(enriched.ids.mal, {
+          allowStaleOffline,
+          forceRefresh,
+          signal,
+          fetchImpl,
+          nowFn,
+        });
+      });
+    }
   }
 
   if (enriched.ids.imdb && !enriched.ids.tvmaze && enriched.workType === 'series') {
@@ -1905,6 +2046,15 @@ export async function enrichWorkWithExternalRatings(
     }
   } else if (malRes && !malRes.ok && malRes.reason !== 'JIKAN_NOT_FOUND') {
     failedSources.push('mal');
+  }
+
+  if (
+    malRelationsRes?.ok &&
+    Array.isArray(malRelationsRes.relations) &&
+    malRelationsRes.relations.length > 0 &&
+    (!Array.isArray(enriched.franchiseRelations) || enriched.franchiseRelations.length === 0)
+  ) {
+    enriched.franchiseRelations = malRelationsRes.relations;
   }
 
   if (tvLookupRes?.tvmazeId) {

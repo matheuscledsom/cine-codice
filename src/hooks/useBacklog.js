@@ -12,6 +12,7 @@ import { initialItems } from '../data/mockData';
 import { applyCanonicalIdsToWork } from '../lib/idBridge';
 import { classifyLegacyRatingSource } from '../lib/migrations';
 import { normalizeExternalRatings } from '../lib/ratings';
+import { safeSetLocalStorageJson } from '../lib/storagePersistence';
 import {
   exportSignedBackupPayload,
   loadEmergencyMirror,
@@ -370,14 +371,33 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
   const [items, setItems] = useState(loadInitialBacklog);
   const [readingSessions, setReadingSessions] = useState(loadInitialSessions);
   const [collections, setCollections] = useState(loadInitialCollections);
+  const [storageError, setStorageError] = useState(null);
+
+  const retryPersistStorage = useCallback(() => {
+    const resItems = safeSetLocalStorageJson(STORAGE_KEY, items, { label: 'catálogo' });
+    if (!resItems.persisted) {
+      setStorageError(resItems);
+      return resItems;
+    }
+    const resSessions = safeSetLocalStorageJson(SESSIONS_STORAGE_KEY, readingSessions, {
+      label: 'sessões',
+    });
+    if (!resSessions.persisted) {
+      setStorageError(resSessions);
+      return resSessions;
+    }
+    setStorageError(null);
+    return { persisted: true, provisional: false, quotaExceeded: false, warning: null };
+  }, [items, readingSessions]);
 
   useEffect(() => {
     if (migrationLocked) return undefined;
     const flush = () => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-      } catch {
-        // Quota indisponível
+      const res = safeSetLocalStorageJson(STORAGE_KEY, items, { label: 'catálogo' });
+      if (!res.persisted) {
+        setStorageError(res);
+      } else {
+        setStorageError((prev) => (prev ? null : prev));
       }
     };
     const timer = setTimeout(flush, 180);
@@ -391,10 +411,11 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
   useEffect(() => {
     if (migrationLocked) return undefined;
     const flushSessions = () => {
-      try {
-        localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(readingSessions));
-      } catch {
-        // Quota indisponível
+      const res = safeSetLocalStorageJson(SESSIONS_STORAGE_KEY, readingSessions, {
+        label: 'sessões',
+      });
+      if (!res.persisted) {
+        setStorageError(res);
       }
     };
     const timer = setTimeout(flushSessions, 180);
@@ -839,5 +860,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
     exportCatalogCsv,
     exportCatalogMarkdown,
     importBackup,
+    storageError,
+    retryPersistStorage,
   };
 }

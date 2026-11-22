@@ -99,6 +99,7 @@ export function EpisodeListTab({
     reaction: '',
   });
   const [savingEval, setSavingEval] = useState(false);
+  const [retryingSave, setRetryingSave] = useState(false);
 
   const [confirmOverwriteOpen, setConfirmOverwriteOpen] = useState(false);
   const [showChartTable, setShowChartTable] = useState(false);
@@ -605,6 +606,62 @@ export function EpisodeListTab({
     }
   };
 
+  const handleRetryProvisionalSaves = async () => {
+    if (retryingSave) return;
+    const provisionalEntries = Array.from(evaluationsMap.entries()).filter(
+      ([, ev]) => Boolean(ev?.provisional)
+    );
+    if (provisionalEntries.length === 0) {
+      setPersistenceWarning('');
+      return;
+    }
+
+    setRetryingSave(true);
+    let anyFailedWarning = '';
+    const nextUpdates = [];
+    try {
+      for (const [mapKey, ev] of provisionalEntries) {
+        const saved = await saveEpisodeEvaluation({
+          ...ev,
+          evalKey: ev.evalKey || makeEpisodeEvalKey(item?.id, ev.season, ev.episode),
+          workId: ev.workId || item?.id,
+        });
+        nextUpdates.push([mapKey, saved]);
+        if (!saved?.persisted && !anyFailedWarning) {
+          anyFailedWarning =
+            saved?.persistenceWarning ||
+            'Avaliação continua apenas provisória em memória (IndexedDB indisponível ou cheio).';
+        }
+      }
+
+      setEvaluationsMap((prev) => {
+        const next = new Map(prev);
+        for (const [k, record] of nextUpdates) {
+          next.set(k, record);
+        }
+        return next;
+      });
+
+      if (anyFailedWarning) {
+        setPersistenceWarning(anyFailedWarning);
+        showToast({ message: anyFailedWarning, type: 'error', duration: 6000 });
+      } else {
+        setPersistenceWarning('');
+        showToast({
+          message: 'Avaliações provisórias gravadas no aparelho com sucesso.',
+          type: 'success',
+        });
+      }
+    } catch {
+      const msg =
+        'Falha ao tentar gravar novamente no IndexedDB. Os dados permanecem provisórios em memória.';
+      setPersistenceWarning(msg);
+      showToast({ message: msg, type: 'error' });
+    } finally {
+      setRetryingSave(false);
+    }
+  };
+
   const handleApplySeriesAverage = (confirmed = false) => {
     if (!episodeStats.canApplyAverageToSeries || episodeStats.averageRating100 === null) return;
     if (!confirmed && needsManualRatingOverwriteConfirm(item)) {
@@ -797,17 +854,31 @@ export function EpisodeListTab({
 
   return (
     <div className="space-y-4">
-      {/* Regra Extra 3: alerta explícito caso IndexedDB esteja indisponível / cota esgotada */}
+      {/* Regra Extra 3 + R11: alerta explícito caso IndexedDB esteja indisponível / cota esgotada */}
       {persistenceWarning && (
         <div
           role="alert"
-          className="flex items-start gap-2 rounded-[4px] border border-accent bg-app p-3 text-xs text-ink"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-accent bg-app p-3 text-xs text-ink"
         >
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
-          <div>
-            <p className="font-semibold">Atenção: gravação persistente indisponível</p>
-            <p className="mt-0.5 text-[11px] text-muted">{persistenceWarning}</p>
+          <div className="flex min-w-0 flex-1 items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+            <div className="min-w-0">
+              <p className="font-semibold">Atenção: Provisório (não salvo) no IndexedDB</p>
+              <p className="mt-0.5 text-[11px] text-muted">{persistenceWarning}</p>
+            </div>
           </div>
+          <button
+            type="button"
+            onClick={handleRetryProvisionalSaves}
+            disabled={retryingSave}
+            className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[4px] border border-accent bg-accent px-3 text-xs font-semibold text-accent-ink disabled:opacity-60"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${retryingSave ? 'animate-spin' : ''}`}
+              strokeWidth={1.5}
+            />
+            <span>{retryingSave ? 'Salvando...' : 'Tentar de novo'}</span>
+          </button>
         </div>
       )}
 

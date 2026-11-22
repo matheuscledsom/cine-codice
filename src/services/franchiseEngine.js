@@ -315,9 +315,14 @@ export function traverseFranchiseGraph(
       originalTitle: baseObj.originalTitle || '',
       releaseYear: Number(baseObj.releaseYear) || null,
       workType: inferredType,
+      animeFormat: baseObj.animeFormat || current.rel?.format || '',
       entryKind: current.rel
         ? inferEntryKindLabel(current.rel, inferredType === 'movie')
-        : 'Catalogado',
+        : baseObj.animeFormat === 'OVA'
+          ? 'OVA'
+          : baseObj.animeFormat === 'Filme'
+            ? 'Filme Canônico'
+            : 'Catalogado',
       isCataloged: Boolean(matched || baseObj.status),
       isCompleted: baseObj.status === 'completed',
       status: baseObj.status || 'missing',
@@ -325,6 +330,7 @@ export function traverseFranchiseGraph(
       malId: baseObj.malId || baseObj.ids?.mal || null,
       tmdbId: baseObj.tmdbId || baseObj.ids?.tmdb || null,
       item: matched || (baseObj.status ? baseObj : null),
+      relationSource: current.rel || null,
     });
 
     if (current.depth >= capDepth) continue;
@@ -336,7 +342,35 @@ export function traverseFranchiseGraph(
     if (Array.isArray(baseObj.franchiseLinks)) {
       baseObj.franchiseLinks.forEach((lnk) => neighbors.push(lnk));
     }
-    // Obras com mesmo belongsToCollection.id ou mesmo franchiseName também são vizinhos diretos
+    // Relações reversas entre obras já catalogadas no acervo local (bidirecional no grafo)
+    const baseAnilist = Number(baseObj.anilistId || baseObj.ids?.anilist) || null;
+    const baseMal = Number(baseObj.malId || baseObj.ids?.mal) || null;
+    const baseTmdb = Number(baseObj.tmdbId || baseObj.ids?.tmdb) || null;
+    const baseTitleNorm = normalizeTitleForDedup(baseObj.title || '');
+    catalog.forEach((c) => {
+      if (!c || c.id === baseObj.id) return;
+      const outEdges = [
+        ...(Array.isArray(c.franchiseRelations) ? c.franchiseRelations : []),
+        ...(Array.isArray(c.franchiseLinks) ? c.franchiseLinks : []),
+      ];
+      const pointsToBase = outEdges.some(
+        (rel) =>
+          (rel.targetWorkId && baseObj.id && rel.targetWorkId === baseObj.id) ||
+          (baseAnilist && Number(rel.anilistId) === baseAnilist) ||
+          (baseMal && Number(rel.malId) === baseMal) ||
+          (baseTmdb && Number(rel.tmdbId) === baseTmdb) ||
+          (baseTitleNorm && rel.title && normalizeTitleForDedup(rel.title) === baseTitleNorm)
+      );
+      if (pointsToBase) {
+        neighbors.push({
+          ...c,
+          targetWorkId: c.id,
+          format: c.animeFormat === 'Filme' ? 'MOVIE' : c.animeFormat || (c.workType === 'movie' ? 'MOVIE' : 'TV'),
+          relationType: 'PARENT',
+        });
+      }
+    });
+    // Obras com mesmo belongsToCollection.id também são vizinhas diretas
     if (baseObj.belongsToCollection?.id) {
       catalog.forEach((c) => {
         if (
@@ -392,17 +426,13 @@ export function computeFranchiseStats(timeline = [], currentItem = null) {
 
   for (const node of list) {
     const kind = String(node.entryKind || '').toLowerCase();
-    const fmt = String(node.item?.animeFormat || node.relationSource?.format || '').toLowerCase();
+    const fmt = String(
+      node.animeFormat || node.item?.animeFormat || node.relationSource?.format || ''
+    ).toLowerCase();
     const relType = String(node.relationSource?.relationType || '').toUpperCase();
 
     let bucket = null;
-    if (
-      relType === 'SPIN_OFF' ||
-      relType === 'SIDE_STORY' ||
-      relType === 'ALTERNATIVE' ||
-      kind.includes('spin') ||
-      kind.includes('paralela')
-    ) {
+    if (relType === 'SPIN_OFF' || kind.includes('spin')) {
       bucket = breakdown.spinOffs;
     } else if (fmt === 'ova' || fmt === 'ona' || kind === 'ova' || kind === 'ona') {
       bucket = breakdown.ovas;
@@ -410,6 +440,7 @@ export function computeFranchiseStats(timeline = [], currentItem = null) {
       relType === 'SPECIAL' ||
       relType === 'SUMMARY' ||
       fmt === 'special' ||
+      fmt === 'especial' ||
       kind.includes('especial') ||
       kind.includes('recap')
     ) {
@@ -418,9 +449,16 @@ export function computeFranchiseStats(timeline = [], currentItem = null) {
       node.workType === 'movie' ||
       node.item?.workType === 'movie' ||
       fmt === 'movie' ||
+      fmt === 'filme' ||
       kind.includes('filme')
     ) {
       bucket = breakdown.movies;
+    } else if (
+      relType === 'SIDE_STORY' ||
+      relType === 'ALTERNATIVE' ||
+      kind.includes('paralela')
+    ) {
+      bucket = breakdown.spinOffs;
     }
 
     if (bucket) {
