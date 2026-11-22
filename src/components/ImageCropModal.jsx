@@ -112,8 +112,8 @@ export function ImageCropModal({
     setIsExporting(true);
 
     try {
-      const outW = isAvatar ? 480 : 1200;
-      const outH = isAvatar ? 480 : 450;
+      const outW = isAvatar ? 256 : 1200;
+      const outH = isAvatar ? 256 : 450;
       const outScale = outW / viewportSize.width;
 
       const canvas = document.createElement('canvas');

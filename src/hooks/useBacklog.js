@@ -1,8 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getAllEpisodeEvaluations,
   importEpisodeEvaluations,
 } from '../api/cacheDb';
+import {
+  getAllRelationalWorks,
+  migrateLegacyToRelationalDb,
+  putRelationalSessions,
+  putRelationalWorks,
+} from '../services/relationalDb';
 import {
   domainConfig,
   normalizeCinemaStatus,
@@ -170,10 +176,26 @@ function normalizeItem(rawItem, spectatorDna = null) {
     language: String(rawItem.language || '').trim(),
     tags: normalizeTagsList(rawItem.tags),
     favoriteScene: String(rawItem.favoriteScene || '').trim().slice(0, 200),
+    favoriteRank:
+      Number.isInteger(Number(rawItem.favoriteRank)) &&
+      Number(rawItem.favoriteRank) >= 1 &&
+      Number(rawItem.favoriteRank) <= 4
+        ? Number(rawItem.favoriteRank)
+        : null,
     backdropCheckedAt: Number(rawItem.backdropCheckedAt) || null,
     recommended: rawItem.recommended !== undefined ? Boolean(rawItem.recommended) : false,
-    synopsis: String(rawItem.synopsis || '').trim(),
-    atmosphere: Array.isArray(rawItem.atmosphere) ? rawItem.atmosphere : [],
+    synopsis: String(rawItem.synopsis ?? rawItem.overview ?? '').trim(),
+    overview: String(rawItem.overview ?? rawItem.synopsis ?? '').trim(),
+    atmosphere: Array.isArray(rawItem.atmosphere)
+      ? rawItem.atmosphere
+      : Array.isArray(rawItem.moods)
+        ? rawItem.moods
+        : [],
+    moods: Array.isArray(rawItem.moods)
+      ? rawItem.moods
+      : Array.isArray(rawItem.atmosphere)
+        ? rawItem.atmosphere
+        : [],
     tropes: Array.isArray(rawItem.tropes) ? rawItem.tropes : [],
     collectionIds: Array.isArray(rawItem.collectionIds)
       ? Array.from(new Set(rawItem.collectionIds.map(String).filter(Boolean)))
@@ -374,6 +396,38 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
   const [readingSessions, setReadingSessions] = useState(loadInitialSessions);
   const [collections, setCollections] = useState(loadInitialCollections);
   const [storageError, setStorageError] = useState(null);
+  const relationalReadyRef = useRef(false);
+
+  useEffect(() => {
+    if (migrationLocked || relationalReadyRef.current) return undefined;
+    let active = true;
+    (async () => {
+      try {
+        if (items.length === 0) {
+          const fromIdb = await getAllRelationalWorks();
+          if (active && Array.isArray(fromIdb) && fromIdb.length > 0) {
+            setItems(fromIdb.map((w) => normalizeItem(w, spectatorDna)));
+            relationalReadyRef.current = true;
+            return;
+          }
+        }
+        const evals = await getAllEpisodeEvaluations();
+        await migrateLegacyToRelationalDb({
+          items,
+          sessions: readingSessions,
+          episodeEvaluations: evals,
+          collections,
+        });
+      } catch {
+        // Silencioso para não travar inicialização
+      } finally {
+        if (active) relationalReadyRef.current = true;
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [migrationLocked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const retryPersistStorage = useCallback(() => {
     const resItems = safeSetLocalStorageJson(STORAGE_KEY, items, { label: 'catálogo' });
@@ -388,6 +442,8 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
       setStorageError(resSessions);
       return resSessions;
     }
+    putRelationalWorks(items, { replace: true }).catch(() => {});
+    putRelationalSessions(readingSessions, { replace: true }).catch(() => {});
     setStorageError(null);
     return { persisted: true, provisional: false, quotaExceeded: false, warning: null };
   }, [items, readingSessions]);
@@ -400,6 +456,9 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
         setStorageError(res);
       } else {
         setStorageError((prev) => (prev ? null : prev));
+      }
+      if (relationalReadyRef.current) {
+        putRelationalWorks(items, { replace: true }).catch(() => {});
       }
     };
     const timer = setTimeout(flush, 180);
@@ -418,6 +477,9 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
       });
       if (!res.persisted) {
         setStorageError(res);
+      }
+      if (relationalReadyRef.current) {
+        putRelationalSessions(readingSessions, { replace: true }).catch(() => {});
       }
     };
     const timer = setTimeout(flushSessions, 180);

@@ -297,18 +297,66 @@ export function getSeasonEpisodeCount(item = {}, seasonNumber = 1) {
   if (totalEpisodes > 0) {
     return Math.max(1, Math.ceil(totalEpisodes / totalSeasons));
   }
+  if (Array.isArray(item.episodesPerSeason) && item.episodesPerSeason.length > 0) {
+    const lastKnown = Number(item.episodesPerSeason[item.episodesPerSeason.length - 1]);
+    if (lastKnown > 0) return Math.round(lastKnown);
+  }
   return 12;
 }
 
-export function advanceEpisodeProgress(item = {}, { addEpisodes = 0, addSeasons = 0 } = {}) {
-  const totalSeasons = Math.max(1, Number(item.totalSeasons) || 1);
-  const totalEpisodes = Number(item.totalEpisodes) || 0;
+export function createExpandedSeasonPatch(item = {}, optionsOrCount = 12) {
+  const curTotal = Math.max(1, Number(item.totalSeasons) || 1);
+  const rawCount =
+    typeof optionsOrCount === 'object' && optionsOrCount !== null
+      ? optionsOrCount.defaultEpisodes ?? 12
+      : optionsOrCount;
+  const safeEpCount = Math.max(1, Math.round(Number(rawCount) || 12));
+  const nextTotal = curTotal + 1;
+  const baseArr = Array.isArray(item.episodesPerSeason) ? [...item.episodesPerSeason] : [];
+  while (baseArr.length < curTotal) {
+    baseArr.push(getSeasonEpisodeCount(item, baseArr.length + 1));
+  }
+  baseArr.push(safeEpCount);
+  const prevTotalEps = Number(item.totalEpisodes) || 0;
+  return {
+    totalSeasons: nextTotal,
+    currentSeason: nextTotal,
+    episodesPerSeason: baseArr,
+    totalEpisodes:
+      prevTotalEps > 0 ? prevTotalEps + safeEpCount : baseArr.reduce((acc, n) => acc + n, 0),
+  };
+}
+
+export function advanceEpisodeProgress(
+  item = {},
+  secondArg = {},
+  thirdArg = {}
+) {
+  const normalizedOpts =
+    typeof secondArg === 'number'
+      ? { addEpisodes: secondArg, ...(thirdArg || {}) }
+      : secondArg || {};
+  const { addEpisodes = 0, addSeasons = 0, allowExpandSeasons = false } = normalizedOpts;
+  let totalSeasons = Math.max(1, Number(item.totalSeasons) || 1);
+  let totalEpisodes = Number(item.totalEpisodes) || 0;
+  let episodesPerSeason = Array.isArray(item.episodesPerSeason) ? [...item.episodesPerSeason] : null;
   let currentSeason = Math.max(1, Number(item.currentSeason) || 1);
   let currentEpisode = Math.max(0, Number(item.currentEpisode) || 0);
   const watchedEpisodes = { ...normalizeEpisodeMap(item.watchedEpisodes) };
 
   if (addSeasons > 0) {
-    const nextSeason = Math.min(totalSeasons, currentSeason + addSeasons);
+    const rawNextSeason = currentSeason + addSeasons;
+    let nextSeason = Math.min(totalSeasons, rawNextSeason);
+    if (allowExpandSeasons && rawNextSeason > totalSeasons) {
+      nextSeason = rawNextSeason;
+      totalSeasons = rawNextSeason;
+      if (episodesPerSeason) {
+        while (episodesPerSeason.length < totalSeasons) {
+          episodesPerSeason.push(getSeasonEpisodeCount(item, episodesPerSeason.length + 1));
+        }
+        totalEpisodes = episodesPerSeason.reduce((acc, n) => acc + Math.max(1, Number(n) || 1), 0);
+      }
+    }
     const seasonEpCount = getSeasonEpisodeCount(item, currentSeason);
     for (let ep = 1; ep <= seasonEpCount; ep += 1) {
       watchedEpisodes[makeEpisodeKey(currentSeason, ep)] = 'watched';
@@ -357,6 +405,9 @@ export function advanceEpisodeProgress(item = {}, { addEpisodes = 0, addSeasons 
 
   const nextState = {
     ...item,
+    totalSeasons,
+    ...(totalEpisodes > 0 ? { totalEpisodes } : {}),
+    ...(episodesPerSeason ? { episodesPerSeason } : {}),
     currentSeason,
     currentEpisode,
     watchedEpisodes,
@@ -365,6 +416,9 @@ export function advanceEpisodeProgress(item = {}, { addEpisodes = 0, addSeasons 
   return {
     currentSeason,
     currentEpisode,
+    totalSeasons,
+    ...(totalEpisodes > 0 ? { totalEpisodes } : {}),
+    ...(episodesPerSeason ? { episodesPerSeason } : {}),
     watchedEpisodes,
     progress: calculateEpisodicProgress(nextState),
   };
@@ -594,4 +648,23 @@ export function isLoanOverdue(item, thresholdDays = 30) {
   }
   const diff = diffCalendarDays(String(item.loanedAt).slice(0, 10), getTodayLocalISO());
   return diff !== null && diff >= thresholdDays;
+}
+
+export function getWorkDurationBadge(item) {
+  if (!item) return '';
+  if (isEpisodicWork(item)) {
+    const seasons = Math.max(1, Number(item.totalSeasons) || 1);
+    const totalEps = Number(item.totalEpisodes) || 0;
+    return totalEps > 0
+      ? `${seasons} temp. · ${totalEps} eps`
+      : `${seasons} ${seasons === 1 ? 'temporada' : 'temporadas'}`;
+  }
+  const mins =
+    Number(item.runtimeMinutes) ||
+    Number(item.durationMinutes) ||
+    (Number(item.totalSeconds) > 0 ? Math.round(Number(item.totalSeconds) / 60) : 0);
+  if (mins <= 0) return '';
+  const h = Math.floor(mins / 60);
+  const rem = Math.round(mins % 60);
+  return h > 0 ? `${h}h ${rem}m` : `${rem}m`;
 }

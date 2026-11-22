@@ -333,7 +333,13 @@ export function stripApiKeysFromUrl(rawUrl) {
     return str;
   }
   try {
-    const isAbsolute = /^https?:\/\//i.test(str);
+    const isHttp = /^https?:\/\//i.test(str);
+    if (!isHttp && /^[a-z0-9+.-]+:/i.test(str)) {
+      return str
+        .replace(/([?&])(api_?key|access_token|token)=[^&#]*/gi, '$1')
+        .replace(/[?&]+$/, '')
+        .replace(/\?&/, '?');
+    }
     const parsed = new URL(str, 'https://local.invalid');
     const toDelete = [];
     for (const k of parsed.searchParams.keys()) {
@@ -342,7 +348,7 @@ export function stripApiKeysFromUrl(rawUrl) {
       }
     }
     toDelete.forEach((k) => parsed.searchParams.delete(k));
-    if (isAbsolute) return parsed.toString();
+    if (isHttp) return parsed.toString();
     return `${parsed.pathname}${parsed.search}${parsed.hash}`;
   } catch {
     return str

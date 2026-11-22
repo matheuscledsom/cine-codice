@@ -25,6 +25,7 @@ import {
   calculateSmartRating,
   calculateWorkProgress,
   createDefaultReviewCriteria,
+  createExpandedSeasonPatch,
   formatFlexibleProgressMetric,
   formatSecondsToHms,
   getCompletionPace,
@@ -236,8 +237,15 @@ function EpisodicProgressPanel({ item, onChange }) {
 
   const handleQuickAdvance = ({ addEpisodes = 0, addSeasons = 0 }) => {
     playTactileSound(addSeasons > 0 ? 'complete' : 'page');
-    const next = advanceEpisodeProgress(item, { addEpisodes, addSeasons });
+    const next = advanceEpisodeProgress(item, {
+      addEpisodes,
+      addSeasons,
+      allowExpandSeasons: addSeasons > 0,
+    });
     onChange({
+      totalSeasons: next.totalSeasons,
+      ...(next.totalEpisodes ? { totalEpisodes: next.totalEpisodes } : {}),
+      ...(next.episodesPerSeason ? { episodesPerSeason: next.episodesPerSeason } : {}),
       currentSeason: next.currentSeason,
       currentEpisode: next.currentEpisode,
       watchedEpisodes: next.watchedEpisodes,
@@ -361,14 +369,15 @@ function EpisodicProgressPanel({ item, onChange }) {
           <input
             type="number"
             min="1"
-            max={totalSeasons}
             value={item.currentSeason || 1}
-            onChange={(e) =>
+            onChange={(e) => {
+              const nextCur = Math.max(1, Number(e.target.value) || 1);
               onChange({
-                currentSeason: Math.max(1, Math.min(totalSeasons, Number(e.target.value) || 1)),
-              })
-            }
-            className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2 py-1 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                currentSeason: nextCur,
+                ...(nextCur > totalSeasons ? { totalSeasons: nextCur } : {}),
+              });
+            }}
+            className="min-h-[44px] w-full rounded-[4px] border border-line bg-card px-2 py-1 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
           />
         </label>
         <label className="block">
@@ -382,7 +391,7 @@ function EpisodicProgressPanel({ item, onChange }) {
                 totalSeasons: Math.max(1, Number(e.target.value) || 1),
               })
             }
-            className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2 py-1 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+            className="min-h-[44px] w-full rounded-[4px] border border-line bg-card px-2 py-1 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
           />
         </label>
         <label className="block">
@@ -396,7 +405,7 @@ function EpisodicProgressPanel({ item, onChange }) {
                 currentEpisode: Math.max(0, Number(e.target.value) || 0),
               })
             }
-            className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2 py-1 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+            className="min-h-[44px] w-full rounded-[4px] border border-line bg-card px-2 py-1 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
           />
         </label>
         <label className="block">
@@ -411,7 +420,7 @@ function EpisodicProgressPanel({ item, onChange }) {
               })
             }
             placeholder="Ex: 24"
-            className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2 py-1 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+            className="min-h-[44px] w-full rounded-[4px] border border-line bg-card px-2 py-1 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
           />
         </label>
       </div>
@@ -419,8 +428,8 @@ function EpisodicProgressPanel({ item, onChange }) {
       {/* Seletor de Temporada & Grade de Episódios */}
       <div className="space-y-2.5 border-t border-line pt-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex gap-1 overflow-x-auto no-scrollbar">
-            {Array.from({ length: Math.min(totalSeasons, 24) }, (_, idx) => idx + 1).map(
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+            {Array.from({ length: totalSeasons }, (_, idx) => idx + 1).map(
               (seasonNum) => {
                 const active = selectedSeason === seasonNum;
                 return (
@@ -431,7 +440,7 @@ function EpisodicProgressPanel({ item, onChange }) {
                       setSelectedSeason(seasonNum);
                       setGridPage(0);
                     }}
-                    className={`min-h-[38px] min-w-[42px] shrink-0 rounded-[4px] border px-2 text-xs font-semibold tabular-nums transition-colors ${
+                    className={`min-h-[44px] min-w-[44px] shrink-0 rounded-[4px] border px-2 text-xs font-semibold tabular-nums transition-colors ${
                       active
                         ? 'border-accent bg-accent text-accent-ink'
                         : 'border-line bg-card text-muted hover:text-ink'
@@ -442,6 +451,19 @@ function EpisodicProgressPanel({ item, onChange }) {
                 );
               }
             )}
+            <button
+              type="button"
+              onClick={() => {
+                const patch = createExpandedSeasonPatch(item, 12);
+                onChange(patch);
+                setSelectedSeason(patch.totalSeasons);
+                setGridPage(0);
+              }}
+              aria-label="Adicionar nova temporada"
+              className="min-h-[44px] shrink-0 rounded-[4px] border border-dashed border-line bg-card px-2.5 text-xs font-medium text-accent hover:border-accent"
+            >
+              + Nova Temp
+            </button>
           </div>
 
           <div

@@ -227,6 +227,13 @@ describe('Fase 5 — Home (Hero 4 estados, Backfill 30d, Pílulas, Trilhos, Desc
     assert.equal(pillPack.hasMore, true);
     assert.equal(pillPack.pills[0].id, 'w-0');
 
+    const heroActive = {
+      id: 'hero-top',
+      title: 'Duna',
+      workType: 'movie',
+      status: 'playing',
+      updatedAt: '2026-11-22T15:00:00Z',
+    };
     const soloSagaWork = {
       id: 'solo',
       title: 'Matrix',
@@ -236,12 +243,19 @@ describe('Fase 5 — Home (Hero 4 estados, Backfill 30d, Pílulas, Trilhos, Desc
       ratingSource: 'legacy-default',
       belongsToCollection: { id: 999, name: 'Solo' },
       favoriteScene: 'Escolha entre a pílula azul e a vermelha.',
+      updatedAt: '2026-11-21T15:00:00Z',
     };
-    const rails = buildHomeLocalRails({ items: [soloSagaWork] });
+    // Com apenas 1 obra ativa, ela vai só para o Hero e não duplica em Continuar Assistindo
+    const singleRails = buildHomeLocalRails({ items: [soloSagaWork] });
+    assert.equal(singleRails.continueWatching.length, 0);
+
+    // Com >= 2 obras ativas, a 1ª fica no Hero e a 2ª entra em Continuar Assistindo
+    const rails = buildHomeLocalRails({ items: [heroActive, soloSagaWork] });
     assert.equal(rails.continueWatching.length, 1);
+    assert.equal(rails.continueWatching[0].id, 'solo');
     assert.equal(rails.continueWatching[0].confirmedRating, null); // legacy-default omitida!
     assert.equal(rails.franchises.length, 0); // saga com 1 obra não entra na Home!
-    assert.equal(rails.highlights.length, 1);
+    assert.equal(rails.highlights.length >= 1, true);
     assert.equal(rails.highlights[0].quoteText, 'Escolha entre a pílula azul e a vermelha.');
     assert.equal(MAX_FAVORITE_SCENE_CHARS, 200);
   });

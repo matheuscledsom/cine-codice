@@ -17,6 +17,10 @@ npm run version:major -- --name="Odin"
 
 ---
 
+## [v1.2.0 · Lumière] — 2026-11
+
+**Resumo:** Design Editorial Cinematográfico e Arquitetura Relacional Local: IndexedDB estruturado em 5 stores (`works`, `season_progress`, `episode_reviews`, `sessions_log`, `api_cache`) com snapshot prévio obrigatório, isolamento completo de rascunhos sem vazamento de sinopse, busca automática de temporadas via TMDB/TVmaze/AniList destravando `T1 → T2 → T3+`, Página Completa da Obra (`WorkDetailPage.jsx`) sem formulários abertos no modo leitura, pôsteres `2:3` reais nas sugestões curadas, Home sem duplicação entre Hero e trilho *Continuar Assistindo*, Métricas em Bento Grid focadas em Horas Assistidas/Episódios/Décadas e Perfil Editorial com Vitrine Top 4 Favoritos, Avatar Customizável e remoção física definitiva do código social morto.
+
 ## [v1.1.0 · Lumière] — 2026-11
 
 **Resumo:** Atualização de uso pessoal e privado (`SOCIAL_ENABLED = false`), infraestrutura de fila/cache de APIs (incluindo OMDb com IMDb, Rotten Tomatoes e Metacritic), ponte canônica de IDs, migração atômica sem nota 80 automática, avaliação individual por episódio (`0–100`), radar automático de franquias (TMDB/AniList/Jikan), Home redesenhada em 4 estados e Perfil com banner da obra ativa, métricas reais e limpeza de textos residuais de livro.
