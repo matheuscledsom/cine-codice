@@ -787,6 +787,14 @@ export async function fetchTvMazeShowDetails(
         runtime,
         airdate: ep.airdate || '',
         airstamp: ep.airstamp || '',
+        imageUrl: ep.image?.medium || ep.image?.original || null,
+        summary: stripHtmlTags(ep.summary || ''),
+        rating:
+          ep.rating?.average !== null &&
+          ep.rating?.average !== undefined &&
+          Number(ep.rating.average) > 0
+            ? Number(ep.rating.average)
+            : null,
       });
     });
 
@@ -1725,6 +1733,8 @@ export async function enrichWorkWithExternalRatings(
       episodeList: tvDetails.episodeList || enriched.episodeList,
       episodeDurationMinutes:
         tvDetails.episodeDurationMinutes || enriched.episodeDurationMinutes,
+      showStatus: tvDetails.showStatus || enriched.showStatus || null,
+      nextEpisode: tvDetails.nextEpisode || enriched.nextEpisode || null,
     };
   }
 
@@ -2283,6 +2293,362 @@ export async function fetchJikanEpisodes(
       };
     }
     return null;
+  }
+}
+
+export async function fetchTmdbSeasonDetails(
+  tmdbId,
+  seasonNumber = 1,
+  {
+    apiKey = '',
+    showStatus = '',
+    allowStaleOffline = true,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+  } = {}
+) {
+  const cleanTmdb = Number(tmdbId);
+  const cleanSeason = Math.max(1, Math.round(Number(seasonNumber) || 1));
+  if (!Number.isInteger(cleanTmdb) || cleanTmdb <= 0) return null;
+
+  const cacheKey = `tmdb:season:${cleanTmdb}:s${cleanSeason}`;
+  const now = nowFn();
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+
+  if (cached.hit && !cached.stale && cached.data) {
+    return {
+      ...cached.data,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+    };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
+  if (!key) {
+    return cached.hit && allowStaleOffline && cached.data
+      ? {
+          ...cached.data,
+          fromCache: true,
+          isOfflineCache: true,
+          cacheDateLabel: cached.cacheDateLabel,
+        }
+      : null;
+  }
+
+  try {
+    const url = `${TMDB_API_BASE}/tv/${cleanTmdb}/season/${cleanSeason}?api_key=${encodeURIComponent(key)}&language=pt-BR`;
+    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+    const json = await res.json();
+    const rawList = Array.isArray(json?.episodes) ? json.episodes : [];
+
+    const episodes = rawList.map((ep) => ({
+      season: cleanSeason,
+      number: Number(ep.episode_number) || 1,
+      name: ep.name || `Episódio ${ep.episode_number || ''}`,
+      runtime: Number(ep.runtime) > 0 ? Number(ep.runtime) : null,
+      airdate: ep.air_date || '',
+      summary: String(ep.overview || '').trim(),
+      imageUrl: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : null,
+      rating:
+        ep.vote_average !== null &&
+        ep.vote_average !== undefined &&
+        Number(ep.vote_average) > 0
+          ? Math.round(Number(ep.vote_average) * 10) / 10
+          : null,
+    }));
+
+    const result = {
+      tmdbId: cleanTmdb,
+      season: cleanSeason,
+      episodes,
+    };
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, result, {
+      ttlMs: getEpisodesTtlMs(showStatus),
+      now: nowFn(),
+    });
+
+    return { ...result, fromCache: false, isOfflineCache: false, cacheDateLabel: '' };
+  } catch {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ...cached.data,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+      };
+    }
+    return null;
+  }
+}
+
+export async function fetchTmdbEpisodeGroups(
+  tmdbId,
+  {
+    apiKey = '',
+    showStatus = '',
+    allowStaleOffline = true,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+  } = {}
+) {
+  const cleanTmdb = Number(tmdbId);
+  if (!Number.isInteger(cleanTmdb) || cleanTmdb <= 0) return { ok: false, groups: [] };
+
+  const cacheKey = `tmdb:epgroups:${cleanTmdb}`;
+  const now = nowFn();
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+
+  if (cached.hit && !cached.stale && cached.data) {
+    return {
+      ok: true,
+      groups: cached.data,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+    };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
+  if (!key) {
+    return cached.hit && allowStaleOffline && cached.data
+      ? {
+          ok: true,
+          groups: cached.data,
+          fromCache: true,
+          isOfflineCache: true,
+          cacheDateLabel: cached.cacheDateLabel,
+        }
+      : { ok: false, groups: [] };
+  }
+
+  try {
+    const url = `${TMDB_API_BASE}/tv/${cleanTmdb}/episode_groups?api_key=${encodeURIComponent(key)}`;
+    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+    const json = await res.json();
+    const groups = (Array.isArray(json?.results) ? json.results : []).map((g) => ({
+      id: String(g.id),
+      name: String(g.name || '').trim(),
+      description: String(g.description || '').trim(),
+      episodeCount: Number(g.episode_count) || 0,
+      groupCount: Number(g.group_count) || 0,
+      type: Number(g.type) || null,
+      isSuggestion: true,
+    }));
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, groups, {
+      ttlMs: getEpisodesTtlMs(showStatus),
+      now: nowFn(),
+    });
+
+    return { ok: true, groups, fromCache: false, isOfflineCache: false, cacheDateLabel: '' };
+  } catch {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ok: true,
+        groups: cached.data,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+      };
+    }
+    return { ok: false, groups: [] };
+  }
+}
+
+export async function fetchTmdbEpisodeGroupDetails(
+  groupId,
+  {
+    apiKey = '',
+    showStatus = '',
+    allowStaleOffline = true,
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+  } = {}
+) {
+  const cleanId = String(groupId || '').trim();
+  if (!cleanId) return { ok: false, arcs: [] };
+
+  const cacheKey = `tmdb:epgroup:${cleanId}`;
+  const now = nowFn();
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+  if (cached.hit && !cached.stale && cached.data) {
+    return { ok: true, arcs: cached.data, fromCache: true };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
+  if (!key) return { ok: false, arcs: [] };
+
+  try {
+    const url = `${TMDB_API_BASE}/tv/episode_group/${encodeURIComponent(cleanId)}?api_key=${encodeURIComponent(key)}&language=pt-BR`;
+    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+    const json = await res.json();
+    const rawGroups = Array.isArray(json?.groups) ? json.groups : [];
+    const arcs = rawGroups
+      .filter((grp) => grp?.name && Array.isArray(grp.episodes) && grp.episodes.length > 0)
+      .map((grp, idx) => {
+        const eps = grp.episodes;
+        const firstEp = eps[0];
+        const lastEp = eps[eps.length - 1];
+        return {
+          id: `tmdb-arc-${grp.id || idx}`,
+          name: String(grp.name).trim(),
+          season: Math.max(1, Number(firstEp?.season_number) || 1),
+          startEp: Math.max(1, Number(firstEp?.episode_number) || 1),
+          endEp: Math.max(1, Number(lastEp?.episode_number) || 1),
+          episodeCount: eps.length,
+          isSuggestion: true,
+        };
+      });
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, arcs, {
+      ttlMs: getEpisodesTtlMs(showStatus),
+      now: nowFn(),
+    });
+    return { ok: true, arcs, fromCache: false };
+  } catch {
+    return cached.hit && allowStaleOffline && cached.data
+      ? { ok: true, arcs: cached.data, fromCache: true, isOfflineCache: true }
+      : { ok: false, arcs: [] };
+  }
+}
+
+export async function fetchOmdbSeasonEpisodes(
+  imdbId,
+  seasonNumber = 1,
+  {
+    apiKey = '',
+    showStatus = '',
+    allowStaleOffline = true,
+    mode = 'auto',
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    sleepFn = undefined,
+  } = {}
+) {
+  const cleanImdb = sanitizeImdbId(imdbId);
+  const cleanSeason = Math.max(1, Math.round(Number(seasonNumber) || 1));
+  if (!cleanImdb) return { ok: false, reason: 'MISSING_IMDB_ID', episodes: [] };
+
+  const cacheKey = `omdb:season:${cleanImdb}:s${cleanSeason}`;
+  const now = nowFn();
+  const cached = await getCachedEntry(CACHE_STORES.episodes, cacheKey, {
+    now,
+    allowStaleOffline,
+  });
+
+  if (cached.hit && !cached.stale && cached.data) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+      episodes: cached.data,
+    };
+  }
+
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadOmdbApiKey();
+  if (!key) {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ok: true,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        episodes: cached.data,
+      };
+    }
+    return { ok: false, reason: 'MISSING_KEY', episodes: [] };
+  }
+
+  try {
+    const url = `${OMDB_API_BASE}/?apikey=${encodeURIComponent(key)}&i=${encodeURIComponent(cleanImdb)}&Season=${cleanSeason}`;
+    const res = await fetchWithTimeout(
+      url,
+      { signal, mode, nowFn, sleepFn },
+      timeoutMs,
+      fetchImpl,
+      'omdb'
+    );
+    if (!res.ok) throw new Error(`OMDb HTTP ${res.status}`);
+    const json = await res.json();
+    if (json?.Response === 'False') {
+      return {
+        ok: false,
+        reason: maskSecretsInText(json?.Error || 'OMDB_SEASON_NOT_FOUND', [key]),
+        episodes: [],
+      };
+    }
+
+    const rawList = Array.isArray(json?.Episodes) ? json.Episodes : [];
+    const episodes = rawList.map((ep) => {
+      const parsedNum = Number(ep.Episode);
+      const rawScore = String(ep.imdbRating || '').trim();
+      const scoreNum =
+        rawScore && !/^n\/a$/i.test(rawScore) && Number.isFinite(Number(rawScore))
+          ? Number(rawScore)
+          : null;
+      return {
+        season: cleanSeason,
+        number: Number.isInteger(parsedNum) && parsedNum > 0 ? parsedNum : null,
+        title: ep.Title && !/^n\/a$/i.test(String(ep.Title).trim()) ? ep.Title : null,
+        released: ep.Released && !/^n\/a$/i.test(ep.Released) ? ep.Released : null,
+        imdbRating:
+          scoreNum !== null && scoreNum > 0 && scoreNum <= 10
+            ? Math.round(scoreNum * 10) / 10
+            : null,
+        imdbId: sanitizeImdbId(ep.imdbID) || null,
+      };
+    });
+
+    await setCachedEntry(CACHE_STORES.episodes, cacheKey, episodes, {
+      ttlMs: getEpisodesTtlMs(showStatus),
+      now: nowFn(),
+    });
+
+    return {
+      ok: true,
+      fromCache: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      episodes,
+    };
+  } catch (err) {
+    if (cached.hit && allowStaleOffline && cached.data) {
+      return {
+        ok: true,
+        fromCache: true,
+        isOfflineCache: true,
+        cacheDateLabel: cached.cacheDateLabel,
+        episodes: cached.data,
+      };
+    }
+    return {
+      ok: false,
+      reason: maskSecretsInText(err?.code || err?.message || 'OMDB_ERROR', [key]),
+      episodes: [],
+    };
   }
 }
 

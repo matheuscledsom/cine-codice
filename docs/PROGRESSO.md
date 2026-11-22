@@ -1,8 +1,8 @@
 # Progresso — Cine Códice v1.1.0 · Lumière
 
 **Branch ativa:** `feat/v1.1.0-lumiere`
-**Última fase concluída:** `3`
-**Próxima fase:** `4` (Episódios, Obra e Franquia)
+**Última fase concluída:** `4`
+**Próxima fase:** `5` (Home)
 
 ## Linha do Tempo das Fases
 - [x] **Fase 0 — Auditoria (somente leitura)** — concluída na `main` sem alterações.
@@ -31,7 +31,12 @@
   - Cards de resultado em [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx) exibem apenas a nota que já vem da busca; o carregamento completo das notas e backdrop ocorre ao abrir a ficha/drawer ou ao salvar a obra em segundo plano.
   - Criado [`src/components/ExternalRatingsPanel.jsx`](../src/components/ExternalRatingsPanel.jsx) e [`buildExternalRatingsViewModel`](../src/lib/ratings.js) integrados em [`src/components/ItemDetailSheet.jsx`](../src/components/ItemDetailSheet.jsx): selo individual por fonte (`IMDb`, `RT`, `Metacritic`, `TMDB`, `AniList`, `MAL`) com skeleton por fonte e data da coleta, 5 estados de tela (carregando, vazio, erro com "Tentar de novo", offline `"dados de DD/MM"`, parcial/sem chave OMDb) e comparativo `"Sua Nota vs. Público"` exclusivo para notas confirmadas (`ratingSource !== 'legacy-default'`) com diferença em sinal + texto.
   - Criada suíte [`tests/fase3-ratings.test.mjs`](../tests/fase3-ratings.test.mjs).
-- [ ] **Fase 4 — Episódios, Obra e Franquia**
+- [x] **Fase 4 — Episódios, Obra e Franquia** — concluída na branch `feat/v1.1.0-lumiere`.
+  - Criados [`src/lib/episodeStats.js`](../src/lib/episodeStats.js), [`src/components/EpisodeListTab.jsx`](../src/components/EpisodeListTab.jsx) e [`src/components/FranchiseRadarPanel.jsx`](../src/components/FranchiseRadarPanel.jsx), integrados em [`src/components/ItemDetailSheet.jsx`](../src/components/ItemDetailSheet.jsx) (aba **Episódios** sob demanda para séries/animes, badge `"Ep. N em DD/MM"` quando aplicável, nomes clicáveis de diretor/estúdio) e [`src/screens/ListScreen.jsx`](../src/screens/ListScreen.jsx) + [`src/App.jsx`](../src/App.jsx) (filtro local por diretor/estúdio + `"Buscar mais títulos"` limitado a 6 resultados e deduplicado).
+  - Avaliações de episódio (`0–10` passo `0,5`, 4 tags e reação de até 280 caracteres), atalhos `"Assistir"`, `"Até aqui"` e `"Temporada inteira"` com **Desfazer**, virtualização acima de 100 episódios, estatísticas rigorosas (`"N de M avaliados"`, Top 3 com desempate por ordem de exibição, pior com `>= 2`, `"Aplicar média na nota da série"` com `>= 3` e confirmação ao sobrescrever nota manual), gráfico SVG de barras horizontal com tabela acessível alternável, sugestão de `filler` da Jikan separada de `fillerEpisodes` do usuário, arcos próprios + sugestões do TMDB (`episode_groups`).
+  - Cumprida integralmente a **Regra Extra 3** em [`src/api/cacheDb.js`](../src/api/cacheDb.js) (`saveEpisodeEvaluation` / `deleteEpisodeEvaluation`) e [`src/components/EpisodeListTab.jsx`](../src/components/EpisodeListTab.jsx): quando o `IndexedDB` está indisponível ou estoura a cota (`QuotaExceededError`), a cópia em memória recebe `provisional: true`, um alerta explícito em tela (`role="alert"` + toast de erro) avisa que a avaliação não foi salva e exibe o selo `"Provisório (não salvo)"`.
+  - Estendido [`src/services/cinemaApi.js`](../src/services/cinemaApi.js) (`fetchTmdbSeasonDetails`, `fetchTmdbEpisodeGroups`, `fetchTmdbEpisodeGroupDetails`, `fetchOmdbSeasonEpisodes`, dados ricos do TVmaze) e [`src/services/franchiseEngine.js`](../src/services/franchiseEngine.js) (agrupamento por `belongsToCollection` + `franchiseLinks` manuais, `traverseFranchiseGraph` imune a ciclos com profundidade máx. `3` e teto de `60` nós, exclusão de `legacy-default` das médias e comparativo `#k de N`, oculto em obra única, mais progresso separado em Filmes, OVAs, Especiais e Spin-offs).
+  - Criada suíte [`tests/fase4-episodes-franchise.test.mjs`](../tests/fase4-episodes-franchise.test.mjs).
 - [ ] **Fase 5 — Home**
 - [ ] **Fase 6 — Perfil, social oculto e resíduos de livro**
 - [ ] **Fase 7 — Testes finais, versão 1.1.0 e publicação**

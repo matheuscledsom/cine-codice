@@ -257,6 +257,7 @@ export function App() {
   const [migrationState, setMigrationState] = useState(initBootMigrationState);
   const bootMigrationPromiseRef = useRef(null);
   const [requestedCollectionId, setRequestedCollectionId] = useState(null);
+  const [requestedCreatorQuery, setRequestedCreatorQuery] = useState('');
   const [privateStorageMode, setPrivateStorageMode] = useState(false);
   const [onboardingReopened, setOnboardingReopened] = useState(false);
   const [backendReady, setBackendReady] = useState(false);
@@ -1554,6 +1555,10 @@ export function App() {
                   onNavigateAdd={() => setActiveTab('add')}
                   requestedCollectionId={requestedCollectionId}
                   onConsumeRequestedCollection={() => setRequestedCollectionId(null)}
+                  requestedCreatorQuery={requestedCreatorQuery}
+                  onConsumeRequestedCreatorQuery={() => setRequestedCreatorQuery('')}
+                  tmdbKey={aiConfig.tmdbKey}
+                  onAddItem={handleAddItem}
                 />
               )}
               {activeTab === 'community' && (
@@ -1689,6 +1694,11 @@ export function App() {
               onOpenGeminiSettings={() => setGeminiModalOpen(true)}
               onRecommendToFeed={handleRecommendWorkToFeed}
               onSocialActivityChanged={refreshSocialSignals}
+              onFilterByCreator={(creatorName) => {
+                setSelectedItemId(null);
+                setRequestedCreatorQuery(String(creatorName || '').trim());
+                setActiveTab('list');
+              }}
             />
           )}
 

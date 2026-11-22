@@ -1,5 +1,9 @@
+import { isConfirmedUserRating } from '../lib/ratings.js';
 import { normalizeTitleForDedup } from './cinemaApi.js';
 import { createUuid } from './codiceDatabase.js';
+
+export const FRANCHISE_GRAPH_MAX_DEPTH = 3;
+export const FRANCHISE_GRAPH_MAX_NODES = 60;
 
 const RELATION_KIND_LABEL = {
   PREQUEL: 'Prequel',
@@ -40,6 +44,21 @@ function normalizeFranchiseKey(raw = '') {
 }
 
 export function extractFranchiseBaseInfo(item = {}) {
+  if (item.belongsToCollection?.name) {
+    const colName = String(item.belongsToCollection.name)
+      .replace(/\s*Collection$/i, '')
+      .trim();
+    if (colName) {
+      return {
+        franchiseName: colName,
+        franchiseKey: item.belongsToCollection.id
+          ? `tmdb-col-${item.belongsToCollection.id}`
+          : normalizeFranchiseKey(colName),
+        orderHint: Number(item.chronologicalOrder) || null,
+      };
+    }
+  }
+
   const explicitFranchise = String(item.franchiseName || item.seriesName || '').trim();
   if (explicitFranchise) {
     return {
@@ -156,22 +175,47 @@ export function buildFranchiseTimeline(franchiseEntries = [], allCatalogedItems 
     });
 
     const rels = Array.isArray(item.franchiseRelations) ? item.franchiseRelations : [];
-    rels.forEach((rel, relIdx) => {
-      if (!rel?.title) return;
-      const normRel = normalizeTitleForDedup(rel.title);
+    const manualLinks = Array.isArray(item.franchiseLinks) ? item.franchiseLinks : [];
+    const combinedLinks = [
+      ...rels,
+      ...manualLinks.map((lnk) => ({
+        relationType: lnk.relationType || 'SPIN_OFF',
+        title: lnk.title || '',
+        anilistId: lnk.anilistId || null,
+        malId: lnk.malId || null,
+        tmdbId: lnk.tmdbId || null,
+        targetWorkId: lnk.targetWorkId || null,
+        format: lnk.workType === 'movie' ? 'MOVIE' : 'TV',
+      })),
+    ];
+
+    combinedLinks.forEach((rel, relIdx) => {
+      if (!rel?.title && !rel?.targetWorkId) return;
+      const normRel = normalizeTitleForDedup(rel.title || '');
       const matched =
+        (rel.targetWorkId &&
+          allCatalogedItems.find((c) => c && c.id === rel.targetWorkId)) ||
         (rel.anilistId && catalogedByAnilist.get(String(rel.anilistId))) ||
         (rel.malId && catalogedByMal.get(String(rel.malId))) ||
-        catalogedByTitle.get(normRel) ||
+        (rel.tmdbId &&
+          allCatalogedItems.find(
+            (c) => c && Number(c.tmdbId || c.ids?.tmdb) === Number(rel.tmdbId)
+          )) ||
+        (normRel ? catalogedByTitle.get(normRel) : null) ||
         null;
+
+      const resolvedTitle = matched?.title || rel.title;
+      if (!resolvedTitle) return;
 
       const relWeight =
         RELATION_ORDER_WEIGHT[String(rel.relationType || '').toUpperCase()] ?? 15 + relIdx;
       const inferredType = inferWorkTypeFromRelationFormat(rel, item.workType || 'anime');
 
       registerNode({
-        id: matched ? matched.id : `missing-${rel.anilistId || rel.malId || normRel}`,
-        title: matched?.title || rel.title,
+        id: matched
+          ? matched.id
+          : `missing-${rel.targetWorkId || rel.anilistId || rel.malId || rel.tmdbId || normRel}`,
+        title: resolvedTitle,
         originalTitle: matched?.originalTitle || rel.originalTitle || '',
         releaseYear: matched?.releaseYear || Number(rel.releaseYear) || null,
         workType: matched?.workType || inferredType,
@@ -183,20 +227,246 @@ export function buildFranchiseTimeline(franchiseEntries = [], allCatalogedItems 
         status: matched?.status || 'missing',
         coverUrl: matched?.coverUrl || rel.coverUrl || null,
         totalEpisodes: matched?.totalEpisodes || rel.totalEpisodes || null,
-        anilistId: rel.anilistId || null,
-        malId: rel.malId || null,
+        anilistId: rel.anilistId || matched?.anilistId || null,
+        malId: rel.malId || matched?.malId || null,
+        tmdbId: rel.tmdbId || matched?.tmdbId || null,
         item: matched || null,
         relationSource: rel,
       });
     });
   }
 
-  return Array.from(timelineMap.values()).sort((a, b) => {
-    const yearA = Number(a.releaseYear) || 9999;
-    const yearB = Number(b.releaseYear) || 9999;
-    if (yearA !== yearB) return yearA - yearB;
-    return (a.orderWeight || 0) - (b.orderWeight || 0);
-  });
+  return Array.from(timelineMap.values())
+    .slice(0, FRANCHISE_GRAPH_MAX_NODES)
+    .sort((a, b) => {
+      const yearA = Number(a.releaseYear) || 9999;
+      const yearB = Number(b.releaseYear) || 9999;
+      if (yearA !== yearB) return yearA - yearB;
+      return (a.orderWeight || 0) - (b.orderWeight || 0);
+    });
+}
+
+function makeNodeDedupKey(node) {
+  if (!node) return null;
+  if (node.id && !String(node.id).startsWith('missing-')) return `id:${node.id}`;
+  const tmdb = Number(node.tmdbId || node.ids?.tmdb || node.item?.tmdbId);
+  if (Number.isInteger(tmdb) && tmdb > 0) return `tmdb:${tmdb}`;
+  const ani = Number(node.anilistId || node.ids?.anilist || node.item?.anilistId);
+  if (Number.isInteger(ani) && ani > 0) return `anilist:${ani}`;
+  const mal = Number(node.malId || node.ids?.mal || node.item?.malId);
+  if (Number.isInteger(mal) && mal > 0) return `mal:${mal}`;
+  const norm = normalizeTitleForDedup(node.title || '');
+  return norm ? `title:${norm}` : null;
+}
+
+/**
+ * Travessia BFS no grafo de relações da franquia com conjunto de visitados (sem ciclos),
+ * profundidade máxima 3, teto de 60 nós e deduplicação por ID canônico (Fase 4).
+ */
+export function traverseFranchiseGraph(
+  seedItem,
+  allItems = [],
+  {
+    maxDepth = FRANCHISE_GRAPH_MAX_DEPTH,
+    maxNodes = FRANCHISE_GRAPH_MAX_NODES,
+  } = {}
+) {
+  if (!seedItem) return [];
+
+  const capDepth = Math.max(0, Math.min(FRANCHISE_GRAPH_MAX_DEPTH, Number(maxDepth) || 3));
+  const capNodes = Math.max(1, Math.min(FRANCHISE_GRAPH_MAX_NODES, Number(maxNodes) || 60));
+
+  const catalog = (Array.isArray(allItems) ? allItems : []).filter(Boolean);
+  const findCatalogMatch = (ref = {}) =>
+    catalog.find(
+      (c) =>
+        (ref.targetWorkId && c.id === ref.targetWorkId) ||
+        (ref.id && c.id === ref.id) ||
+        (ref.anilistId && Number(c.anilistId || c.ids?.anilist) === Number(ref.anilistId)) ||
+        (ref.malId && Number(c.malId || c.ids?.mal) === Number(ref.malId)) ||
+        (ref.tmdbId && Number(c.tmdbId || c.ids?.tmdb) === Number(ref.tmdbId)) ||
+        (ref.title &&
+          normalizeTitleForDedup(c.title) === normalizeTitleForDedup(ref.title))
+    ) || null;
+
+  const visitedKeys = new Set();
+  const nodes = [];
+  const queue = [{ item: seedItem, depth: 0, rel: null }];
+
+  while (queue.length > 0 && nodes.length < capNodes) {
+    const current = queue.shift();
+    const matched = current.item?.id ? current.item : findCatalogMatch(current.item);
+    const baseObj = matched || current.item;
+    if (!baseObj) continue;
+
+    const dedupKey = makeNodeDedupKey(baseObj);
+    if (!dedupKey || visitedKeys.has(dedupKey)) continue;
+    visitedKeys.add(dedupKey);
+
+    const inferredType =
+      baseObj.workType ||
+      (current.rel ? inferWorkTypeFromRelationFormat(current.rel, seedItem.workType) : 'movie');
+
+    nodes.push({
+      id: baseObj.id || `missing-${dedupKey}`,
+      dedupKey,
+      depth: current.depth,
+      title: baseObj.title,
+      originalTitle: baseObj.originalTitle || '',
+      releaseYear: Number(baseObj.releaseYear) || null,
+      workType: inferredType,
+      entryKind: current.rel
+        ? inferEntryKindLabel(current.rel, inferredType === 'movie')
+        : 'Catalogado',
+      isCataloged: Boolean(matched || baseObj.status),
+      isCompleted: baseObj.status === 'completed',
+      status: baseObj.status || 'missing',
+      anilistId: baseObj.anilistId || baseObj.ids?.anilist || null,
+      malId: baseObj.malId || baseObj.ids?.mal || null,
+      tmdbId: baseObj.tmdbId || baseObj.ids?.tmdb || null,
+      item: matched || (baseObj.status ? baseObj : null),
+    });
+
+    if (current.depth >= capDepth) continue;
+
+    const neighbors = [];
+    if (Array.isArray(baseObj.franchiseRelations)) {
+      baseObj.franchiseRelations.forEach((rel) => neighbors.push(rel));
+    }
+    if (Array.isArray(baseObj.franchiseLinks)) {
+      baseObj.franchiseLinks.forEach((lnk) => neighbors.push(lnk));
+    }
+    // Obras com mesmo belongsToCollection.id ou mesmo franchiseName também são vizinhos diretos
+    if (baseObj.belongsToCollection?.id) {
+      catalog.forEach((c) => {
+        if (
+          c.id !== baseObj.id &&
+          c.belongsToCollection?.id === baseObj.belongsToCollection.id
+        ) {
+          neighbors.push({ ...c, targetWorkId: c.id, relationType: 'SEQUEL' });
+        }
+      });
+    }
+
+    for (const neighbor of neighbors) {
+      if (!neighbor) continue;
+      const resolvedNeighbor = findCatalogMatch(neighbor) || {
+        ...neighbor,
+        id:
+          neighbor.targetWorkId ||
+          (neighbor.anilistId
+            ? `missing-${neighbor.anilistId}`
+            : neighbor.malId
+              ? `missing-${neighbor.malId}`
+              : neighbor.tmdbId
+                ? `missing-tmdb-${neighbor.tmdbId}`
+                : null),
+      };
+      const nKey = makeNodeDedupKey(resolvedNeighbor);
+      if (nKey && !visitedKeys.has(nKey)) {
+        queue.push({ item: resolvedNeighbor, depth: current.depth + 1, rel: neighbor });
+      }
+    }
+  }
+
+  return nodes;
+}
+
+/**
+ * Calcula estatísticas de franquia/universo:
+ * - Média só de obras avaliadas (excluindo legacy-default)
+ * - Ranking #k de N somente quando obra atual tem nota confirmada E franquia tem >= 2 obras
+ * - Progresso separado em filmes, OVAs, especiais e spin-offs
+ */
+export function computeFranchiseStats(timeline = [], currentItem = null) {
+  const list = Array.isArray(timeline) ? timeline : [];
+  const totalCount = list.length;
+  const completedCount = list.filter((n) => n.isCompleted).length;
+
+  const breakdown = {
+    movies: { completed: 0, total: 0 },
+    ovas: { completed: 0, total: 0 },
+    specials: { completed: 0, total: 0 },
+    spinOffs: { completed: 0, total: 0 },
+  };
+
+  for (const node of list) {
+    const kind = String(node.entryKind || '').toLowerCase();
+    const fmt = String(node.item?.animeFormat || node.relationSource?.format || '').toLowerCase();
+    const relType = String(node.relationSource?.relationType || '').toUpperCase();
+
+    let bucket = null;
+    if (
+      relType === 'SPIN_OFF' ||
+      relType === 'SIDE_STORY' ||
+      relType === 'ALTERNATIVE' ||
+      kind.includes('spin') ||
+      kind.includes('paralela')
+    ) {
+      bucket = breakdown.spinOffs;
+    } else if (fmt === 'ova' || fmt === 'ona' || kind === 'ova' || kind === 'ona') {
+      bucket = breakdown.ovas;
+    } else if (
+      relType === 'SPECIAL' ||
+      relType === 'SUMMARY' ||
+      fmt === 'special' ||
+      kind.includes('especial') ||
+      kind.includes('recap')
+    ) {
+      bucket = breakdown.specials;
+    } else if (
+      node.workType === 'movie' ||
+      node.item?.workType === 'movie' ||
+      fmt === 'movie' ||
+      kind.includes('filme')
+    ) {
+      bucket = breakdown.movies;
+    }
+
+    if (bucket) {
+      bucket.total += 1;
+      if (node.isCompleted) bucket.completed += 1;
+    }
+  }
+
+  const ratedEntries = list
+    .filter((n) => n.item && isConfirmedUserRating(n.item))
+    .map((n, idx) => ({
+      id: n.id,
+      title: n.title,
+      rating: Number(n.item.rating),
+      orderIndex: idx,
+    }))
+    .sort((a, b) => b.rating - a.rating || a.orderIndex - b.orderIndex);
+
+  const ratedCount = ratedEntries.length;
+  const franchiseAverageRating =
+    ratedCount > 0
+      ? Math.round(ratedEntries.reduce((acc, e) => acc + e.rating, 0) / ratedCount)
+      : null;
+
+  const isMultiWorkFranchise = totalCount > 1;
+  const currentHasConfirmedRating = Boolean(
+    currentItem && isConfirmedUserRating(currentItem)
+  );
+  const showComparative = isMultiWorkFranchise && currentHasConfirmedRating;
+
+  const rankIndex = showComparative
+    ? ratedEntries.findIndex((e) => e.id === currentItem.id)
+    : -1;
+  const currentRank = rankIndex >= 0 ? rankIndex + 1 : null;
+
+  return {
+    totalCount,
+    completedCount,
+    completionPct: totalCount > 0 ? Math.min(100, Math.round((completedCount / totalCount) * 100)) : 0,
+    ratedCount,
+    franchiseAverageRating,
+    hasComparative: showComparative && currentRank !== null,
+    currentRank,
+    rankLabel: showComparative && currentRank !== null ? `#${currentRank} de ${ratedCount}` : null,
+    breakdown,
+  };
 }
 
 export function analyzeFranchises(items = []) {
@@ -242,6 +512,7 @@ export function analyzeFranchises(items = []) {
     const missingEntries = timeline.filter((n) => !n.isCataloged);
     const completionPct =
       totalCount > 0 ? Math.min(100, Math.round((completedCount / totalCount) * 100)) : 0;
+    const stats = computeFranchiseStats(timeline, rep);
 
     franchises.push({
       id: `franchise-${group.seriesKey.replace(/\s+/g, '-')}`,
@@ -261,6 +532,7 @@ export function analyzeFranchises(items = []) {
       missingEntries,
       nextMissingEntry: missingEntries[0] || null,
       isComplete: missingEntries.length === 0 && completionPct >= 100,
+      stats,
     });
   }
 
@@ -272,21 +544,73 @@ export function analyzeFranchises(items = []) {
 
 export function findFranchiseForItem(item, items = []) {
   if (!item) return null;
-  const franchises = analyzeFranchises(items);
+  const safeList = Array.isArray(items) ? items : [];
+  const franchises = analyzeFranchises(safeList);
   const directMatch = franchises.find((f) =>
     f.items.some((entry) => entry.id === item.id) ||
     f.timeline.some((node) => node.id === item.id)
   );
-  if (directMatch) return directMatch;
 
-  if (Array.isArray(item.franchiseRelations) && item.franchiseRelations.length > 0) {
-    const timeline = buildFranchiseTimeline([{ item, orderHint: 1 }], items);
+  const graphNodes = traverseFranchiseGraph(item, safeList, {
+    maxDepth: FRANCHISE_GRAPH_MAX_DEPTH,
+    maxNodes: FRANCHISE_GRAPH_MAX_NODES,
+  });
+
+  const mergeGraphIntoTimeline = (baseTimeline = []) => {
+    const map = new Map();
+    for (const node of baseTimeline) {
+      const k = makeNodeDedupKey(node) || node.id;
+      if (k && !map.has(k)) map.set(k, node);
+    }
+    for (const gNode of graphNodes) {
+      const k = gNode.dedupKey || makeNodeDedupKey(gNode) || gNode.id;
+      if (k && !map.has(k) && map.size < FRANCHISE_GRAPH_MAX_NODES) {
+        map.set(k, gNode);
+      }
+    }
+    return Array.from(map.values()).slice(0, FRANCHISE_GRAPH_MAX_NODES);
+  };
+
+  if (directMatch) {
+    const mergedTimeline = mergeGraphIntoTimeline(directMatch.timeline);
+    const completedCount = mergedTimeline.filter((n) => n.isCompleted).length;
+    const catalogedCount = mergedTimeline.filter((n) => n.isCataloged).length;
+    const missingEntries = mergedTimeline.filter((n) => !n.isCataloged);
+    const completionPct =
+      mergedTimeline.length > 0
+        ? Math.min(100, Math.round((completedCount / mergedTimeline.length) * 100))
+        : 0;
+    return {
+      ...directMatch,
+      timeline: mergedTimeline,
+      totalCount: mergedTimeline.length,
+      catalogedCount,
+      completedCount,
+      completionPct,
+      missingEntries,
+      nextMissingEntry: missingEntries[0] || null,
+      stats: computeFranchiseStats(mergedTimeline, item),
+    };
+  }
+
+  const hasLinks =
+    (Array.isArray(item.franchiseRelations) && item.franchiseRelations.length > 0) ||
+    (Array.isArray(item.franchiseLinks) && item.franchiseLinks.length > 0) ||
+    Boolean(item.belongsToCollection?.id) ||
+    graphNodes.length > 1;
+
+  if (hasLinks) {
+    const baseTimeline = buildFranchiseTimeline([{ item, orderHint: 1 }], safeList);
+    const timeline = mergeGraphIntoTimeline(baseTimeline);
     const completedCount = timeline.filter((n) => n.isCompleted).length;
     const missingEntries = timeline.filter((n) => !n.isCataloged);
+    const stats = computeFranchiseStats(timeline, item);
     return {
       id: `franchise-single-${item.id}`,
-      seriesKey: normalizeFranchiseKey(item.franchiseName || item.title),
-      name: item.franchiseName || item.title,
+      seriesKey: normalizeFranchiseKey(
+        item.franchiseName || item.belongsToCollection?.name || item.title
+      ),
+      name: item.franchiseName || item.belongsToCollection?.name || item.title,
       representativeItem: item,
       items: [item],
       timeline,
@@ -297,10 +621,12 @@ export function findFranchiseForItem(item, items = []) {
       totalCount: timeline.length,
       catalogedCount: timeline.filter((n) => n.isCataloged).length,
       completedCount,
-      completionPct: timeline.length > 0 ? Math.round((completedCount / timeline.length) * 100) : 0,
+      completionPct:
+        timeline.length > 0 ? Math.round((completedCount / timeline.length) * 100) : 0,
       missingEntries,
       nextMissingEntry: missingEntries[0] || null,
       isComplete: missingEntries.length === 0 && completedCount === timeline.length,
+      stats,
     };
   }
   return null;

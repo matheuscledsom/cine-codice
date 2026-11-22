@@ -10,11 +10,13 @@ import {
   LayoutList,
   Library,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   SlidersHorizontal,
   Star,
   Trash2,
+  User,
   X,
 } from 'lucide-react';
 import {
@@ -41,6 +43,7 @@ import {
 import { isFlagEnabled } from '../config/flags';
 import { useToast } from '../context/ToastContext';
 import { SpineRenderer } from '../graphics/SpineRenderer';
+import { searchCinemaMedia } from '../services/cinemaApi';
 import {
   calculateWorkProgress,
   formatFlexibleProgressMetric,
@@ -239,6 +242,10 @@ export function ListScreen({
   onNavigateAdd,
   requestedCollectionId = null,
   onConsumeRequestedCollection,
+  requestedCreatorQuery = '',
+  onConsumeRequestedCreatorQuery,
+  tmdbKey = '',
+  onAddItem,
 }) {
   const { showToast } = useToast();
   const [selectionMode, setSelectionMode] = useState(false);
@@ -255,6 +262,15 @@ export function ListScreen({
   const [collectionManagerOpen, setCollectionManagerOpen] = useState(false);
   const [rouletteOpen, setRouletteOpen] = useState(false);
   const [localQuery, setLocalQuery] = useState('');
+  const [creatorFilterBanner, setCreatorFilterBanner] = useState('');
+  const [moreCreatorState, setMoreCreatorState] = useState({
+    open: false,
+    query: '',
+    loading: false,
+    results: [],
+    error: '',
+    offline: false,
+  });
   const deferredQuery = useDeferredValue(localQuery);
   const [titleMode, setTitleMode] = useState(loadSavedTitleMode);
   const [sortBy, setSortBy] = useState('recent');
@@ -304,6 +320,22 @@ export function ListScreen({
     }
     onConsumeRequestedCollection?.();
   }, [requestedCollectionId, collections, onConsumeRequestedCollection]);
+
+  useEffect(() => {
+    const cleanCreator = String(requestedCreatorQuery || '').trim();
+    if (!cleanCreator) return;
+    setLocalQuery(cleanCreator);
+    setCreatorFilterBanner(cleanCreator);
+    setMoreCreatorState({
+      open: false,
+      query: cleanCreator,
+      loading: false,
+      results: [],
+      error: '',
+      offline: false,
+    });
+    onConsumeRequestedCreatorQuery?.();
+  }, [requestedCreatorQuery, onConsumeRequestedCreatorQuery]);
 
   const availableGenres = useMemo(() => {
     const map = new Map();
@@ -371,7 +403,9 @@ export function ListScreen({
 
       const inTitle = String(item.title || '').toLowerCase().includes(q);
       const inOrig = String(item.originalTitle || '').toLowerCase().includes(q);
-      const inCreator = String(item.director || item.studio || item.author || '')
+      const inCreator = [item.director, item.studio, item.author]
+        .filter(Boolean)
+        .join(' ')
         .toLowerCase()
         .includes(q);
       const inFranchise = String(item.franchiseName || item.seriesName || '')
@@ -668,7 +702,88 @@ export function ListScreen({
     setSelectedFormat('all');
     setSelectedAudioFormat('all');
     setLocalQuery('');
+    setCreatorFilterBanner('');
+    setMoreCreatorState({
+      open: false,
+      query: '',
+      loading: false,
+      results: [],
+      error: '',
+      offline: false,
+    });
     setSortBy('recent');
+  };
+
+  const handleSearchMoreByCreator = async (targetQuery = creatorFilterBanner || localQuery) => {
+    const cleanQuery = String(targetQuery || '').trim();
+    if (!cleanQuery) return;
+    const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    setMoreCreatorState({
+      open: true,
+      query: cleanQuery,
+      loading: true,
+      results: [],
+      error: '',
+      offline: isOffline,
+    });
+
+    try {
+      const response = await searchCinemaMedia(cleanQuery, {
+        tmdbApiKey: tmdbKey,
+      });
+
+      const existingIds = new Set();
+      const existingTitles = new Set();
+      backlogItems.forEach((work) => {
+        if (work.tmdbId) existingIds.add(`tmdb:${work.tmdbId}`);
+        if (work.imdbId) existingIds.add(`imdb:${work.imdbId}`);
+        if (work.anilistId) existingIds.add(`ani:${work.anilistId}`);
+        if (work.malId) existingIds.add(`mal:${work.malId}`);
+        if (work.tvmazeId) existingIds.add(`tvmaze:${work.tvmazeId}`);
+        const normTitle = String(work.title || '').trim().toLowerCase();
+        if (normTitle) existingTitles.add(normTitle);
+      });
+
+      const fresh = (Array.isArray(response?.results) ? response.results : [])
+        .filter((cand) => {
+          if (!cand) return false;
+          if (cand.tmdbId && existingIds.has(`tmdb:${cand.tmdbId}`)) return false;
+          if (cand.imdbId && existingIds.has(`imdb:${cand.imdbId}`)) return false;
+          if (cand.anilistId && existingIds.has(`ani:${cand.anilistId}`)) return false;
+          if (cand.malId && existingIds.has(`mal:${cand.malId}`)) return false;
+          if (cand.tvmazeId && existingIds.has(`tvmaze:${cand.tvmazeId}`)) return false;
+          const candTitle = String(cand.title || '').trim().toLowerCase();
+          if (candTitle && existingTitles.has(candTitle)) return false;
+          return true;
+        })
+        .slice(0, 6);
+
+      setMoreCreatorState({
+        open: true,
+        query: cleanQuery,
+        loading: false,
+        results: fresh,
+        error: response?.allFailed
+          ? isOffline
+            ? 'Sem conexão com a internet para buscar novos títulos.'
+            : 'Nenhuma fonte externa respondeu no momento.'
+          : '',
+        partialWarning: Boolean(response?.partialFailure),
+        offline: isOffline,
+      });
+    } catch {
+      setMoreCreatorState({
+        open: true,
+        query: cleanQuery,
+        loading: false,
+        results: [],
+        error: isOffline
+          ? 'Sem conexão no momento. Tente novamente quando voltar a ficar online.'
+          : 'Não foi possível buscar outros títulos agora.',
+        partialWarning: false,
+        offline: isOffline,
+      });
+    }
   };
 
   return (
@@ -834,6 +949,154 @@ export function ListScreen({
           );
         })}
       </div>
+
+      {/* Filtro ativo por Diretor/Estúdio + Descoberta limitada a 6 */}
+      {creatorFilterBanner && (
+        <section
+          aria-label="Filtro por diretor ou estúdio"
+          className="rounded-[6px] border border-accent/40 bg-card p-3 space-y-2.5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <User className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+              <div className="min-w-0">
+                <p className="truncate text-xs font-semibold text-ink">
+                  Direção/Estúdio: {creatorFilterBanner}
+                </p>
+                <p className="text-[11px] tabular-nums text-subtle">
+                  {filteredAndSortedItems.length} título(s) encontrado(s) no acervo local
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => handleSearchMoreByCreator(creatorFilterBanner)}
+                disabled={moreCreatorState.loading}
+                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent px-3 text-xs font-semibold text-accent-ink disabled:opacity-60"
+              >
+                <RefreshCw
+                  className={`h-3.5 w-3.5 ${moreCreatorState.loading ? 'animate-spin' : ''}`}
+                  strokeWidth={1.5}
+                />
+                <span>Buscar mais títulos</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCreatorFilterBanner('');
+                  setLocalQuery('');
+                  setMoreCreatorState({
+                    open: false,
+                    query: '',
+                    loading: false,
+                    results: [],
+                    error: '',
+                    offline: false,
+                  });
+                }}
+                className="inline-flex min-h-[44px] items-center gap-1 rounded-[4px] border border-line bg-app px-3 text-xs font-medium text-muted hover:text-ink"
+              >
+                <X className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <span>Limpar</span>
+              </button>
+            </div>
+          </div>
+
+          {moreCreatorState.open && (
+            <div className="space-y-2 border-t border-line pt-2.5">
+              {moreCreatorState.loading ? (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" aria-busy="true">
+                  {[0, 1].map((idx) => (
+                    <div
+                      key={idx}
+                      className="h-16 animate-pulse rounded-[4px] border border-line bg-app"
+                    />
+                  ))}
+                </div>
+              ) : moreCreatorState.error && moreCreatorState.results.length === 0 ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-line bg-app px-3 py-2.5 text-xs text-muted">
+                  <span>{moreCreatorState.error}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleSearchMoreByCreator(creatorFilterBanner)}
+                    className="inline-flex min-h-[44px] items-center gap-1 rounded-[4px] border border-line bg-card px-3 text-xs font-semibold text-ink hover:border-accent"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    <span>Tentar novamente</span>
+                  </button>
+                </div>
+              ) : moreCreatorState.results.length === 0 ? (
+                <p className="rounded-[4px] border border-line bg-app px-3 py-2 text-xs text-muted">
+                  Nenhum outro título novo encontrado para {creatorFilterBanner} além do que já está no seu acervo.
+                </p>
+              ) : (
+                <>
+                  {moreCreatorState.partialWarning && (
+                    <p className="text-[11px] text-subtle">
+                      Algumas fontes externas não responderam; exibindo os títulos disponíveis (máximo de 6).
+                    </p>
+                  )}
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {moreCreatorState.results.slice(0, 6).map((cand, idx) => {
+                      const alreadyInLibrary = backlogItems.some(
+                        (work) =>
+                          (cand.tmdbId && work.tmdbId === cand.tmdbId) ||
+                          (cand.imdbId && work.imdbId === cand.imdbId) ||
+                          (cand.anilistId && work.anilistId === cand.anilistId) ||
+                          (cand.malId && work.malId === cand.malId) ||
+                          (cand.tvmazeId && work.tvmazeId === cand.tvmazeId) ||
+                          (cand.title &&
+                            String(work.title || '').trim().toLowerCase() ===
+                              String(cand.title || '').trim().toLowerCase())
+                      );
+                      return (
+                        <div
+                          key={`${cand.id || cand.tmdbId || cand.anilistId || cand.title}-${idx}`}
+                          className="flex items-center justify-between gap-2 rounded-[4px] border border-line bg-app p-2.5"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-xs font-semibold text-ink">
+                              {cand.title}
+                            </p>
+                            <p className="truncate text-[11px] tabular-nums text-subtle">
+                              {[cand.releaseYear, cand.director || cand.studio, cand.workType]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </p>
+                          </div>
+                          {alreadyInLibrary ? (
+                            <span className="inline-flex min-h-[44px] items-center rounded-[4px] border border-line bg-card px-2.5 text-[11px] font-medium text-muted">
+                              No acervo
+                            </span>
+                          ) : (
+                            onAddItem && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onAddItem({
+                                    ...cand,
+                                    status: 'wishlist',
+                                    inBacklog: true,
+                                  })
+                                }
+                                className="inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[4px] border border-accent bg-accent/15 px-3 text-[11px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+                              >
+                                <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                                <span>+ Catalogar</span>
+                              </button>
+                            )
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Barra contextual de Seleção em Lote */}
       {selectionMode && (

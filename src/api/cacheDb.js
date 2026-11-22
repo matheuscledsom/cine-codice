@@ -428,14 +428,73 @@ export async function saveEpisodeEvaluation(
     updatedAt: evaluation.updatedAt || now,
   };
 
-  setMemoryEntry(DURABLE_STORES.episodeEvaluations, 'evalKey', record);
+  setMemoryEntry(DURABLE_STORES.episodeEvaluations, 'evalKey', {
+    ...record,
+    provisional: true,
+  });
+
+  const db = await openApiCacheDb(idbFactory);
+  if (!db) {
+    return {
+      ...record,
+      persisted: false,
+      provisional: true,
+      persistenceWarning:
+        'IndexedDB indisponível: esta avaliação ficou apenas em memória provisória e não foi salva no dispositivo.',
+    };
+  }
+
+  try {
+    await idbPut(db, DURABLE_STORES.episodeEvaluations, {
+      ...record,
+      provisional: false,
+    });
+    setMemoryEntry(DURABLE_STORES.episodeEvaluations, 'evalKey', {
+      ...record,
+      provisional: false,
+    });
+    return {
+      ...record,
+      persisted: true,
+      provisional: false,
+      persistenceWarning: null,
+    };
+  } catch (err) {
+    const quota = isQuotaError(err);
+    return {
+      ...record,
+      persisted: false,
+      provisional: true,
+      persistenceWarning: quota
+        ? 'Armazenamento cheio no navegador (cota esgotada): esta avaliação ficou apenas em memória provisória e NÃO foi salva.'
+        : 'Erro ao gravar no IndexedDB: esta avaliação ficou apenas em memória provisória e NÃO foi salva.',
+    };
+  } finally {
+    try {
+      db.close?.();
+    } catch {
+      // Silencioso
+    }
+  }
+}
+
+export async function deleteEpisodeEvaluation(
+  workId,
+  season,
+  episode,
+  { idbFactory = null } = {}
+) {
+  if (!workId) return { deleted: false };
+  const evalKey = makeEpisodeEvalKey(workId, season, episode);
+  memoryStores.get(DURABLE_STORES.episodeEvaluations)?.delete(evalKey);
 
   const db = await openApiCacheDb(idbFactory);
   if (db) {
     try {
-      await idbPut(db, DURABLE_STORES.episodeEvaluations, record);
+      await idbDeleteKeys(db, DURABLE_STORES.episodeEvaluations, [evalKey]);
+      return { deleted: true, persisted: true };
     } catch {
-      // Preserva em memória se IndexedDB falhar
+      return { deleted: false, persisted: false };
     } finally {
       try {
         db.close?.();
@@ -444,7 +503,7 @@ export async function saveEpisodeEvaluation(
       }
     }
   }
-  return record;
+  return { deleted: true, persisted: false };
 }
 
 export async function getEpisodeEvaluationsForWork(
