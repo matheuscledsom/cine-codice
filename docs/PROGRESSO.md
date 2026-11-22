@@ -2,8 +2,8 @@
 
 **Branch ativa:** `feat/v1.2.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.1.0 · Lumière` (merge na `main` `99478e0` + tag `v1.1.0` + `git push origin main --tags`)
-**Última fase concluída (v1.2.0):** `3`
-**Próxima fase (v1.2.0):** `4` (Métricas Acumuladas de Espectador)
+**Última fase concluída (v1.2.0):** `4`
+**Próxima fase (v1.2.0):** `5` (Perfil Top 4 Favoritos, Avatar Customizável & Remoção do Código Social)
 
 ## Linha do Tempo das Fases — Ciclo v1.2.0 · Lumière
 - [x] **Fase 0 (v1.2.0) — Auditoria Técnica, Git Pre-Flight & Mapeamento de Causa Raiz** — concluída sem alterações de código; roteiro salvo em [`docs/PROMPT_MESTRE_V1_2.md`](./PROMPT_MESTRE_V1_2.md).
@@ -21,7 +21,9 @@
   - Criado `resolveCuratedSuggestions` em [`src/services/cinemaApi.js`](../src/services/cinemaApi.js) (com cache persistente em `api_cache` de [`src/services/relationalDb.js`](../src/services/relationalDb.js)), integrado a [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx) e [`src/components/RecommendationsSection.jsx`](../src/components/RecommendationsSection.jsx), enriquecido [`src/data/mockData.js`](../src/data/mockData.js) com `coverUrl` `2:3` oficiais, IDs canônicos e sinopses, e atualizado [`src/components/CoverImage.jsx`](../src/components/CoverImage.jsx) para exibir skeleton shimmer (`animate-pulse`) durante o carregamento antes do fallback tipográfico.
   - Eliminada a duplicação entre o Hero e o trilho *Continuar Assistindo* em [`src/lib/homeEngine.js`](../src/lib/homeEngine.js) (`buildHomeLocalRails`) e [`src/screens/HomeScreen.jsx`](../src/screens/HomeScreen.jsx), ocultando o trilho quando há apenas 1 obra ativa e exibindo progresso honesto (`T{S} · Ep. {E} assistidos` sem `0%` falso quando `totalEpisodes` não é conhecido).
   - Criada suíte [`tests/fase3-v120-posters-home.test.mjs`](../tests/fase3-v120-posters-home.test.mjs) (`86/86` testes aprovados).
-- [ ] **Fase 4 (v1.2.0) — Métricas Acumuladas de Espectador (`StatsScreen.jsx` & `statsEngine.js`)**
+- [x] **Fase 4 (v1.2.0) — Métricas Acumuladas de Espectador (`StatsScreen.jsx` & `statsEngine.js`)** — concluída na branch `feat/v1.2.0-lumiere`.
+  - Criado motor puro [`src/lib/statsEngine.js`](../src/lib/statsEngine.js) (`computeSpectatorMetrics`, `formatDecadeLabel`) e redesenhado [`src/screens/StatsScreen.jsx`](../src/screens/StatsScreen.jsx) como Bento Grid Editorial de Tempo & Volume, removendo as métricas de cobrança (*"Taxa de Conclusão"* e *"Média p/ concluir"*) e destacando o Hero de Tempo Acumulado (`watchedHours`, dias equivalentes de cinema, episódios assistidos, obras concluídas e média confirmada), Distribuição por Formato (Horas & Títulos em Filmes, Séries e Animes), Linha do Tempo por Década, Top Diretores/Estúdios e Gêneros por horas acumuladas, Mapa de Sessões e Cine Wrapped.
+  - Criada suíte [`tests/fase4-v120-metrics.test.mjs`](../tests/fase4-v120-metrics.test.mjs) (`88/88` testes aprovados).
 - [ ] **Fase 5 (v1.2.0) — Perfil Top 4 Favoritos, Avatar Customizável & Remoção do Código Social**
 - [ ] **Fase 6 (v1.2.0) — Regressão Completa, Auditoria Visual Multi-Resolução & Preparação v1.2.0**
 
