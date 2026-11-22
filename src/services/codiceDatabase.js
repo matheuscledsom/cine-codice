@@ -1,0 +1,796 @@
+import {
+  buildPublicProfileLink,
+  domainConfig,
+  normalizeCinemaStatus,
+  normalizeCinemaWorkType,
+} from '../config/domainConfig.js';
+import {
+  calculateSmartRating,
+  calculateWorkProgress,
+  getTodayLocalISO,
+  getVerdictForScore,
+  syncCinemaEpisodeFields,
+} from '../utils/backlogHelpers.js';
+import {
+  normalizeFavoriteGenres,
+  normalizePreferredCriteria,
+} from '../utils/readerPreferences.js';
+import { normalizeReaderDna } from './dnaScoring.js';
+
+export const CODICE_SCHEMA_VERSION = '1.0-cine-codice';
+export const CODICE_DB_STORAGE_KEY = 'cine_codice_relational_db_v1';
+
+export function createUuid() {
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function deterministicUuid(seedText) {
+  const input = String(seedText || 'cine-codice');
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  let h3 = 0x85ebca6b;
+  let h4 = 0xc2b2ae35;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const code = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ (code + i), 0x85ebca6b) >>> 0;
+    h3 = Math.imul(h3 ^ (code * 31), 0xc2b2ae35) >>> 0;
+    h4 = Math.imul(h4 ^ (code + 17), 0x27d4eb2f) >>> 0;
+  }
+
+  const hex = [h1, h2, h3, h4].map((n) => n.toString(16).padStart(8, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function normalizePersonName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+function splitPeopleNames(rawValue) {
+  const clean = String(rawValue || '').trim();
+  if (!clean) return [];
+  if (clean.includes(';')) {
+    return clean.split(';').map((s) => s.trim()).filter(Boolean);
+  }
+  return clean.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function normalizePrivacyLevel(value) {
+  if (value === 'followers' || value === 'private' || value === 'public') {
+    return value;
+  }
+  return 'private';
+}
+
+function buildDefaultUserProfile(profileData) {
+  const { profile } = domainConfig.ui;
+  const baseHandle = profileData?.handle || profile.handle;
+  const publicLink = buildPublicProfileLink(baseHandle);
+  const nowIso = profileData?.updatedAt || profileData?.createdAt || new Date().toISOString();
+
+  const preferredCriteria = normalizePreferredCriteria(
+    profileData?.preferredCriteria ?? profileData?.preferred_criteria,
+    profileData?.preferredCriterion ?? profileData?.preferred_criterion
+  );
+
+  return {
+    id: profileData?.id || deterministicUuid('user_profile:primary'),
+    displayName: profileData?.displayName ?? profileData?.display_name ?? profile.displayName,
+    handle: baseHandle,
+    avatarInitials:
+      profileData?.avatarInitials ?? profileData?.avatar_initials ?? profile.avatarInitials,
+    avatarUrl: profileData?.avatarUrl ?? profileData?.avatar_url ?? '',
+    coverUrl: profileData?.coverUrl ?? profileData?.banner_url ?? '',
+    bio: profileData?.bio !== undefined ? profileData.bio : profile.bio,
+    linkLabel: profileData?.linkLabel || publicLink.label,
+    linkUrl: profileData?.linkUrl || publicLink.url,
+    age: profileData?.age || '',
+    readerFocus: profileData?.readerFocus || 'Cinéfilo Curador',
+    annualGoal: Math.max(
+      1,
+      Number(profileData?.annualGoal ?? profileData?.annual_goal) || 24
+    ),
+    preferredFormat: profileData?.preferredFormat || 'Streaming',
+    preferredCriteria,
+    preferredCriterion: preferredCriteria.join(', '),
+    preferredAtmosphere: profileData?.preferredAtmosphere || 'Tinta OLED',
+    favoriteGenres: normalizeFavoriteGenres(profileData?.favoriteGenres),
+    profileSchemaVersion: 2,
+    readerDna: normalizeReaderDna(profileData?.readerDna ?? profileData?.reader_dna),
+    privacyLevel: normalizePrivacyLevel(profileData?.privacyLevel ?? profileData?.privacy_level),
+    allowWallPosts:
+      (profileData?.allowWallPosts ?? profileData?.allow_wall_posts) !== undefined
+        ? Boolean(profileData.allowWallPosts ?? profileData.allow_wall_posts)
+        : true,
+    allowComments:
+      (profileData?.allowComments ?? profileData?.allow_comments) !== undefined
+        ? Boolean(profileData.allowComments ?? profileData.allow_comments)
+        : true,
+    allowDms:
+      (profileData?.allowDms ?? profileData?.allow_dms) !== undefined
+        ? Boolean(profileData.allowDms ?? profileData.allow_dms)
+        : true,
+    gamificationEnabled:
+      (profileData?.gamificationEnabled ?? profileData?.gamification_enabled) !== undefined
+        ? Boolean(profileData.gamificationEnabled ?? profileData.gamification_enabled)
+        : true,
+    calmMode:
+      profileData?.calmMode !== undefined
+        ? Boolean(profileData.calmMode)
+        : Boolean(profileData?.calm_mode),
+    activeTitleBadge:
+      typeof (profileData?.activeTitleBadge ?? profileData?.active_title_badge) === 'string'
+        ? profileData.activeTitleBadge ?? profileData.active_title_badge
+        : '',
+    onboardingCompleted:
+      profileData?.onboardingCompleted !== undefined
+        ? Boolean(profileData.onboardingCompleted)
+        : false,
+    createdAt: profileData?.createdAt || nowIso,
+    updatedAt: profileData?.updatedAt || nowIso,
+  };
+}
+
+export function detectSchemaVersion(rawData) {
+  if (!rawData) return 1;
+  if (
+    typeof rawData === 'object' &&
+    !Array.isArray(rawData) &&
+    rawData.tables &&
+    typeof rawData.tables === 'object'
+  ) {
+    return 4;
+  }
+  if (
+    typeof rawData === 'object' &&
+    !Array.isArray(rawData) &&
+    Array.isArray(rawData.items)
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+export function buildCodiceDatabase({
+  items = [],
+  profile = null,
+  posts = [],
+  streak = null,
+  readingSessions = [],
+  collections = [],
+  follows = [],
+  wallPosts = [],
+  directMessages = [],
+} = {}) {
+  const safeItems = Array.isArray(items) ? items : [];
+  const safePosts = Array.isArray(posts) ? posts : [];
+  const safeSessions = Array.isArray(readingSessions) ? readingSessions : [];
+  const fallbackNow = new Date().toISOString();
+
+  const authorsByNorm = new Map();
+  const authors = [];
+  const work_authors = [];
+  const works = [];
+  const reviews = [];
+  const quotes_notes = [];
+  const reading_sessions = [];
+
+  const ensureCreator = (rawName, timestamp) => {
+    const clean = String(rawName || '').trim();
+    if (!clean) return null;
+    const norm = normalizePersonName(clean);
+    if (!norm) return null;
+    if (authorsByNorm.has(norm)) return authorsByNorm.get(norm);
+    const row = {
+      id: deterministicUuid(`creator:${norm}`),
+      name: clean,
+      normalizedName: norm,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    authorsByNorm.set(norm, row);
+    authors.push(row);
+    return row;
+  };
+
+  safeItems.forEach((rawItem, idx) => {
+    if (!rawItem || typeof rawItem !== 'object') return;
+    const workId = String(
+      rawItem.id || deterministicUuid(`work:${idx}:${rawItem.title || ''}`)
+    );
+    const createdAt = rawItem.createdAt || fallbackNow;
+    const updatedAt = rawItem.updatedAt || createdAt;
+    const workType = normalizeCinemaWorkType(rawItem.workType);
+    const status = normalizeCinemaStatus(rawItem.status);
+    const isCompleted = status === 'completed';
+
+    const durationMinutes =
+      Number(rawItem.durationMinutes) > 0 ? Math.round(Number(rawItem.durationMinutes)) : null;
+    const totalSeconds =
+      Number(rawItem.totalSeconds) > 0
+        ? Math.round(Number(rawItem.totalSeconds))
+        : durationMinutes
+          ? durationMinutes * 60
+          : null;
+    const currentSeconds =
+      isCompleted && totalSeconds
+        ? totalSeconds
+        : Math.max(0, Math.round(Number(rawItem.currentSeconds) || 0));
+
+    const epFields = syncCinemaEpisodeFields(rawItem, isCompleted);
+
+    const workRow = {
+      id: workId,
+      title: String(rawItem.title || 'Obra sem título'),
+      originalTitle: String(rawItem.originalTitle || '').trim(),
+      workType,
+      status,
+      director: String(rawItem.director || rawItem.studio || rawItem.author || '').trim(),
+      studio: String(rawItem.studio || '').trim(),
+      cast: String(rawItem.cast || '').trim(),
+      releaseYear: rawItem.releaseYear ?? rawItem.publicationYear ?? null,
+      language: String(rawItem.language || '').trim(),
+      format: rawItem.format || domainConfig.mediaFormats[0],
+      audioFormat: rawItem.audioFormat || domainConfig.audioFormatTags[0],
+      animeFormat: rawItem.animeFormat || '',
+      durationMinutes,
+      totalSeconds,
+      currentSeconds,
+      episodeDurationMinutes:
+        Number(rawItem.episodeDurationMinutes) > 0
+          ? Math.round(Number(rawItem.episodeDurationMinutes))
+          : workType === 'anime'
+            ? 24
+            : workType === 'series'
+              ? 45
+              : null,
+      ...epFields,
+      rewatchCount: Math.max(0, Math.round(Number(rawItem.rewatchCount) || 0)),
+      franchiseName: String(rawItem.franchiseName || rawItem.seriesName || '').trim(),
+      franchiseRelations: Array.isArray(rawItem.franchiseRelations)
+        ? rawItem.franchiseRelations
+        : [],
+      chronologicalOrder: Number(rawItem.chronologicalOrder) || null,
+      anilistId: rawItem.anilistId || null,
+      malId: rawItem.malId || null,
+      tvmazeId: rawItem.tvmazeId || null,
+      tmdbId: rawItem.tmdbId || null,
+      tmdbMediaType: rawItem.tmdbMediaType || null,
+      imdbId: String(rawItem.imdbId || '').trim(),
+      sourceBadge: String(rawItem.sourceBadge || '').trim(),
+      mergedSources: Array.isArray(rawItem.mergedSources) ? rawItem.mergedSources : [],
+      openAccessUrl: String(rawItem.openAccessUrl || '').trim(),
+      synopsis: String(rawItem.synopsis || '').trim(),
+      genres: Array.isArray(rawItem.genres) ? rawItem.genres : [],
+      primaryGenre: String(rawItem.primaryGenre || '').trim(),
+      subgenres: Array.isArray(rawItem.subgenres) ? rawItem.subgenres : [],
+      atmosphere: Array.isArray(rawItem.atmosphere) ? rawItem.atmosphere : [],
+      tropes: Array.isArray(rawItem.tropes) ? rawItem.tropes : [],
+      progress: calculateWorkProgress({
+        ...rawItem,
+        workType,
+        status,
+        totalSeconds,
+        currentSeconds,
+        ...epFields,
+      }),
+      hype: rawItem.hype || null,
+      checkpoint: String(rawItem.checkpoint || '').trim(),
+      isPlatinum: Boolean(rawItem.isPlatinum),
+      isFavorite: Boolean(rawItem.isFavorite),
+      isWishlist: Boolean(rawItem.isWishlist),
+      inBacklog: rawItem.inBacklog !== undefined ? Boolean(rawItem.inBacklog) : true,
+      dropReason: rawItem.dropReason || null,
+      startDate: rawItem.startDate || null,
+      completedDate: rawItem.completedDate || null,
+      completedYear:
+        status === 'completed'
+          ? Number(rawItem.completedDate?.slice(0, 4)) ||
+            rawItem.completedYear ||
+            domainConfig.currentYear
+          : null,
+      dropDate: rawItem.dropDate || null,
+      coverUrl: rawItem.coverUrl || null,
+      coverSources: Array.isArray(rawItem.coverSources)
+        ? rawItem.coverSources.filter(Boolean)
+        : rawItem.coverUrl
+          ? [rawItem.coverUrl]
+          : [],
+      monogram: rawItem.monogram || '',
+      tags: Array.isArray(rawItem.tags) ? rawItem.tags.map(String).filter(Boolean) : [],
+      collectionIds: Array.isArray(rawItem.collectionIds)
+        ? Array.from(new Set(rawItem.collectionIds.map(String).filter(Boolean)))
+        : [],
+      createdAt,
+      updatedAt,
+    };
+
+    works.push(workRow);
+
+    splitPeopleNames(workRow.director).forEach((personName, position) => {
+      const creatorRow = ensureCreator(personName, createdAt);
+      if (!creatorRow) return;
+      work_authors.push({
+        id: deterministicUuid(`wc:${workId}:${creatorRow.id}:diretor`),
+        workId,
+        authorId: creatorRow.id,
+        role: 'diretor',
+        position,
+        createdAt,
+        updatedAt,
+      });
+    });
+
+    const hasReviewData =
+      (rawItem.rating !== null && rawItem.rating !== undefined) ||
+      Boolean(rawItem.reviewCriteria) ||
+      Boolean(rawItem.verdict) ||
+      Boolean(rawItem.notes) ||
+      rawItem.recommended !== undefined;
+
+    if (hasReviewData) {
+      const computedRating =
+        rawItem.reviewCriteria && (rawItem.rating === null || rawItem.rating === undefined)
+          ? calculateSmartRating(rawItem.reviewCriteria)
+          : rawItem.rating !== null && rawItem.rating !== undefined
+            ? Number(rawItem.rating)
+            : null;
+      const cleanRating =
+        computedRating !== null && !Number.isNaN(computedRating)
+          ? Math.max(0, Math.min(100, Math.round(computedRating)))
+          : null;
+
+      reviews.push({
+        id: deterministicUuid(`review:${workId}`),
+        workId,
+        rating: cleanRating,
+        verdict: rawItem.verdict || getVerdictForScore(cleanRating),
+        recommended:
+          rawItem.recommended !== undefined
+            ? Boolean(rawItem.recommended)
+            : Boolean(rawItem.isPlatinum || (cleanRating !== null && cleanRating >= 80)),
+        reviewCriteria: rawItem.reviewCriteria || null,
+        notes: String(rawItem.notes || ''),
+        createdAt,
+        updatedAt,
+      });
+    }
+
+    if (Array.isArray(rawItem.quotes)) {
+      rawItem.quotes.forEach((quote, qIdx) => {
+        if (!quote || typeof quote !== 'object' || !quote.text) return;
+        const qCreated = quote.createdAt || createdAt;
+        quotes_notes.push({
+          id: String(quote.id || deterministicUuid(`quote:${workId}:${qIdx}:${quote.text}`)),
+          workId,
+          text: String(quote.text),
+          location: String(quote.location || ''),
+          note: String(quote.note || ''),
+          createdAt: qCreated,
+          updatedAt: quote.updatedAt || qCreated,
+        });
+      });
+    }
+  });
+
+  safeSessions.forEach((session, sIdx) => {
+    if (!session || typeof session !== 'object') return;
+    reading_sessions.push({
+      id: String(session.id || deterministicUuid(`session:${sIdx}:${session.workId || ''}`)),
+      workId: String(session.workId || ''),
+      startedAt: session.startedAt || fallbackNow,
+      endedAt: session.endedAt || fallbackNow,
+      durationSeconds: Math.max(0, Number(session.durationSeconds) || 0),
+      minutesWatched: Math.max(
+        0,
+        Number(session.minutesWatched) || Math.round((Number(session.durationSeconds) || 0) / 60)
+      ),
+      episodesWatched: Math.max(0, Number(session.episodesWatched) || 0),
+      notes: String(session.notes || ''),
+      createdAt: session.createdAt || session.startedAt || fallbackNow,
+      updatedAt: session.updatedAt || session.endedAt || fallbackNow,
+    });
+  });
+
+  const journal_entries = safePosts
+    .filter((post) => post && typeof post === 'object')
+    .map((post, pIdx) => {
+      const createdAt = post.createdAt || fallbackNow;
+      return {
+        id: String(post.id || deterministicUuid(`post:${pIdx}:${post.title || ''}`)),
+        workId: post.workId ?? post.itemId ?? null,
+        itemTitle: String(post.itemTitle || ''),
+        itemSnapshot: post.itemSnapshot || null,
+        progressMarker: String(post.progressMarker || ''),
+        title: String(post.title || ''),
+        caption: String(post.caption || ''),
+        media: Array.isArray(post.media) ? post.media : [],
+        comments: Array.isArray(post.comments) ? post.comments : [],
+        visibility: post.visibility || 'inherit',
+        createdAt,
+        updatedAt: post.updatedAt || createdAt,
+      };
+    });
+
+  return {
+    schemaVersion: CODICE_SCHEMA_VERSION,
+    schemaNumericVersion: 4,
+    domain: domainConfig.domainKey,
+    exportedAt: fallbackNow,
+    tables: {
+      works,
+      authors,
+      work_authors,
+      reading_sessions,
+      reviews,
+      quotes_notes,
+      journal_entries,
+      user_profile: buildDefaultUserProfile(profile),
+      follows: Array.isArray(follows) ? follows : [],
+      wall_posts: Array.isArray(wallPosts) ? wallPosts : [],
+      direct_messages: Array.isArray(directMessages) ? directMessages : [],
+    },
+    metadata: {
+      streak: streak || { count: 0, lastDate: null, history: [], dailyLogs: {} },
+      collections: Array.isArray(collections) ? collections : [],
+    },
+  };
+}
+
+export function migrateDatabase(rawData) {
+  if (!rawData || typeof rawData !== 'object') {
+    return buildCodiceDatabase({});
+  }
+
+  if (rawData.tables && typeof rawData.tables === 'object') {
+    const t = rawData.tables;
+    const rawWorks = Array.isArray(t.works) ? t.works : [];
+    const authorMap = new Map(
+      (Array.isArray(t.authors) ? t.authors : []).map((a) => [a.id, a.name])
+    );
+    const linksByWork = new Map();
+    (Array.isArray(t.work_authors) ? t.work_authors : []).forEach((link) => {
+      if (!linksByWork.has(link.workId)) linksByWork.set(link.workId, []);
+      linksByWork.get(link.workId).push(link);
+    });
+    const reviewByWork = new Map(
+      (Array.isArray(t.reviews) ? t.reviews : []).map((r) => [r.workId, r])
+    );
+    const quotesByWork = new Map();
+    (Array.isArray(t.quotes_notes) ? t.quotes_notes : []).forEach((q) => {
+      if (!quotesByWork.has(q.workId)) quotesByWork.set(q.workId, []);
+      quotesByWork.get(q.workId).push(q);
+    });
+
+    const reconstructedItems = rawWorks.map((w) => {
+      const review = reviewByWork.get(w.id) || null;
+      const linkedCreators = (linksByWork.get(w.id) || [])
+        .map((l) => authorMap.get(l.authorId))
+        .filter(Boolean)
+        .join(', ');
+      return {
+        ...w,
+        director: w.director || linkedCreators || '',
+        rating: review ? review.rating : w.rating ?? null,
+        verdict: review ? review.verdict : w.verdict ?? null,
+        recommended: review ? Boolean(review.recommended) : Boolean(w.recommended),
+        reviewCriteria: review ? review.reviewCriteria : w.reviewCriteria ?? null,
+        notes: review ? review.notes : w.notes || '',
+        quotes: quotesByWork.get(w.id) || w.quotes || [],
+      };
+    });
+
+    return buildCodiceDatabase({
+      items: reconstructedItems,
+      profile: t.user_profile || null,
+      posts: Array.isArray(t.journal_entries) ? t.journal_entries : [],
+      streak: rawData.metadata?.streak || null,
+      readingSessions: Array.isArray(t.reading_sessions) ? t.reading_sessions : [],
+      collections: Array.isArray(rawData.metadata?.collections)
+        ? rawData.metadata.collections
+        : [],
+      follows: Array.isArray(t.follows) ? t.follows : [],
+      wallPosts: Array.isArray(t.wall_posts) ? t.wall_posts : [],
+      directMessages: Array.isArray(t.direct_messages) ? t.direct_messages : [],
+    });
+  }
+
+  const rawItems = Array.isArray(rawData)
+    ? rawData
+    : Array.isArray(rawData.items)
+      ? rawData.items
+      : [];
+
+  return buildCodiceDatabase({
+    items: rawItems,
+    profile: rawData.profile || null,
+    posts: Array.isArray(rawData.posts) ? rawData.posts : [],
+    streak: rawData.streak || null,
+    readingSessions: Array.isArray(rawData.readingSessions) ? rawData.readingSessions : [],
+    collections: Array.isArray(rawData.collections) ? rawData.collections : [],
+  });
+}
+
+export function validateReferentialIntegrity(db) {
+  const tables = db?.tables || {};
+  const workIds = new Set((tables.works || []).map((w) => w.id));
+  const authorIds = new Set((tables.authors || []).map((a) => a.id));
+  const orphans = [];
+
+  (tables.work_authors || []).forEach((link) => {
+    if (!workIds.has(link.workId)) {
+      orphans.push({ table: 'work_authors', recordId: link.id, foreignKey: 'workId', missingId: link.workId });
+    }
+    if (!authorIds.has(link.authorId)) {
+      orphans.push({ table: 'work_authors', recordId: link.id, foreignKey: 'authorId', missingId: link.authorId });
+    }
+  });
+
+  ['reading_sessions', 'reviews', 'quotes_notes'].forEach((tbl) => {
+    (tables[tbl] || []).forEach((rec) => {
+      if (rec.workId && !workIds.has(rec.workId)) {
+        orphans.push({ table: tbl, recordId: rec.id, foreignKey: 'workId', missingId: rec.workId });
+      }
+    });
+  });
+
+  return { valid: orphans.length === 0, orphanCount: orphans.length, orphans };
+}
+
+export function hydrateAppSnapshotFromDatabase(db) {
+  const normalized = migrateDatabase(db);
+  const {
+    works,
+    authors,
+    work_authors,
+    reading_sessions,
+    reviews,
+    quotes_notes,
+    journal_entries,
+    user_profile,
+    follows,
+    wall_posts,
+    direct_messages,
+  } = normalized.tables;
+
+  const authorMap = new Map(authors.map((a) => [a.id, a]));
+  const linksByWork = new Map();
+  work_authors.forEach((link) => {
+    if (!linksByWork.has(link.workId)) linksByWork.set(link.workId, []);
+    linksByWork.get(link.workId).push(link);
+  });
+  const reviewByWork = new Map(reviews.map((r) => [r.workId, r]));
+  const quotesByWork = new Map();
+  quotes_notes.forEach((q) => {
+    if (!quotesByWork.has(q.workId)) quotesByWork.set(q.workId, []);
+    quotesByWork.get(q.workId).push(q);
+  });
+
+  const items = works.map((work) => {
+    const links = (linksByWork.get(work.id) || []).slice().sort((a, b) => a.position - b.position);
+    const directorNames = links
+      .map((l) => authorMap.get(l.authorId)?.name)
+      .filter(Boolean)
+      .join(', ');
+    const review = reviewByWork.get(work.id) || null;
+    const workQuotes = quotesByWork.get(work.id) || [];
+
+    return {
+      ...work,
+      director: work.director || directorNames || '',
+      rating: review ? review.rating : null,
+      verdict: review ? review.verdict : null,
+      recommended: review ? Boolean(review.recommended) : false,
+      reviewCriteria: review ? review.reviewCriteria : null,
+      notes: review ? review.notes : '',
+      quotes: workQuotes,
+    };
+  });
+
+  const posts = journal_entries.map((entry) => ({
+    ...entry,
+    itemId: entry.workId || null,
+  }));
+
+  return {
+    items,
+    profile: user_profile,
+    posts,
+    streak: normalized.metadata?.streak || { count: 0, lastDate: null, history: [], dailyLogs: {} },
+    collections: Array.isArray(normalized.metadata?.collections)
+      ? normalized.metadata.collections
+      : [],
+    readingSessions: reading_sessions,
+    follows: follows || [],
+    wallPosts: wall_posts || [],
+    directMessages: direct_messages || [],
+  };
+}
+
+export function persistCodiceDatabase(db) {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(CODICE_DB_STORAGE_KEY, JSON.stringify(db));
+  } catch {
+    // Quota indisponível
+  }
+}
+
+export function loadStoredCodiceDatabase() {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(CODICE_DB_STORAGE_KEY);
+    if (!raw) return null;
+    return migrateDatabase(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function escapeCsvCell(value) {
+  const str = String(value ?? '');
+  if (/[",\r\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+export function generateCatalogCsv(db) {
+  const { items } = hydrateAppSnapshotFromDatabase(db);
+  const headers = [
+    'ID',
+    'Título',
+    'Título Original',
+    'Tipo',
+    'Status',
+    'Direção / Estúdio',
+    'Ano',
+    'Mídia',
+    'Áudio / Legenda',
+    'Duração (min)',
+    'Minutagem Atual (s)',
+    'Duração Total (s)',
+    'Temporada Atual',
+    'Total Temporadas',
+    'Episódio Atual',
+    'Total Episódios',
+    'Rewatches',
+    'Progresso (%)',
+    'Nota',
+    'Veredito',
+    'Franquia / Saga',
+    'Gêneros',
+    'Tags',
+    'Fonte',
+  ];
+
+  const rows = items.map((item) => [
+    item.id,
+    item.title,
+    item.originalTitle || '',
+    item.workType,
+    item.status,
+    item.director || item.studio || '',
+    item.releaseYear ?? '',
+    item.format || '',
+    item.audioFormat || '',
+    item.durationMinutes ?? '',
+    item.currentSeconds ?? 0,
+    item.totalSeconds ?? '',
+    item.currentSeason ?? 1,
+    item.totalSeasons ?? 1,
+    item.currentEpisode ?? 0,
+    item.totalEpisodes ?? '',
+    item.rewatchCount ?? 0,
+    item.progress ?? 0,
+    item.rating ?? '',
+    item.verdict ?? '',
+    item.franchiseName || '',
+    Array.isArray(item.genres) ? item.genres.join('; ') : '',
+    Array.isArray(item.tags) ? item.tags.join('; ') : '',
+    item.sourceBadge || '',
+  ]);
+
+  const lines = [
+    headers.map(escapeCsvCell).join(','),
+    ...rows.map((row) => row.map(escapeCsvCell).join(',')),
+  ];
+
+  return `\uFEFF${lines.join('\r\n')}`;
+}
+
+export function generateCatalogMarkdown(db) {
+  const { items } = hydrateAppSnapshotFromDatabase(db);
+  const lines = ['# Cine Códice — Catálogo da Cinemateca', ''];
+  items.forEach((item) => {
+    const meta = [
+      item.workType === 'anime' ? 'Anime' : item.workType === 'series' ? 'Série' : 'Filme',
+      item.releaseYear || null,
+      item.director || item.studio || null,
+      typeof item.rating === 'number' ? `Nota ${item.rating}/100` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    lines.push(`- **${item.title}** (${meta}) — *${item.status}* (${item.progress || 0}%)`);
+  });
+  lines.push('');
+  return lines.join('\n');
+}
+
+export function triggerFileDownload(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+export function parseAndValidateBackupText(rawText) {
+  try {
+    const parsed = JSON.parse(rawText);
+    const detected = detectSchemaVersion(parsed);
+    if (
+      detected === 1 &&
+      !Array.isArray(parsed) &&
+      !Array.isArray(parsed?.items)
+    ) {
+      return { ok: false, error: domainConfig.ui.profile.backup.importError };
+    }
+
+    const db = migrateDatabase(parsed);
+    const integrity = validateReferentialIntegrity(db);
+    const snapshot = hydrateAppSnapshotFromDatabase(db);
+
+    return {
+      ok: true,
+      detectedSchemaVersion: detected,
+      db,
+      integrity,
+      count: snapshot.items.length,
+      ...snapshot,
+    };
+  } catch {
+    return { ok: false, error: domainConfig.ui.profile.backup.importError };
+  }
+}
+
+export function exportDatabaseDownloads(db) {
+  const stamp = getTodayLocalISO();
+  return {
+    json: () =>
+      triggerFileDownload(
+        JSON.stringify(db, null, 2),
+        `cine-codice-backup-${stamp}.json`,
+        'application/json;charset=utf-8'
+      ),
+    csv: () =>
+      triggerFileDownload(
+        generateCatalogCsv(db),
+        `cine-codice-catalogo-${stamp}.csv`,
+        'text/csv;charset=utf-8'
+      ),
+    md: () =>
+      triggerFileDownload(
+        generateCatalogMarkdown(db),
+        `cine-codice-catalogo-${stamp}.md`,
+        'text/markdown;charset=utf-8'
+      ),
+  };
+}

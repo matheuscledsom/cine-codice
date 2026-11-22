@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Cine Códice" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;500;700&family=EB+Garamond:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&family=Libre+Baskerville:wght@400;700&family=Lora:wght@400;500;700&family=Merriweather:wght@400;700&family=Plus+Jakarta+Sans:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var root = document.documentElement;
+          var styleMap = {
+            'pastel-glass': 'glass-pastel',
+            'windows-xp': 'win-xp',
+            'windows-7': 'win-7',
+            'frutiger-aero': 'frutiger-aero',
+            'manga-ink': 'manga',
+            'focus-dim': 'focus',
+          };
+          var rawTheme = localStorage.getItem('cine_codice_theme_v1');
+          if (rawTheme) {
+            var t = JSON.parse(rawTheme);
+            var sp = t && t.specialThemeId && styleMap[t.specialThemeId];
+            if (sp) {
+              root.setAttribute('data-theme-style', sp);
+              var isLight = sp !== 'win-7' && sp !== 'focus';
+              root.classList.toggle('dark', !isLight);
+            } else if (t && t.mode === 'parchment') {
+              root.classList.remove('dark');
+              root.style.setProperty('--bg-app', '#FAF8F5');
+            }
+          } else if (
+            window.matchMedia &&
+            window.matchMedia('(prefers-color-scheme: light)').matches
+          ) {
+            root.classList.remove('dark');
+          }
+          var rawPrefs = localStorage.getItem('codice_theme_prefs_v2');
+          if (rawPrefs) {
+            var p = JSON.parse(rawPrefs);
+            if (p && p.density) root.setAttribute('data-density', p.density);
+            if (p && p.motion === 'reduced') root.setAttribute('data-motion', 'reduced');
+          } else if (
+            window.matchMedia &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches
+          ) {
+            root.setAttribute('data-motion', 'reduced');
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <title>Cine Códice — Cinemateca Física &amp; Acervo Audiovisual</title>
+  </head>
+  <body class="bg-app text-ink antialiased selection:bg-accent/30 selection:text-ink">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

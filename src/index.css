@@ -1,0 +1,478 @@
+@import "tailwindcss";
+@import "./design/tokens.css";
+
+:root {
+  --bg-app: #000000;
+  --bg-card: #0A0A0A;
+  --bg-elevated: #141414;
+  --border-subtle: #1F1F1F;
+  --text-primary: #FFFFFF;
+  --text-muted: #B5B5BD;
+  --text-secondary: #B5B5BD;
+  --text-subtle: #94949E;
+  --accent-color: #8B5CF6;
+  --accent-contrast: #FFFFFF;
+  --font-app: "Source Sans 3 Variable", "Codice Sans Fallback", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  /* Tokens de escala, raio, sombra e duração */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --shadow-elevated: 0 10px 18px -6px rgba(0, 0, 0, 0.45);
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-goal: 600ms;
+}
+
+@theme inline {
+  --color-app: var(--bg-app);
+  --color-card: var(--bg-card);
+  --color-elevated: var(--bg-elevated);
+  --color-line: var(--border-subtle);
+  --color-ink: var(--text-primary);
+  --color-muted: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+  --color-accent: var(--accent-color);
+  --color-accent-ink: var(--accent-contrast);
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--bg-app);
+    color: var(--text-primary);
+    font-family: var(--font-app);
+    overflow-x: clip;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1,
+  h2,
+  .font-serif {
+    font-family: var(--font-editorial-serif);
+  }
+
+  :is(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+  }
+}
+
+.codice-goal-fill {
+  transition: width var(--duration-goal) cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Texturas sutis em CSS puro (sem imagens externas) */
+.app-texture-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+.app-texture-paper {
+  background-image:
+    radial-gradient(color-mix(in srgb, var(--text-primary) 5%, transparent) 1px, transparent 0),
+    radial-gradient(color-mix(in srgb, var(--accent-color) 4%, transparent) 1px, transparent 0);
+  background-size: 14px 14px, 23px 23px;
+  background-position: 0 0, 7px 11px;
+}
+
+.app-texture-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border-subtle) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border-subtle) 55%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.app-texture-glow {
+  background-image: radial-gradient(
+    circle at 50% -10%,
+    color-mix(in srgb, var(--accent-color) 16%, transparent) 0%,
+    transparent 55%
+  );
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Sliders minimalistas do Leitor Códice (trilha 2px, marcador sólido pequeno, sem glow) */
+.codice-reader-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.codice-reader-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 10px;
+  width: 10px;
+  border-radius: 9999px;
+  background-color: var(--reader-accent, var(--accent-color));
+  border: none;
+}
+
+.codice-reader-slider::-moz-range-thumb {
+  height: 10px;
+  width: 10px;
+  border-radius: 9999px;
+  background-color: var(--reader-accent, var(--accent-color));
+  border: none;
+}
+
+/* ============================================================================
+   Super-Revisao Visual: 6 Arquiteturas de Superficie (data-theme-style)
+   Escopadas para manter 100% dos modos e 22 presets antigos intactos.
+   ============================================================================ */
+
+/* 1. Pastel Glass: vidro leitoso, capsulas saltadas e cartoes pastéis alternados */
+:root[data-theme-style="glass-pastel"] body {
+  background-color: var(--bg-app);
+  background-image:
+    radial-gradient(circle at 10% 8%, color-mix(in srgb, var(--pastel-card-1, #F3E8FF) 85%, transparent) 0%, transparent 45%),
+    radial-gradient(circle at 90% 18%, color-mix(in srgb, var(--pastel-card-2, #FCE7F3) 80%, transparent) 0%, transparent 46%),
+    radial-gradient(circle at 20% 84%, color-mix(in srgb, var(--pastel-card-3, #E6FAF2) 78%, transparent) 0%, transparent 48%),
+    radial-gradient(circle at 82% 88%, color-mix(in srgb, var(--pastel-card-5, #E6F4FE) 78%, transparent) 0%, transparent 48%);
+  background-attachment: fixed;
+}
+
+:root[data-theme-style="glass-pastel"] :is(section.bg-card, article.bg-card, div.bg-card:not(.fixed)) {
+  background-color: color-mix(in srgb, var(--pastel-card-1, var(--bg-card)) 74%, rgba(255, 255, 255, 0.72));
+  backdrop-filter: blur(22px) saturate(165%);
+  -webkit-backdrop-filter: blur(22px) saturate(165%);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    var(--elev-2);
+}
+
+:root[data-theme-style="glass-pastel"] :is(article, section.bg-card):nth-of-type(5n+2) {
+  background-color: color-mix(in srgb, var(--pastel-card-2, var(--bg-card)) 76%, rgba(255, 255, 255, 0.68));
+}
+
+:root[data-theme-style="glass-pastel"] :is(article, section.bg-card):nth-of-type(5n+3) {
+  background-color: color-mix(in srgb, var(--pastel-card-3, var(--bg-card)) 76%, rgba(255, 255, 255, 0.68));
+}
+
+:root[data-theme-style="glass-pastel"] :is(article, section.bg-card):nth-of-type(5n+4) {
+  background-color: color-mix(in srgb, var(--pastel-card-4, var(--bg-card)) 76%, rgba(255, 255, 255, 0.68));
+}
+
+:root[data-theme-style="glass-pastel"] :is(article, section.bg-card):nth-of-type(5n+5) {
+  background-color: color-mix(in srgb, var(--pastel-card-5, var(--bg-card)) 76%, rgba(255, 255, 255, 0.68));
+}
+
+:root[data-theme-style="glass-pastel"] nav.fixed {
+  background-color: color-mix(in srgb, var(--pastel-pill-bg, #FFFFFF) 78%, rgba(255, 255, 255, 0.72));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-top-color: rgba(255, 255, 255, 0.88);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 -6px 18px -10px rgba(30, 27, 46, 0.16);
+}
+
+:root[data-theme-style="glass-pastel"] :is(nav.fixed button, button.bg-accent, button.rounded-full) {
+  border-radius: 9999px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 3px 8px -3px rgba(30, 27, 46, 0.18);
+}
+
+:root[data-theme-style="glass-pastel"] nav.fixed button[aria-current="page"] {
+  background-color: var(--pastel-pill-active, color-mix(in srgb, var(--accent-color) 15%, #FFFFFF));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 4px 12px -4px color-mix(in srgb, var(--accent-color) 32%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-theme-style="glass-pastel"] :is(nav.fixed button, button.bg-accent):active {
+    transform: translateY(1px);
+  }
+}
+
+/* 2. Windows XP Luna: creme classico, barra azul Luna, chanfro 3px e barra em blocos */
+:root[data-theme-style="win-xp"] {
+  --font-app: Tahoma, "Trebuchet MS", "Source Sans 3 Variable", sans-serif;
+}
+
+:root[data-theme-style="win-xp"] body {
+  background-color: #ECE9D8;
+  font-family: Tahoma, "Trebuchet MS", "Source Sans 3 Variable", sans-serif;
+}
+
+:root[data-theme-style="win-xp"] header.pt-2 {
+  background: linear-gradient(
+    180deg,
+    var(--xp-header-highlight, #3D95FF) 0%,
+    var(--xp-header-blue, #0054E3) 22%,
+    #0044C2 88%,
+    #003399 100%
+  );
+  border: 3px solid #00359B;
+  border-radius: 6px 6px 2px 2px;
+  padding: 10px 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+:root[data-theme-style="win-xp"] header.pt-2 :is(h1, h2, p, span:not(button span)) {
+  color: #FFFFFF;
+}
+
+:root[data-theme-style="win-xp"] :is(section.bg-card, article.bg-card, article, div.bg-card:not(.fixed)) {
+  border-width: 3px;
+  border-style: solid;
+  border-color: #0054E3;
+  border-radius: 6px 6px 3px 3px;
+  box-shadow:
+    inset 2px 2px 0 #FFFFFF,
+    inset -2px -2px 0 #ACA899,
+    var(--elev-1);
+}
+
+:root[data-theme-style="win-xp"] button.bg-card {
+  border: 2px solid #7F9DB9;
+  box-shadow:
+    inset 1px 1px 0 #FFFFFF,
+    inset -1px -1px 0 #ACA899;
+}
+
+:root[data-theme-style="win-xp"] .codice-goal-fill {
+  background: repeating-linear-gradient(
+    90deg,
+    #34A827 0 8px,
+    #58D047 8px 9px,
+    transparent 9px 12px
+  );
+}
+
+:root[data-theme-style="win-xp"] nav.fixed {
+  background: linear-gradient(180deg, #3169C6 0%, #245EDB 18%, #1D52BE 100%);
+  border-top: 2px solid #00359B;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+:root[data-theme-style="win-xp"] nav.fixed button,
+:root[data-theme-style="win-xp"] nav.fixed button span {
+  color: #FFFFFF;
+}
+
+:root[data-theme-style="win-xp"] nav.fixed button[aria-current="page"] {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+:root[data-theme-style="win-xp"] button.bg-accent {
+  background: linear-gradient(
+    180deg,
+    var(--xp-confirm-green, #3C9D2A) 0%,
+    var(--xp-confirm-deep, #256D18) 100%
+  );
+  border-color: #1D5612;
+  color: #FFFFFF;
+  border-radius: 4px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+/* 3. Windows 7 Aero: vidro fume, borda dupla escura/luminosa e azul-gelo */
+:root[data-theme-style="win-7"] body {
+  background-color: #0B121D;
+  background-image:
+    radial-gradient(circle at 18% 12%, rgba(56, 189, 248, 0.14) 0%, transparent 45%),
+    radial-gradient(circle at 84% 82%, rgba(14, 116, 144, 0.12) 0%, transparent 48%);
+  background-attachment: fixed;
+}
+
+:root[data-theme-style="win-7"] :is(section.bg-card, article.bg-card, div.bg-card:not(.fixed)) {
+  background-color: var(--win7-glass, rgba(19, 30, 46, 0.72));
+  background-image: linear-gradient(
+    130deg,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(255, 255, 255, 0.03) 34%,
+    transparent 35%,
+    rgba(56, 189, 248, 0.05) 76%,
+    rgba(255, 255, 255, 0.07) 100%
+  );
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(3, 8, 15, 0.92);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 6px 18px -8px rgba(0, 0, 0, 0.55);
+}
+
+:root[data-theme-style="win-7"] button.bg-accent {
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.35) 0%,
+    rgba(255, 255, 255, 0.08) 49%,
+    transparent 50%
+  );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+:root[data-theme-style="win-7"] nav.fixed {
+  background-color: rgba(11, 18, 29, 0.78);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid rgba(56, 189, 248, 0.32);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+/* 4. Frutiger Aero: aquatico/celeste, reflexo glossy e capsulas cristalinas */
+:root[data-theme-style="frutiger-aero"] body {
+  background-color: #EAF8FE;
+  background-image:
+    radial-gradient(ellipse at 14% 0%, rgba(14, 165, 233, 0.18) 0%, transparent 50%),
+    radial-gradient(ellipse at 86% 14%, rgba(16, 185, 129, 0.15) 0%, transparent 46%),
+    linear-gradient(180deg, #E2F6FE 0%, #F4FCFF 100%);
+  background-attachment: fixed;
+}
+
+:root[data-theme-style="frutiger-aero"] :is(section.bg-card, article.bg-card, div.bg-card:not(.fixed)) {
+  background-color: rgba(246, 252, 255, 0.86);
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.95) 0%,
+    rgba(255, 255, 255, 0.62) 45%,
+    rgba(224, 244, 253, 0.68) 48%,
+    rgba(246, 252, 255, 0.92) 100%
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-color: rgba(14, 165, 233, 0.42);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 6px 18px -8px rgba(14, 165, 233, 0.22);
+}
+
+:root[data-theme-style="frutiger-aero"] nav.fixed {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.92) 0%,
+    rgba(220, 242, 252, 0.88) 100%
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top-color: rgba(14, 165, 233, 0.45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+:root[data-theme-style="frutiger-aero"] button.bg-accent {
+  background: linear-gradient(
+    180deg,
+    var(--aero-cyan, #0EA5E9) 0%,
+    #0284C7 48%,
+    var(--accent-color) 52%,
+    #075985 100%
+  );
+  border-color: #0369A1;
+  color: #FFFFFF;
+  border-radius: 9999px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 3px 10px -4px rgba(14, 165, 233, 0.45);
+}
+
+:root[data-theme-style="frutiger-aero"] .codice-goal-fill {
+  background: linear-gradient(90deg, var(--aero-cyan, #0EA5E9) 0%, var(--aero-green, #10B981) 100%);
+}
+
+/* 5. Modo Manga: papel tankobon, nanquim preto, quadros 2px e reticula screentone */
+:root[data-theme-style="manga"] body {
+  background-color: #FAF9F4;
+  background-image:
+    radial-gradient(rgba(17, 17, 17, 0.085) 1px, transparent 1px);
+  background-size: 8px 8px;
+}
+
+:root[data-theme-style="manga"] :is(section.bg-card, article.bg-card, article, div.bg-card:not(.fixed)) {
+  border: 2px solid #111111;
+  border-radius: 3px;
+  box-shadow: 2px 2px 0 #111111;
+}
+
+:root[data-theme-style="manga"] :is(nav.fixed, button.bg-card) {
+  border-color: #111111;
+}
+
+:root[data-theme-style="manga"] nav.fixed {
+  border-top: 2px solid #111111;
+  background-color: #FAF9F4;
+}
+
+:root[data-theme-style="manga"] :is(.codice-goal-fill, .bg-accent) {
+  filter: grayscale(100%);
+}
+
+:root[data-theme-style="manga"] header.pt-2 h1 {
+  filter: url(#ink-bleed);
+}
+
+/* 6. Modo Foco: grafite fosco de baixo brilho, zero blur e economia de GPU */
+:root[data-theme-style="focus"] body {
+  background-color: #111214;
+}
+
+:root[data-theme-style="focus"] :is(section.bg-card, article.bg-card, div.bg-card:not(.fixed), nav.fixed, button) {
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-color: #262930;
+}
+
+:root[data-theme-style="focus"] :is(.text-subtle, button:not(.bg-accent):not([aria-current="page"])) {
+  opacity: 0.88;
+}
+
+:root[data-theme-style="focus"] button:not(.bg-accent):hover,
+:root[data-theme-style="focus"] button:not(.bg-accent):focus-visible {
+  opacity: 1;
+}
+
+/* Acessibilidade: escalas globais de tipografia e espaçamento dislexia */
+:root[data-font-scale="large"] {
+  font-size: 112%;
+}
+
+:root[data-font-scale="xlarge"] {
+  font-size: 124%;
+}
+
+:root[data-dyslexia="true"] body {
+  letter-spacing: 0.03em;
+  word-spacing: 0.08em;
+  line-height: 1.68;
+}
