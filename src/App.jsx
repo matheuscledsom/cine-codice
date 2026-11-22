@@ -97,9 +97,9 @@ const GeminiConfigModal = lazy(() =>
     default: m.GeminiConfigModal,
   }))
 );
-const ItemDetailSheet = lazy(() =>
-  import('./components/ItemDetailSheet').then((m) => ({
-    default: m.ItemDetailSheet,
+const WorkDetailPage = lazy(() =>
+  import('./components/WorkDetailPage').then((m) => ({
+    default: m.WorkDetailPage,
   }))
 );
 const JournalComposerModal = lazy(() =>
@@ -1848,7 +1848,7 @@ export function App() {
 
         <Suspense fallback={null}>
           {Boolean(selectedItem) && (
-            <ItemDetailSheet
+            <WorkDetailPage
               key={selectedItem.id}
               item={selectedItem}
               allItems={items}

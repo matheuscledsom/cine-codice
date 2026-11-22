@@ -304,9 +304,13 @@ export function getSeasonEpisodeCount(item = {}, seasonNumber = 1) {
   return 12;
 }
 
-export function createExpandedSeasonPatch(item = {}, episodeCount = 12) {
+export function createExpandedSeasonPatch(item = {}, optionsOrCount = 12) {
   const curTotal = Math.max(1, Number(item.totalSeasons) || 1);
-  const safeEpCount = Math.max(1, Math.round(Number(episodeCount) || 12));
+  const rawCount =
+    typeof optionsOrCount === 'object' && optionsOrCount !== null
+      ? optionsOrCount.defaultEpisodes ?? 12
+      : optionsOrCount;
+  const safeEpCount = Math.max(1, Math.round(Number(rawCount) || 12));
   const nextTotal = curTotal + 1;
   const baseArr = Array.isArray(item.episodesPerSeason) ? [...item.episodesPerSeason] : [];
   while (baseArr.length < curTotal) {
@@ -325,8 +329,14 @@ export function createExpandedSeasonPatch(item = {}, episodeCount = 12) {
 
 export function advanceEpisodeProgress(
   item = {},
-  { addEpisodes = 0, addSeasons = 0, allowExpandSeasons = false } = {}
+  secondArg = {},
+  thirdArg = {}
 ) {
+  const normalizedOpts =
+    typeof secondArg === 'number'
+      ? { addEpisodes: secondArg, ...(thirdArg || {}) }
+      : secondArg || {};
+  const { addEpisodes = 0, addSeasons = 0, allowExpandSeasons = false } = normalizedOpts;
   let totalSeasons = Math.max(1, Number(item.totalSeasons) || 1);
   let totalEpisodes = Number(item.totalEpisodes) || 0;
   let episodesPerSeason = Array.isArray(item.episodesPerSeason) ? [...item.episodesPerSeason] : null;
@@ -638,4 +648,23 @@ export function isLoanOverdue(item, thresholdDays = 30) {
   }
   const diff = diffCalendarDays(String(item.loanedAt).slice(0, 10), getTodayLocalISO());
   return diff !== null && diff >= thresholdDays;
+}
+
+export function getWorkDurationBadge(item) {
+  if (!item) return '';
+  if (isEpisodicWork(item)) {
+    const seasons = Math.max(1, Number(item.totalSeasons) || 1);
+    const totalEps = Number(item.totalEpisodes) || 0;
+    return totalEps > 0
+      ? `${seasons} temp. · ${totalEps} eps`
+      : `${seasons} ${seasons === 1 ? 'temporada' : 'temporadas'}`;
+  }
+  const mins =
+    Number(item.runtimeMinutes) ||
+    Number(item.durationMinutes) ||
+    (Number(item.totalSeconds) > 0 ? Math.round(Number(item.totalSeconds) / 60) : 0);
+  if (mins <= 0) return '';
+  const h = Math.floor(mins / 60);
+  const rem = Math.round(mins % 60);
+  return h > 0 ? `${h}h ${rem}m` : `${rem}m`;
 }

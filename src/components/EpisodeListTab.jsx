@@ -108,9 +108,11 @@ export function EpisodeListTab({
   // Sugestões opcionais de episode_groups do TMDB (nunca sobrescrevem storyArcs)
   const [tmdbGroups, setTmdbGroups] = useState([]);
   const [tmdbSuggestedArcs, setTmdbSuggestedArcs] = useState([]);
+  const [showArcForm, setShowArcForm] = useState(false);
   const [newArcName, setNewArcName] = useState('');
   const [newArcStart, setNewArcStart] = useState('1');
   const [newArcEnd, setNewArcEnd] = useState('12');
+  const [episodePageBlock, setEpisodePageBlock] = useState(0);
 
   const abortRef = useRef(null);
 
@@ -407,9 +409,30 @@ export function EpisodeListTab({
   );
 
   const visibleEpisodes = useMemo(() => {
-    if (!virtualWin.virtualized) return seasonEpisodes;
-    return seasonEpisodes.slice(virtualWin.startIndex, virtualWin.endIndex + 1);
-  }, [seasonEpisodes, virtualWin]);
+    if (virtualWin.virtualized) {
+      return seasonEpisodes.slice(virtualWin.startIndex, virtualWin.endIndex + 1);
+    }
+    if (seasonEpisodes.length > 50) {
+      const start = episodePageBlock * 50;
+      return seasonEpisodes.slice(start, start + 50);
+    }
+    return seasonEpisodes;
+  }, [seasonEpisodes, virtualWin, episodePageBlock]);
+
+  const getSeasonWatchedProgress = useCallback(
+    (sNum) => {
+      const expected = getSeasonEpisodeCount(item, sNum);
+      let watchedInSeason = 0;
+      const prefix = `S${sNum}:E`;
+      Object.entries(watchedMap).forEach(([k, st]) => {
+        if (st === 'watched' && String(k).startsWith(prefix)) {
+          watchedInSeason += 1;
+        }
+      });
+      return { watched: watchedInSeason, total: expected };
+    },
+    [item, watchedMap]
+  );
 
   const episodeStats = useMemo(
     () => computeEpisodeStats(Array.from(evaluationsMap.values()), item?.totalEpisodes),
@@ -493,6 +516,29 @@ export function EpisodeListTab({
     commitWatchedWithUndo(
       nextMap,
       `Temporada ${selectedSeason} inteira marcada (${seasonEpisodes.length} eps).`
+    );
+  };
+
+  const handleQuickAdvanceSeason = (step = 1) => {
+    const nextMap = { ...watchedMap };
+    let marked = 0;
+    let lastEp = 0;
+    for (const ep of seasonEpisodes) {
+      const k = makeEpisodeKey(selectedSeason, ep.number);
+      if (nextMap[k] !== 'watched') {
+        nextMap[k] = 'watched';
+        marked += 1;
+        lastEp = ep.number;
+        if (marked >= step) break;
+      }
+    }
+    if (marked === 0) return;
+    playTactileSound('page');
+    commitWatchedWithUndo(
+      nextMap,
+      marked === 1
+        ? `T${selectedSeason}E${String(lastEp).padStart(2, '0')} marcado como assistido.`
+        : `+${marked} episódios marcados na Temporada ${selectedSeason}.`
     );
   };
 
@@ -986,24 +1032,33 @@ export function EpisodeListTab({
       <section className="space-y-2.5 rounded-[6px] border border-line bg-app p-3.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
-            {Array.from({ length: totalSeasons }, (_, idx) => idx + 1).map((sNum) => (
-              <button
-                key={sNum}
-                type="button"
-                onClick={() => {
-                  setSelectedSeason(sNum);
-                  setListScrollTop(0);
-                  setEditingEp(null);
-                }}
-                className={`min-h-[44px] min-w-[44px] shrink-0 rounded-[4px] border px-2.5 text-xs font-semibold tabular-nums transition-colors ${
-                  selectedSeason === sNum
-                    ? 'border-accent bg-accent text-accent-ink'
-                    : 'border-line bg-card text-muted hover:text-ink'
-                }`}
-              >
-                T{sNum}
-              </button>
-            ))}
+            {Array.from({ length: totalSeasons }, (_, idx) => idx + 1).map((sNum) => {
+              const prog = getSeasonWatchedProgress(sNum);
+              return (
+                <button
+                  key={sNum}
+                  type="button"
+                  onClick={() => {
+                    setSelectedSeason(sNum);
+                    setListScrollTop(0);
+                    setEpisodePageBlock(0);
+                    setEditingEp(null);
+                  }}
+                  className={`min-h-[44px] min-w-[44px] shrink-0 rounded-[4px] border px-2.5 text-xs font-semibold tabular-nums transition-colors ${
+                    selectedSeason === sNum
+                      ? 'border-accent bg-accent text-accent-ink'
+                      : 'border-line bg-card text-muted hover:text-ink'
+                  }`}
+                >
+                  <span>T{sNum}</span>
+                  {prog.watched > 0 && (
+                    <span className="ml-1 text-[10px] font-normal opacity-80">
+                      · {prog.watched}/{prog.total}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
             <button
               type="button"
               onClick={() => {
@@ -1019,6 +1074,7 @@ export function EpisodeListTab({
                 });
                 setSelectedSeason(nextTotal);
                 setListScrollTop(0);
+                setEpisodePageBlock(0);
               }}
               aria-label="Adicionar nova temporada"
               className="min-h-[44px] shrink-0 rounded-[4px] border border-dashed border-line bg-card px-2.5 text-xs font-medium text-accent hover:border-accent"
@@ -1027,15 +1083,54 @@ export function EpisodeListTab({
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={handleMarkWholeSeason}
-            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-3 text-xs font-medium text-ink hover:border-accent"
-          >
-            <CheckCheck className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-            <span>Temporada inteira</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => handleQuickAdvanceSeason(1)}
+              className="inline-flex min-h-[44px] items-center gap-1 rounded-[4px] border border-line bg-card px-2.5 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+            >
+              <span>+1 Ep</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleQuickAdvanceSeason(3)}
+              className="inline-flex min-h-[44px] items-center gap-1 rounded-[4px] border border-line bg-card px-2.5 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+            >
+              <span>+3 Eps</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleMarkWholeSeason}
+              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-3 text-xs font-medium text-ink hover:border-accent"
+            >
+              <CheckCheck className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+              <span>Concluir Temporada</span>
+            </button>
+          </div>
         </div>
+
+        {!virtualWin.virtualized && seasonEpisodes.length > 50 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            {Array.from({ length: Math.ceil(seasonEpisodes.length / 50) }, (_, bIdx) => {
+              const startNum = bIdx * 50 + 1;
+              const endNum = Math.min(seasonEpisodes.length, (bIdx + 1) * 50);
+              return (
+                <button
+                  key={bIdx}
+                  type="button"
+                  onClick={() => setEpisodePageBlock(bIdx)}
+                  className={`min-h-[38px] rounded-[4px] border px-2.5 text-[11px] font-semibold tabular-nums ${
+                    episodePageBlock === bIdx
+                      ? 'border-accent bg-accent/15 text-ink'
+                      : 'border-line bg-card text-muted hover:text-ink'
+                  }`}
+                >
+                  Eps {startNum}–{endNum}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Estados assíncronos da temporada (D6) */}
         {loadingSeason && (
@@ -1433,43 +1528,54 @@ export function EpisodeListTab({
           )}
 
           {userStoryArcs.length > 0 && (
-            <form onSubmit={handleAddUserArc} className="grid grid-cols-1 sm:grid-cols-4 gap-1.5">
-              <input
-                type="text"
-                value={newArcName}
-                onChange={(e) => setNewArcName(e.target.value)}
-                placeholder={`Novo arco (T${selectedSeason})`}
-                className="min-h-[44px] sm:col-span-2 rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
-              />
-              <div className="flex items-center gap-1">
-                <input
-                  type="number"
-                  min="1"
-                  max={Math.max(1, seasonEpisodes.length)}
-                  value={newArcStart}
-                  onChange={(e) => setNewArcStart(e.target.value)}
-                  aria-label="Início do arco"
-                  className="min-h-[44px] w-full rounded-[4px] border border-line bg-card px-2 text-xs tabular-nums text-ink"
-                />
-                <span className="text-xs text-subtle">-</span>
-                <input
-                  type="number"
-                  min="1"
-                  max={Math.max(1, seasonEpisodes.length)}
-                  value={newArcEnd}
-                  onChange={(e) => setNewArcEnd(e.target.value)}
-                  aria-label="Fim do arco"
-                  className="min-h-[44px] w-full rounded-[4px] border border-line bg-card px-2 text-xs tabular-nums text-ink"
-                />
-              </div>
+            <div className="space-y-2">
               <button
-                type="submit"
-                disabled={!newArcName.trim()}
-                className="min-h-[44px] rounded-[4px] bg-accent px-3 text-xs font-semibold text-accent-ink disabled:opacity-45"
+                type="button"
+                onClick={() => setShowArcForm((v) => !v)}
+                className="min-h-[38px] rounded-[4px] border border-dashed border-line bg-card px-2.5 text-[11px] font-medium text-accent hover:border-accent"
               >
-                + Arco
+                {showArcForm ? 'Fechar novo arco' : '+ Adicionar arco'}
               </button>
-            </form>
+              {showArcForm && (
+                <form onSubmit={handleAddUserArc} className="grid grid-cols-1 sm:grid-cols-4 gap-1.5">
+                  <input
+                    type="text"
+                    value={newArcName}
+                    onChange={(e) => setNewArcName(e.target.value)}
+                    placeholder={`Novo arco (T${selectedSeason})`}
+                    className="min-h-[44px] sm:col-span-2 rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="1"
+                      max={Math.max(1, seasonEpisodes.length)}
+                      value={newArcStart}
+                      onChange={(e) => setNewArcStart(e.target.value)}
+                      aria-label="Início do arco"
+                      className="min-h-[44px] w-full rounded-[4px] border border-line bg-card px-2 text-xs tabular-nums text-ink"
+                    />
+                    <span className="text-xs text-subtle">-</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max={Math.max(1, seasonEpisodes.length)}
+                      value={newArcEnd}
+                      onChange={(e) => setNewArcEnd(e.target.value)}
+                      aria-label="Fim do arco"
+                      className="min-h-[44px] w-full rounded-[4px] border border-line bg-card px-2 text-xs tabular-nums text-ink"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={!newArcName.trim()}
+                    className="min-h-[44px] rounded-[4px] bg-accent px-3 text-xs font-semibold text-accent-ink disabled:opacity-45"
+                  >
+                    + Arco
+                  </button>
+                </form>
+              )}
+            </div>
           )}
 
           {tmdbGroups.length > 0 && (
