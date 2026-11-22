@@ -30,6 +30,7 @@ import {
   getCachedCinemaSearch,
   getDefaultSourcesForFilter,
   loadActiveCinemaSources,
+  resolveCuratedSuggestions,
   saveActiveCinemaSources,
   searchCinemaMedia,
   searchMockCinema,
@@ -287,11 +288,24 @@ export function AddScreen({
       searchAbortRef.current?.abort();
 
       if (!cleanQuery || cleanQuery.length < MIN_SEARCH_QUERY_LENGTH) {
-        setResults(searchMockCinema(cleanQuery, filter));
+        const mockList = searchMockCinema(cleanQuery, filter);
+        setResults(mockList);
         setIsLoading(false);
         setPartialFailure(false);
         setFailedSourcesCount(0);
         setAllFailed(false);
+        resolveCuratedSuggestions(mockList, { tmdbApiKey: tmdbKey })
+          .then((resolved) => {
+            if (Array.isArray(resolved) && resolved.length > 0) {
+              setResults((curr) =>
+                curr.length === resolved.length &&
+                curr.every((c, idx) => c.id === resolved[idx]?.id)
+                  ? resolved
+                  : curr
+              );
+            }
+          })
+          .catch(() => {});
         return;
       }
 

@@ -74,8 +74,9 @@ export function CoverImage({
   }, [currentSrc, thumbKey]);
 
   const FallbackIcon = WORK_ICONS[workType] || Film;
+  const hasPendingExternalSource = Boolean(effectiveSrc && !isLoaded);
   const generatedFallbackUri = useMemo(() => {
-    if (isLoaded || !isFlagEnabled('generatedCovers')) return null;
+    if (isLoaded || hasPendingExternalSource || !isFlagEnabled('generatedCovers')) return null;
     return buildGeneratedPosterDataUri({
       title,
       director: creatorLabel,
@@ -83,7 +84,7 @@ export function CoverImage({
       releaseYear,
       genre,
     });
-  }, [isLoaded, title, creatorLabel, workType, releaseYear, genre]);
+  }, [isLoaded, hasPendingExternalSource, title, creatorLabel, workType, releaseYear, genre]);
 
   const handleImageError = () => {
     setLoadedSrc(null);
@@ -94,7 +95,12 @@ export function CoverImage({
     <div
       className={`relative aspect-[2/3] overflow-hidden rounded-[4px] border-2 border-line bg-elevated select-none ${className}`}
     >
-      {generatedFallbackUri && !isLoaded ? (
+      {hasPendingExternalSource ? (
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 motion-safe:animate-pulse bg-card"
+        />
+      ) : generatedFallbackUri && !isLoaded ? (
         <img
           src={generatedFallbackUri}
           alt={title || 'Cartaz editorial gerado'}

@@ -219,8 +219,9 @@ export function HomeScreen({
         items,
         readingSessions,
         dailyLogs,
+        excludeHeroWorkId: hero.state === 'active' ? hero.work?.id : null,
       }),
-    [items, readingSessions, dailyLogs]
+    [items, readingSessions, dailyLogs, hero.state, hero.work?.id]
   );
 
   const streakChip = useMemo(
@@ -483,9 +484,11 @@ export function HomeScreen({
                     {hero.work.audioFormat ? ` · ${hero.work.audioFormat}` : ''}
                   </span>
                 </span>
-                <span className="tabular-nums font-semibold">
-                  {hero.progressPct}%
-                </span>
+                {hero.hasKnownTotal && typeof hero.progressPct === 'number' && (
+                  <span className="tabular-nums font-semibold">
+                    {hero.progressPct}%
+                  </span>
+                )}
               </div>
 
               <div>
@@ -511,15 +514,17 @@ export function HomeScreen({
                     <span>Rewatch #{hero.work.rewatchCount}</span>
                   )}
                 </div>
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/25">
-                  <div
-                    className="h-full transition-all duration-150"
-                    style={{
-                      width: `${Math.min(100, hero.progressPct)}%`,
-                      backgroundColor: 'var(--accent-color)',
-                    }}
-                  />
-                </div>
+                {hero.hasKnownTotal && typeof hero.progressPct === 'number' && (
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/25">
+                    <div
+                      className="h-full transition-all duration-150"
+                      style={{
+                        width: `${Math.min(100, hero.progressPct)}%`,
+                        backgroundColor: 'var(--accent-color)',
+                      }}
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -679,17 +684,21 @@ export function HomeScreen({
                   </p>
                   <div className="flex items-center justify-between gap-1 text-[10px] tabular-nums text-muted">
                     <span className="truncate">{metricLabel}</span>
-                    <span className="font-semibold text-accent">{progressPct}%</span>
+                    {entry.hasKnownTotal && typeof progressPct === 'number' && (
+                      <span className="font-semibold text-accent">{progressPct}%</span>
+                    )}
                   </div>
-                  <div className="h-[3px] w-full overflow-hidden rounded-[2px] bg-line">
-                    <div
-                      className="h-full transition-all duration-150"
-                      style={{
-                        width: `${Math.min(100, progressPct)}%`,
-                        backgroundColor: 'var(--accent-color)',
-                      }}
-                    />
-                  </div>
+                  {entry.hasKnownTotal && typeof progressPct === 'number' && (
+                    <div className="h-[3px] w-full overflow-hidden rounded-[2px] bg-line">
+                      <div
+                        className="h-full transition-all duration-150"
+                        style={{
+                          width: `${Math.min(100, progressPct)}%`,
+                          backgroundColor: 'var(--accent-color)',
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
               </button>
             );

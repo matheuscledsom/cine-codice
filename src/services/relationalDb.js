@@ -649,6 +649,9 @@ export async function purgeExpiredApiCache({ now = Date.now(), idbFactory = null
   }
 }
 
+export const getRelationalApiCache = getApiCacheEntry;
+export const putRelationalApiCache = setApiCacheEntry;
+
 /**
  * Migração idempotente da v1.0/v1.1 (localStorage + store antiga) para o IndexedDB Relacional v1.2:
  * 1) Grava snapshot prévio obrigatório (`cine_codice_backup_pre_v1_2`) e lê de volta para confirmar;

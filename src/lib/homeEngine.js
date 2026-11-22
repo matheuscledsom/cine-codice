@@ -32,6 +32,30 @@ export function sortByRecentActivity(works = []) {
     .sort((a, b) => parseRecencyMs(b) - parseRecencyMs(a));
 }
 
+export function hasKnownWorkTotal(work) {
+  if (!work) return false;
+  if (isEpisodicWork(work)) {
+    return Number(work.totalEpisodes) > 0;
+  }
+  const totalSec =
+    Number(work.totalSeconds) ||
+    (Number(work.durationMinutes) > 0 ? Number(work.durationMinutes) * 60 : 0) ||
+    (Number(work.runtimeMinutes) > 0 ? Number(work.runtimeMinutes) * 60 : 0);
+  return totalSec > 0;
+}
+
+export function formatHonestHeroProgressLabel(work) {
+  if (!work) return '';
+  if (isEpisodicWork(work)) {
+    const sCur = Math.max(1, Number(work.currentSeason) || 1);
+    const eCur = Math.max(0, Number(work.currentEpisode) || 0);
+    if (!(Number(work.totalEpisodes) > 0)) {
+      return `T${sCur} · Ep. ${eCur} assistidos`;
+    }
+  }
+  return formatFlexibleProgressMetric(work);
+}
+
 /**
  * Seleciona um dos 4 estados obrigatórios do Hero:
  * - 'loading'      (d) carregando (skeleton)
@@ -47,6 +71,7 @@ export function selectHeroPresentation(items = [], { loading = false } = {}) {
       work: null,
       progressPct: 0,
       progressLabel: '',
+      hasKnownTotal: false,
       isEpisodic: false,
     };
   }
@@ -61,21 +86,29 @@ export function selectHeroPresentation(items = [], { loading = false } = {}) {
       work: null,
       progressPct: 0,
       progressLabel: '',
+      hasKnownTotal: false,
       isEpisodic: false,
     };
   }
 
   const active = sortByRecentActivity(
-    backlog.filter((i) => i.status === 'playing' || i.status === 'rewatching')
+    backlog.filter(
+      (i) =>
+        i.status === 'playing' ||
+        i.status === 'in-progress' ||
+        i.status === 'rewatching'
+    )
   );
 
   if (active.length > 0) {
     const heroWork = active[0];
+    const knownTotal = hasKnownWorkTotal(heroWork);
     return {
       state: 'active',
       work: heroWork,
-      progressPct: calculateWorkProgress(heroWork),
-      progressLabel: formatFlexibleProgressMetric(heroWork),
+      progressPct: knownTotal ? calculateWorkProgress(heroWork) : null,
+      progressLabel: formatHonestHeroProgressLabel(heroWork),
+      hasKnownTotal: knownTotal,
       isEpisodic: isEpisodicWork(heroWork),
     };
   }
@@ -91,21 +124,25 @@ export function selectHeroPresentation(items = [], { loading = false } = {}) {
 
   if (queued.length > 0) {
     const picked = queued[0];
+    const knownTotal = hasKnownWorkTotal(picked);
     return {
       state: 'queued',
       work: picked,
-      progressPct: calculateWorkProgress(picked),
+      progressPct: knownTotal ? calculateWorkProgress(picked) : null,
       progressLabel: 'Na fila Quero Ver',
+      hasKnownTotal: knownTotal,
       isEpisodic: isEpisodicWork(picked),
     };
   }
 
   const fallbackRecent = sortByRecentActivity(backlog)[0];
+  const knownTotal = hasKnownWorkTotal(fallbackRecent);
   return {
     state: 'library-idle',
     work: fallbackRecent,
-    progressPct: calculateWorkProgress(fallbackRecent),
-    progressLabel: formatFlexibleProgressMetric(fallbackRecent),
+    progressPct: knownTotal ? calculateWorkProgress(fallbackRecent) : null,
+    progressLabel: formatHonestHeroProgressLabel(fallbackRecent),
+    hasKnownTotal: knownTotal,
     isEpisodic: isEpisodicWork(fallbackRecent),
   };
 }
@@ -263,7 +300,7 @@ export function buildHomeSessionPills(items = [], { maxCount = MAX_SESSION_PILLS
 
 /**
  * Constrói dados dos trilhos locais da Home (zero rede):
- * - Continuar Assistindo (somente notas confirmadas ou omitida se não houver)
+ * - Continuar Assistindo (exclui a obra ativa exibida no Hero; oculta se restar 0 obras)
  * - Franquias & Sagas (apenas franquias com >= 2 obras)
  * - Cápsula do Tempo & Destaques (memórias + destaques + cena/citação favorita)
  */
@@ -271,22 +308,40 @@ export function buildHomeLocalRails({
   items = [],
   readingSessions = [],
   dailyLogs = {},
+  excludeHeroWorkId,
 } = {}) {
   const backlog = (Array.isArray(items) ? items : []).filter(
     (item) => item && item.inBacklog !== false
   );
 
+  const heroPresentation = selectHeroPresentation(backlog);
+  const effectiveHeroWorkId =
+    excludeHeroWorkId !== undefined
+      ? excludeHeroWorkId
+      : heroPresentation.state === 'active' && heroPresentation.work?.id
+        ? heroPresentation.work.id
+        : null;
+
   const continueWatching = sortByRecentActivity(
     backlog.filter(
-      (i) => i.status === 'playing' || i.status === 'rewatching' || i.status === 'paused'
+      (i) =>
+        (i.status === 'playing' ||
+          i.status === 'in-progress' ||
+          i.status === 'rewatching' ||
+          i.status === 'paused') &&
+        (!effectiveHeroWorkId || String(i.id) !== String(effectiveHeroWorkId))
     )
-  ).map((work) => ({
-    id: String(work.id),
-    work,
-    progressPct: calculateWorkProgress(work),
-    metricLabel: formatFlexibleProgressMetric(work),
-    confirmedRating: isConfirmedUserRating(work) ? work.rating : null,
-  }));
+  ).map((work) => {
+    const knownTotal = hasKnownWorkTotal(work);
+    return {
+      id: String(work.id),
+      work,
+      hasKnownTotal: knownTotal,
+      progressPct: knownTotal ? calculateWorkProgress(work) : null,
+      metricLabel: formatHonestHeroProgressLabel(work),
+      confirmedRating: isConfirmedUserRating(work) ? work.rating : null,
+    };
+  });
 
   const franchises = analyzeFranchises(backlog)
     .filter((f) => f && f.totalCount >= 2)

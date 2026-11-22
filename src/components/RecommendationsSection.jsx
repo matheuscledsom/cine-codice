@@ -1,6 +1,9 @@
 import { BookmarkPlus, Check, Compass, Dices, RefreshCw, Sparkles, X } from 'lucide-react';
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { fetchOnboardingGenreSuggestions } from '../services/cinemaApi';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  fetchOnboardingGenreSuggestions,
+  resolveCuratedSuggestions,
+} from '../services/cinemaApi';
 import { buildHomeCinemaRecommendations } from '../services/recommendationEngine';
 import { getDisplayTitles } from '../utils/backlogHelpers';
 import { CoverArt } from './CoverArt';
@@ -34,8 +37,10 @@ export function RecommendationsSection({
   const [offlineDateLabel, setOfflineDateLabel] = useState('');
   const [partialNotice, setPartialNotice] = useState('');
   const [oracleOpen, setOracleOpen] = useState(false);
+  const [resolvedCoverMap, setResolvedCoverMap] = useState({});
 
   const hasFetchedExternalRef = useRef(false);
+  const resolvingIdsRef = useRef(new Set());
 
   const loadExternalDiscover = useCallback(
     async ({ forceRefresh = false } = {}) => {
@@ -119,8 +124,55 @@ export function RecommendationsSection({
       });
     }
 
-    return merged.slice(0, 10);
-  }, [dismissedIds, excludeIds, externalPool, items, localRecs]);
+    return merged.slice(0, 10).map((rec) => {
+      const patched = resolvedCoverMap[rec.id];
+      if (!patched) return rec;
+      return {
+        ...rec,
+        item: {
+          ...rec.item,
+          ...patched,
+        },
+      };
+    });
+  }, [dismissedIds, excludeIds, externalPool, items, localRecs, resolvedCoverMap]);
+
+  useEffect(() => {
+    const missing = combinedRecommendations
+      .map((r) => r.item)
+      .filter(
+        (it) =>
+          it?.id &&
+          !resolvingIdsRef.current.has(it.id) &&
+          !(typeof it.coverUrl === 'string' && /^https:\/\//i.test(it.coverUrl.trim()))
+      );
+    if (missing.length === 0) return undefined;
+    missing.forEach((it) => resolvingIdsRef.current.add(it.id));
+
+    let cancelled = false;
+    resolveCuratedSuggestions(missing, { tmdbApiKey: tmdbKey })
+      .then((resolvedList) => {
+        if (cancelled || !Array.isArray(resolvedList)) return;
+        const updates = {};
+        resolvedList.forEach((resItem) => {
+          if (resItem?.id && resItem?.coverUrl) {
+            updates[resItem.id] = {
+              coverUrl: resItem.coverUrl,
+              ...(resItem.backdropUrl ? { backdropUrl: resItem.backdropUrl } : {}),
+              ...(resItem.synopsis ? { synopsis: resItem.synopsis } : {}),
+            };
+          }
+        });
+        if (Object.keys(updates).length > 0) {
+          setResolvedCoverMap((prev) => ({ ...prev, ...updates }));
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [combinedRecommendations, tmdbKey]);
 
   const handleRefresh = () => {
     const shownIds = combinedRecommendations.map((r) => r.id);

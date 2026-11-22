@@ -2,8 +2,8 @@
 
 **Branch ativa:** `feat/v1.2.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.1.0 · Lumière` (merge na `main` `99478e0` + tag `v1.1.0` + `git push origin main --tags`)
-**Última fase concluída (v1.2.0):** `2`
-**Próxima fase (v1.2.0):** `3` (Pôsteres Reais nas Sugestões & Home Sem Duplicação)
+**Última fase concluída (v1.2.0):** `3`
+**Próxima fase (v1.2.0):** `4` (Métricas Acumuladas de Espectador)
 
 ## Linha do Tempo das Fases — Ciclo v1.2.0 · Lumière
 - [x] **Fase 0 (v1.2.0) — Auditoria Técnica, Git Pre-Flight & Mapeamento de Causa Raiz** — concluída sem alterações de código; roteiro salvo em [`docs/PROMPT_MESTRE_V1_2.md`](./PROMPT_MESTRE_V1_2.md).
@@ -17,7 +17,10 @@
   - Criado [`src/components/WorkDetailPage.jsx`](../src/components/WorkDetailPage.jsx) substituindo o modal estreito por página editorial em tela cheia com Hero Cinematográfico widescreen (`16:9` mobile / `340px–380px` desktop, `object-position: center 20%`, scrim `>= 74%` para contraste WCAG 2.2 AA), pôster `2:3` em destaque (`120×180 px` / `160×240 px`), linha editorial de metadados (`0.8125rem`, `tabular-nums`, separador `·`), botão contextual `+1 Ep (T{S} · E{E})` / `Marcar como Concluído`, botão `Fixar nos Top 4` (`favoriteRank` `1..4`) e drawer sob demanda `Editar Metadados`.
   - Organizadas as 3 abas editoriais limpas (`Visão Geral`, `Temporadas & Episódios`, `Cenas & Diário`) com **zero** `<input>`, `<textarea>` ou `<select>` abertos no modo leitura (atualizados também [`src/components/QuotesVaultTab.jsx`](../src/components/QuotesVaultTab.jsx) e [`src/components/EpisodeListTab.jsx`](../src/components/EpisodeListTab.jsx) com paginação em blocos de 50 episódios e ações rápidas `+1 Ep`, `+3 Eps`, `Concluir Temporada`).
   - Criada suíte [`tests/fase2-v120-work-detail-page.test.mjs`](../tests/fase2-v120-work-detail-page.test.mjs) (`82/82` testes aprovados).
-- [ ] **Fase 3 (v1.2.0) — Pôsteres Reais nas Sugestões & Home Sem Duplicação**
+- [x] **Fase 3 (v1.2.0) — Pôsteres Reais nas Sugestões & Home Sem Duplicação** — concluída na branch `feat/v1.2.0-lumiere`.
+  - Criado `resolveCuratedSuggestions` em [`src/services/cinemaApi.js`](../src/services/cinemaApi.js) (com cache persistente em `api_cache` de [`src/services/relationalDb.js`](../src/services/relationalDb.js)), integrado a [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx) e [`src/components/RecommendationsSection.jsx`](../src/components/RecommendationsSection.jsx), enriquecido [`src/data/mockData.js`](../src/data/mockData.js) com `coverUrl` `2:3` oficiais, IDs canônicos e sinopses, e atualizado [`src/components/CoverImage.jsx`](../src/components/CoverImage.jsx) para exibir skeleton shimmer (`animate-pulse`) durante o carregamento antes do fallback tipográfico.
+  - Eliminada a duplicação entre o Hero e o trilho *Continuar Assistindo* em [`src/lib/homeEngine.js`](../src/lib/homeEngine.js) (`buildHomeLocalRails`) e [`src/screens/HomeScreen.jsx`](../src/screens/HomeScreen.jsx), ocultando o trilho quando há apenas 1 obra ativa e exibindo progresso honesto (`T{S} · Ep. {E} assistidos` sem `0%` falso quando `totalEpisodes` não é conhecido).
+  - Criada suíte [`tests/fase3-v120-posters-home.test.mjs`](../tests/fase3-v120-posters-home.test.mjs) (`86/86` testes aprovados).
 - [ ] **Fase 4 (v1.2.0) — Métricas Acumuladas de Espectador (`StatsScreen.jsx` & `statsEngine.js`)**
 - [ ] **Fase 5 (v1.2.0) — Perfil Top 4 Favoritos, Avatar Customizável & Remoção do Código Social**
 - [ ] **Fase 6 (v1.2.0) — Regressão Completa, Auditoria Visual Multi-Resolução & Preparação v1.2.0**
