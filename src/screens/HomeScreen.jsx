@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { BackupReminderBanner } from '../components/BackupReminderBanner';
 import { CoverArt } from '../components/CoverArt';
 import { HomeRail } from '../components/HomeRail';
+import { InstallAppBanner } from '../components/InstallAppBanner';
 import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
 import { RecommendationsSection } from '../components/RecommendationsSection';
 import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
@@ -374,6 +375,8 @@ export function HomeScreen({
           </button>
         )}
       </header>
+
+      <InstallAppBanner variant="home" />
 
       {backupReminder?.shouldRemind && (
         <BackupReminderBanner

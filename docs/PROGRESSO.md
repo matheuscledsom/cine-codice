@@ -2,8 +2,8 @@
 
 **Branch ativa:** `feat/v1.3.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.2.0 · Lumière` (merge na `main` `bbf099c` + tag `v1.2.0` + `git push origin main --tags`)
-**Última fase concluída (v1.3.0):** `1`
-**Próxima fase (v1.3.0):** `2` (PWA Instalável PC/Android, Compressão GZIP, Criptografia AES-GCM & Backup Google Drive)
+**Última fase concluída (v1.3.0):** `2`
+**Próxima fase (v1.3.0):** `3` (Página da Obra Imersiva: Paleta Dinâmica por Obra, Episódios Reais Paginados & Selos de Crítica)
 
 ## Linha do Tempo das Fases — Ciclo v1.3.0 · Lumière
 - [x] **Fase 0 (v1.3.0) — Auditoria Técnica & Mapeamento de Impacto** — concluída sem alterações; roteiro salvo em [`docs/PROMPT_MESTRE_V1_3.md`](./PROMPT_MESTRE_V1_3.md).
@@ -12,7 +12,11 @@
   - Implementado motor de cores OKLCH em [`src/utils/themeTokens.js`](../src/utils/themeTokens.js), [`src/design/themeEngine.js`](../src/design/themeEngine.js), [`src/data/themePresets.js`](../src/data/themePresets.js), [`src/hooks/useTheme.js`](../src/hooks/useTheme.js), [`src/components/ThemeModal.jsx`](../src/components/ThemeModal.jsx) e [`scripts/validate-contrast.mjs`](../scripts/validate-contrast.mjs) com os 3 Modos Base Oficiais (`dark`, `white`, `sepia`) e 8 cores de ambiente curadas + seletor de cor livre (`bgTintColor`) gerando `--bg-canvas` (10%), `--bg-surface` (14%), `--bg-elevated` (18%), `--border-hairline` (14%) e `--accent-primary`/`--accent-contrast` com contraste WCAG 2.2 AA (`>= 4.5:1`).
   - Padronizado todo o vocabulário visível da interface de *"Cinemateca"* e *"Acervo"* para **"Catálogo"**.
   - Criada suíte [`tests/fase1-v130-oklch-catalog.test.mjs`](../tests/fase1-v130-oklch-catalog.test.mjs) (`101/101` testes aprovados).
-- [ ] **Fase 2 (v1.3.0) — PWA Instalável (PC & Android), Compressão GZIP, Criptografia AES-GCM & Backup Google Drive**
+- [x] **Fase 2 (v1.3.0) — PWA Instalável (PC & Android), Compressão GZIP, Criptografia AES-GCM & Backup Google Drive** — concluída na branch `feat/v1.3.0-lumiere`.
+  - Configurado [`public/manifest.webmanifest`](../public/manifest.webmanifest) (`display: "standalone"`, ícone maskable e shortcuts rápidos *Catalogar Obra* e *Continuar Assistindo*), [`vite.config.js`](../vite.config.js) com cache LRU de pôsteres limitado a **80 MB** (`cine-codice-posters-lru-80mb`, `maxEntries: 320`, `purgeOnQuotaError: true`) e componente [`src/components/InstallAppBanner.jsx`](../src/components/InstallAppBanner.jsx) integrado à Home e às Configurações.
+  - Criado [`src/services/backupCryptoService.js`](../src/services/backupCryptoService.js) e estendido [`src/services/backupEngine.js`](../src/services/backupEngine.js) com compressão GZIP nativa (`CompressionStream('gzip')` / `DecompressionStream('gzip')`), criptografia ponta-a-ponta opcional `PBKDF2 (150.000 iterações SHA-256) + AES-GCM 256-bit` no formato `.ccodex`, bloqueio de Base64 em pôsteres/backdrops e retrocompatibilidade 100% com backups `.json` legados.
+  - Criado [`src/services/googleDriveBackup.js`](../src/services/googleDriveBackup.js) e integrado a [`src/components/BackupRestoreModal.jsx`](../src/components/BackupRestoreModal.jsx) e [`src/components/ProfileSettingsDrawer.jsx`](../src/components/ProfileSettingsDrawer.jsx) para envio e restauração de backups `.ccodex` no Google Drive pessoal (`drive.appdata`).
+  - Criada suíte [`tests/fase2-v130-pwa-crypto-gdrive.test.mjs`](../tests/fase2-v130-pwa-crypto-gdrive.test.mjs) (`106/106` testes aprovados).
 - [ ] **Fase 3 (v1.3.0) — Página da Obra Imersiva: Paleta Dinâmica por Obra, Episódios Reais Paginados (*One Piece*) & Selos de Crítica**
 - [ ] **Fase 4 (v1.3.0) — Franquias (Filmes) vs. Universos (Séries/Animes), Onde Assistir (BR) & Distinção Visual no Catálogo**
 - [ ] **Fase 5 (v1.3.0) — Métricas Compactas ("Zero-Scroll"), Início Refinada & Perfil Editorial**

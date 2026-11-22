@@ -35,6 +35,11 @@ import { CODICE_RELEASE } from '../config/versioning';
 import { THEME_MODES } from '../data/themePresets';
 import { FONT_SCALE_OPTIONS } from '../design/themeEngine';
 import {
+  getConfiguredGoogleClientId,
+  setConfiguredGoogleClientId,
+} from '../services/googleDriveBackup';
+import { InstallAppBanner } from './InstallAppBanner';
+import {
   DNA_DENSITY_OPTIONS,
   DNA_DIMENSIONS,
   DNA_EXCLUSION_PRESETS,
@@ -163,6 +168,9 @@ export function ProfileSettingsDrawer({
     typeof window !== 'undefined' ? resolveTabFromHash(window.location.hash) : 'appearance'
   );
   const [exclusionInput, setExclusionInput] = useState('');
+  const [googleClientIdInput, setGoogleClientIdInput] = useState(() =>
+    getConfiguredGoogleClientId()
+  );
   const { ui } = domainConfig;
   const { profile: profileCfg } = ui;
 
@@ -492,6 +500,8 @@ export function ProfileSettingsDrawer({
                   <span>Reabrir Boas-Vindas e Tutorial</span>
                 </button>
               </div>
+
+              <InstallAppBanner variant="settings" />
 
               <p className="pt-2 text-center text-[10px] tabular-nums text-subtle">
                 Cine Códice {CODICE_RELEASE.label}
@@ -1043,8 +1053,39 @@ export function ProfileSettingsDrawer({
                 <div className="flex items-center gap-2">
                   <Database className="h-4 w-4 text-accent" strokeWidth={1.5} />
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-ink">
-                    Backup &amp; Snapshots
+                    Backup, Criptografia (.ccodex) &amp; Nuvem
                   </h3>
+                </div>
+                <div className="space-y-2 rounded-[4px] border border-line bg-app p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink">
+                      <Cloud className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                      <span>Google Drive Pessoal (drive.appdata)</span>
+                    </span>
+                    <span className="text-[10px] text-muted">Client-Side OAuth</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={googleClientIdInput}
+                    onChange={(e) => {
+                      setGoogleClientIdInput(e.target.value);
+                      setConfiguredGoogleClientId(e.target.value);
+                    }}
+                    placeholder="VITE_GOOGLE_CLIENT_ID (ex: 12345.apps.googleusercontent.com)"
+                    aria-label="Google Client ID para backup no Google Drive"
+                    className="min-h-[38px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose?.();
+                      onOpenBackupModal?.();
+                    }}
+                    className="flex min-h-[40px] w-full items-center justify-center gap-2 rounded-[4px] border border-accent bg-accent/15 px-3 py-2 text-xs font-semibold text-accent hover:bg-accent/25"
+                  >
+                    <Cloud className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                    <span>Abrir Backup .ccodex (GZIP + AES-GCM) &amp; Google Drive</span>
+                  </button>
                 </div>
                 <div className="divide-y divide-line rounded-[4px] border border-line bg-app">
                   <button
