@@ -1,7 +1,7 @@
 export function SkeletonScreen({ variant = 'home' }) {
   if (variant === 'list') {
     return (
-      <div className="space-y-4 py-2" aria-busy="true" aria-label="Carregando acervo">
+      <div className="space-y-4 py-2" aria-busy="true" aria-label="Carregando catálogo">
         <div className="flex items-center justify-between gap-2">
           <div className="h-6 w-28 rounded-[4px] bg-card" />
           <div className="flex gap-1.5">

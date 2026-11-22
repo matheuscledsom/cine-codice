@@ -342,7 +342,7 @@ export function traverseFranchiseGraph(
     if (Array.isArray(baseObj.franchiseLinks)) {
       baseObj.franchiseLinks.forEach((lnk) => neighbors.push(lnk));
     }
-    // Relações reversas entre obras já catalogadas no acervo local (bidirecional no grafo)
+    // Relações reversas entre obras já catalogadas no catálogo local (bidirecional no grafo)
     const baseAnilist = Number(baseObj.anilistId || baseObj.ids?.anilist) || null;
     const baseMal = Number(baseObj.malId || baseObj.ids?.mal) || null;
     const baseTmdb = Number(baseObj.tmdbId || baseObj.ids?.tmdb) || null;

@@ -1,4 +1,21 @@
 import { isFlagEnabled } from '../config/flags.js';
+import {
+  AMBIENT_TINT_SWATCHES,
+  THEME_MODES,
+  buildHarmonizedThemeVars,
+  hexToOklch,
+  normalizeThemeModeId,
+  oklchToHex,
+} from '../utils/themeTokens.js';
+
+export {
+  AMBIENT_TINT_SWATCHES,
+  THEME_MODES,
+  buildHarmonizedThemeVars,
+  hexToOklch,
+  normalizeThemeModeId,
+  oklchToHex,
+};
 
 export const THEME_PREFS_STORAGE_KEY = 'codice_theme_prefs_v2';
 

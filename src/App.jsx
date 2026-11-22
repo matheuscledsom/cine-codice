@@ -241,30 +241,24 @@ export function App() {
 
   const {
     mode,
+    bgTintColor,
     font,
     texture,
     density,
     motion,
     fontScale,
     dyslexiaSpacing,
-    presetId,
-    specialThemeId,
-    pastelSubpaletteId,
-    pastelCustomColor,
     bgColor,
     accentColor,
     hasCustomBg,
     setMode,
+    setBgTintColor,
     setFont,
     setTexture,
     setDensity,
     setMotion,
     setFontScale,
     setDyslexiaSpacing,
-    applyPreset,
-    applySpecialTheme,
-    selectPastelSubpalette,
-    setPastelCustomColor,
     setCustomBgColor,
     setCustomAccentColor,
     resetCustomColors,
@@ -658,7 +652,7 @@ export function App() {
         e.preventDefault();
         setActiveTab('list');
         requestAnimationFrame(() => {
-          document.querySelector('input[aria-label="Buscar obras no acervo"]')?.focus();
+          document.querySelector('input[aria-label="Buscar obras no catálogo"]')?.focus();
         });
         return;
       }
@@ -678,7 +672,7 @@ export function App() {
       message:
         newItem?.status === 'completed'
           ? 'Obra catalogada como Concluída'
-          : 'Obra salva na cinemateca',
+          : 'Obra salva no catálogo',
       type: 'success',
     });
   };
@@ -697,7 +691,7 @@ export function App() {
   const handleRemoveItem = (id) => {
     const snap = batchRemoveItems([id]);
     showToast({
-      message: 'Obra removida do acervo',
+      message: 'Obra removida do catálogo',
       type: 'info',
       duration: 8000,
       action:
@@ -706,7 +700,7 @@ export function App() {
               label: 'Desfazer',
               onClick: () => {
                 restoreRemovedItems(snap);
-                showToast({ message: 'Obra restaurada no acervo', type: 'success' });
+                showToast({ message: 'Obra restaurada no catálogo', type: 'success' });
               },
             }
           : undefined,
@@ -805,7 +799,7 @@ export function App() {
           await importEpisodeEvaluations(incomingSnapshot.episodeEvaluations).catch(() => {});
         }
         showToast({
-          message: `Cinemateca restaurada (${migratedItems.length} obras)`,
+          message: `Catálogo restaurada (${migratedItems.length} obras)`,
           type: 'success',
         });
         return;
@@ -843,7 +837,7 @@ export function App() {
         await importEpisodeEvaluations(merged.episodeEvaluations).catch(() => {});
       }
       showToast({
-        message: `Backup mesclado com sucesso (${migratedMergedItems.length} obras no acervo)`,
+        message: `Backup mesclado com sucesso (${migratedMergedItems.length} obras no catálogo)`,
         type: 'success',
       });
     },
@@ -1200,7 +1194,7 @@ export function App() {
       );
       if (alreadyExists) {
         showToast({
-          message: `"${work.title}" já faz parte da sua cinemateca.`,
+          message: `"${work.title}" já faz parte da seu catálogo.`,
           type: 'info',
         });
         return;
@@ -1325,7 +1319,7 @@ export function App() {
               home: 'Início',
               stats: 'Métricas',
               add: 'Catalogar',
-              list: 'Acervo',
+              list: 'Catálogo',
               community: 'Rede',
               profile: 'Perfil',
             }[activeTab] || activeTab
@@ -1415,7 +1409,7 @@ export function App() {
                     if (primaryRes.persisted && dbRes.persisted && mirrorOk) {
                       setSecondaryStorageWarning('');
                       showToast({
-                        message: 'Acervo gravado no aparelho com sucesso.',
+                        message: 'Catálogo gravado no aparelho com sucesso.',
                         type: 'success',
                       });
                     } else if (!dbRes.persisted) {
@@ -1445,7 +1439,7 @@ export function App() {
                 home: 'Início',
                 stats: 'Métricas',
                 add: 'Catalogar',
-                list: 'Acervo',
+                list: 'Catálogo',
                 community: 'Rede',
                 profile: 'Perfil',
               }[activeTab] || 'esta tela'
@@ -1551,30 +1545,24 @@ export function App() {
                   onReopenOnboarding={() => setOnboardingReopened(true)}
                   themeProps={{
                     mode,
+                    bgTintColor,
                     font,
                     texture,
                     density,
                     motion,
                     fontScale,
                     dyslexiaSpacing,
-                    presetId,
-                    specialThemeId,
-                    pastelSubpaletteId,
-                    pastelCustomColor,
                     bgColor,
                     accentColor,
                     hasCustomBg,
                     onSelectMode: setMode,
+                    onChangeBgTintColor: setBgTintColor,
                     onSelectFont: setFont,
                     onSelectTexture: setTexture,
                     onSelectDensity: setDensity,
                     onSelectMotion: setMotion,
                     onSelectFontScale: setFontScale,
                     onToggleDyslexia: setDyslexiaSpacing,
-                    onApplyPreset: applyPreset,
-                    onApplySpecialTheme: applySpecialTheme,
-                    onSelectPastelSubpalette: selectPastelSubpalette,
-                    onChangePastelColor: setPastelCustomColor,
                     onChangeBgColor: setCustomBgColor,
                     onChangeAccentColor: setCustomAccentColor,
                     onResetTheme: resetCustomColors,
@@ -1674,7 +1662,6 @@ export function App() {
               profile={profile}
               geminiKey={geminiKey}
               onSelectThemeMode={setMode}
-              onApplyThemePreset={applyPreset}
               onChangeAccentColor={setCustomAccentColor}
               onSaveGeminiKey={saveApiKey}
               onImportBackup={handleImportBackup}
@@ -1710,26 +1697,20 @@ export function App() {
               isOpen={themeModalOpen}
               onClose={() => setThemeModalOpen(false)}
               mode={mode}
+              bgTintColor={bgTintColor}
               font={font}
               texture={texture}
               density={density}
               motion={motion}
-              presetId={presetId}
-              specialThemeId={specialThemeId}
-              pastelSubpaletteId={pastelSubpaletteId}
-              pastelCustomColor={pastelCustomColor}
               bgColor={bgColor}
               accentColor={accentColor}
               hasCustomBg={hasCustomBg}
               onSelectMode={setMode}
+              onChangeBgTintColor={setBgTintColor}
               onSelectFont={setFont}
               onSelectTexture={setTexture}
               onSelectDensity={setDensity}
               onSelectMotion={setMotion}
-              onApplyPreset={applyPreset}
-              onApplySpecialTheme={applySpecialTheme}
-              onSelectPastelSubpalette={selectPastelSubpalette}
-              onChangePastelColor={setPastelCustomColor}
               onChangeBgColor={setCustomBgColor}
               onChangeAccentColor={setCustomAccentColor}
               onResetTheme={resetCustomColors}
@@ -1754,11 +1735,7 @@ export function App() {
               onOpenRoulette={() => setGlobalRouletteOpen(true)}
               onExportBackup={handleSaveBackupCopyNow}
               onToggleFocusTheme={() => {
-                if (specialThemeId === 'focus-dim') {
-                  setMode(mode || 'oled');
-                } else {
-                  applySpecialTheme('focus-dim');
-                }
+                setMode(mode === 'dark' ? 'sepia' : 'dark');
               }}
             />
           )}
@@ -1791,7 +1768,7 @@ export function App() {
               onCommitImport={(records) => {
                 const inserted = batchAddItems(records);
                 showToast({
-                  message: `${inserted.length} obra(s) importada(s) para a cinemateca.`,
+                  message: `${inserted.length} obra(s) importada(s) para a catálogo.`,
                   type: 'success',
                 });
                 if (inserted.length > 0) setActiveTab('list');

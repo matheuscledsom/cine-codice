@@ -814,7 +814,7 @@ export function generateCatalogCsv(db) {
 
 export function generateCatalogMarkdown(db) {
   const { items } = hydrateAppSnapshotFromDatabase(db);
-  const lines = ['# Cine Códice — Catálogo da Cinemateca', ''];
+  const lines = ['# Cine Códice — Catálogo do Catálogo', ''];
   items.forEach((item) => {
     const meta = [
       item.workType === 'anime' ? 'Anime' : item.workType === 'series' ? 'Série' : 'Filme',

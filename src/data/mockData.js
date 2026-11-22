@@ -24,7 +24,7 @@ export const catalogItems = [
     genres: ['Ficção Científica', 'Suspense & Thriller', 'Noir'],
     atmosphere: ['Sombrio', 'Contemplativo'],
     tropes: ['Cyberpunk', 'Noir'],
-    sourceBadge: 'Cinemateca',
+    sourceBadge: 'Catálogo',
     monogram: 'BR',
   },
   {
@@ -53,7 +53,7 @@ export const catalogItems = [
     genres: ['Ficção Científica', 'Ação & Aventura', 'Animação'],
     atmosphere: ['Nostálgico', 'Contemplativo'],
     tropes: ['Noir', 'Found Family'],
-    sourceBadge: 'Cinemateca',
+    sourceBadge: 'Catálogo',
     monogram: 'CB',
   },
   {
@@ -81,7 +81,7 @@ export const catalogItems = [
     genres: ['Ficção Científica', 'Suspense & Thriller', 'Drama'],
     atmosphere: ['Tenso', 'Sombrio'],
     tropes: ['Mistério Investigativo'],
-    sourceBadge: 'Cinemateca',
+    sourceBadge: 'Catálogo',
     monogram: 'RP',
   },
   {
@@ -109,7 +109,7 @@ export const catalogItems = [
     genres: ['Animação', 'Fantasia', 'Ação & Aventura'],
     atmosphere: ['Nostálgico', 'Épico'],
     tropes: ['Isekai'],
-    sourceBadge: 'Cinemateca',
+    sourceBadge: 'Catálogo',
     monogram: 'VC',
   },
   {
@@ -135,7 +135,7 @@ export const catalogItems = [
     genres: ['Ficção Científica', 'Suspense & Thriller', 'Drama'],
     atmosphere: ['Sombrio', 'Tenso'],
     tropes: ['Viagem no Tempo', 'Mistério Investigativo'],
-    sourceBadge: 'Cinemateca',
+    sourceBadge: 'Catálogo',
     monogram: 'DK',
   },
   {
@@ -159,7 +159,7 @@ export const catalogItems = [
     genres: ['Crime & Policial', 'Drama'],
     atmosphere: ['Tenso', 'Épico'],
     tropes: ['Plano-Sequência'],
-    sourceBadge: 'Cinemateca',
+    sourceBadge: 'Catálogo',
     monogram: 'CD',
   },
   {
@@ -188,7 +188,7 @@ export const catalogItems = [
     genres: ['Animação', 'Mecha', 'Psicológico', 'Ficção Científica'],
     atmosphere: ['Sombrio', 'Contemplativo'],
     tropes: ['Mecha'],
-    sourceBadge: 'Cinemateca',
+    sourceBadge: 'Catálogo',
     monogram: 'NG',
   },
   {
@@ -213,7 +213,7 @@ export const catalogItems = [
     genres: ['Ficção Científica', 'Ação & Aventura', 'Drama'],
     atmosphere: ['Épico', 'Contemplativo'],
     tropes: [],
-    sourceBadge: 'Cinemateca',
+    sourceBadge: 'Catálogo',
     monogram: 'DN',
   },
 ];

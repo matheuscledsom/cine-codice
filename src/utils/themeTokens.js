@@ -1,3 +1,19 @@
+/**
+ * Motor de Cores OKLCH & Tokens Visuais — Cine Códice v1.3.0 · Lumière
+ *
+ * 3 Modos Base Oficiais:
+ * - dark  (Modo Escuro / OLED Grafite: #0B0D12)
+ * - white (Modo Claro / Editorial Branco: #F7F8FA / #FFFFFF)
+ * - sepia (Modo Sépia / Celuloide Quente: #F3EDE2 / #FAF6EE)
+ *
+ * + Harmonização Automática de Cor de Ambiente (bgTintColor) em OKLCH:
+ *   --bg-canvas       (90% base + 10% tint)
+ *   --bg-surface      (86% base + 14% tint)
+ *   --bg-elevated     (82% base + 18% tint)
+ *   --border-hairline (matiz com 14% de peso)
+ *   --accent-primary  & --accent-contrast calibrados para WCAG 2.2 AA (>= 4.5:1)
+ */
+
 export function normalizeHex(hex) {
   if (typeof hex !== 'string') return null;
   const clean = hex.trim();
@@ -36,6 +52,66 @@ export function mixHex(hexA, hexB, weightB = 0.5) {
   );
 }
 
+// Conversão sRGB <-> OKLab <-> OKLCH para harmonização perceptual
+function srgbToLinear(channel255) {
+  const c = channel255 / 255;
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+function linearToSrgb(linear) {
+  const clamped = Math.max(0, Math.min(1, linear));
+  const s =
+    clamped <= 0.0031308
+      ? 12.92 * clamped
+      : 1.055 * Math.pow(clamped, 1 / 2.4) - 0.055;
+  return Math.round(s * 255);
+}
+
+export function hexToOklch(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const lr = srgbToLinear(r);
+  const lg = srgbToLinear(g);
+  const lb = srgbToLinear(b);
+
+  const l = 0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb;
+  const m = 0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb;
+  const s = 0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb;
+
+  const l_ = Math.cbrt(l);
+  const m_ = Math.cbrt(m);
+  const s_ = Math.cbrt(s);
+
+  const L = 0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_;
+  const a = 1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_;
+  const bLab = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_;
+
+  const C = Math.sqrt(a * a + bLab * bLab);
+  let H = (Math.atan2(bLab, a) * 180) / Math.PI;
+  if (H < 0) H += 360;
+
+  return { l: L, c: C, h: H };
+}
+
+export function oklchToHex(L, C, H) {
+  const hRad = ((Number(H) || 0) * Math.PI) / 180;
+  const a = C * Math.cos(hRad);
+  const bLab = C * Math.sin(hRad);
+
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * bLab;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * bLab;
+  const s_ = L - 0.0894841775 * a - 1.291485548 * bLab;
+
+  const l = l_ * l_ * l_;
+  const m = m_ * m_ * m_;
+  const s = s_ * s_ * s_;
+
+  const lr = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+  const lg = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+  const lb = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+
+  return rgbToHex(linearToSrgb(lr), linearToSrgb(lg), linearToSrgb(lb));
+}
+
 export function getRelativeLuminance(hex) {
   const { r, g, b } = hexToRgb(hex);
   const linear = [r, g, b].map((v) => {
@@ -61,8 +137,8 @@ export function ensureMinimumContrast(candidateHex, targetSurfaces, isLightBg, m
 
   if (worstRatio() >= minRatio) return current;
 
-  for (let step = 1; step <= 24; step += 1) {
-    current = mixHex(candidateHex, extreme, step / 24);
+  for (let step = 1; step <= 28; step += 1) {
+    current = mixHex(candidateHex, extreme, step / 28);
     if (worstRatio() >= minRatio) return current;
   }
   return extreme;
@@ -77,47 +153,162 @@ export function getContrastForAccent(accentHex) {
     : lightInk;
 }
 
-export function buildSurfaceVarsFromBg(bgHex, cardHexOverride = null) {
-  const bg = normalizeHex(bgHex) || '#000000';
-  const isLight = getRelativeLuminance(bg) > 0.35;
+export function calibrateAccessibleAccent(rawAccentHex, targetSurfaces, isLightBg) {
+  const base = normalizeHex(rawAccentHex) || (isLightBg ? '#4F46E5' : '#8B5CF6');
+  // Garante contraste de UI >= 3.15:1 contra todas as superfícies E contraste >= 4.5:1 com o texto do botão
+  const uiSafe = ensureMinimumContrast(base, targetSurfaces, isLightBg, 3.15);
+  const ink = getContrastForAccent(uiSafe);
+  if (getContrastRatio(ink, uiSafe) >= 4.5) {
+    return { accentPrimary: uiSafe, accentContrast: ink };
+  }
+  const adjusted = ensureMinimumContrast(uiSafe, [ink], ink === '#FFFFFF', 4.5);
+  return {
+    accentPrimary: adjusted,
+    accentContrast: getContrastForAccent(adjusted),
+  };
+}
 
-  const card =
-    normalizeHex(cardHexOverride) ||
-    (isLight ? mixHex(bg, '#000000', 0.05) : mixHex(bg, '#FFFFFF', 0.055));
-  const elevated = isLight
-    ? mixHex(bg, '#000000', 0.1)
-    : mixHex(bg, '#FFFFFF', 0.11);
-  const border = isLight
-    ? mixHex(bg, '#000000', 0.14)
-    : mixHex(bg, '#FFFFFF', 0.15);
+export function normalizeThemeModeId(rawMode) {
+  if (rawMode === 'white' || rawMode === 'light') return 'white';
+  if (rawMode === 'sepia' || rawMode === 'parchment') return 'sepia';
+  return 'dark';
+}
 
-  const surfaces = [bg, card, elevated];
-  const textPrimary = ensureMinimumContrast(
-    isLight ? '#18181B' : '#F4F4F5',
+export const AMBIENT_TINT_SWATCHES = [
+  { id: 'neutral', label: 'Neutro Puro', color: null, previewHex: '#64748B' },
+  { id: 'midnight-blue', label: 'Azul Meia-Noite', color: '#2563EB', previewHex: '#2563EB' },
+  { id: 'cosmic-purple', label: 'Roxo Cósmico', color: '#7C3AED', previewHex: '#7C3AED' },
+  { id: 'emerald-green', label: 'Verde Esmeralda', color: '#059669', previewHex: '#059669' },
+  { id: 'film-burgundy', label: 'Bordô Película', color: '#BE123C', previewHex: '#BE123C' },
+  { id: 'deep-cyan', label: 'Ciano Profundo', color: '#0284C7', previewHex: '#0284C7' },
+  { id: 'warm-amber', label: 'Âmbar Quente', color: '#D97706', previewHex: '#D97706' },
+  { id: 'steel-graphite', label: 'Grafite Aço', color: '#475569', previewHex: '#475569' },
+];
+
+const MODE_BASES = {
+  dark: {
+    id: 'dark',
+    label: 'Dark · OLED Grafite',
+    shortLabel: 'Dark',
+    description: 'Base profunda (#0B0D12), vidro fosco sutil e bordas ultrafinas',
+    isLight: false,
+    canvas: '#0B0D12',
+    surface: '#13161E',
+    elevated: '#1B202C',
+    border: '#252B3B',
+    textPrimary: '#F4F6F9',
+    textMuted: '#B6BFCE',
+    textSubtle: '#95A0B3',
+    defaultAccent: '#8B5CF6',
+  },
+  white: {
+    id: 'white',
+    label: 'White · Editorial Branco',
+    shortLabel: 'White',
+    description: 'Base limpa (#F7F8FA), cards brancos puros (#FFFFFF) e grafite profundo',
+    isLight: true,
+    canvas: '#F7F8FA',
+    surface: '#FFFFFF',
+    elevated: '#EEF1F6',
+    border: '#DCE2EC',
+    textPrimary: '#0F172A',
+    textMuted: '#3B475C',
+    textSubtle: '#526077',
+    defaultAccent: '#4F46E5',
+  },
+  sepia: {
+    id: 'sepia',
+    label: 'Sépia · Celuloide Quente',
+    shortLabel: 'Sépia',
+    description: 'Papel quente (#F3EDE2), marfim suave (#FAF6EE) e tinta marrom-carvão',
+    isLight: true,
+    canvas: '#F3EDE2',
+    surface: '#FAF6EE',
+    elevated: '#EAE2D3',
+    border: '#D8CEBD',
+    textPrimary: '#231D16',
+    textMuted: '#4C3F32',
+    textSubtle: '#615242',
+    defaultAccent: '#9A4E12',
+  },
+};
+
+/**
+ * Harmoniza qualquer cor de ambiente (bgTintColor) sobre um dos 3 modos base
+ * usando OKLCH + misturas graduais (10% canvas, 14% surface, 18% elevated, 14% hairline)
+ * e calibrando o acento para contraste WCAG 2.2 AA (>= 4.5:1).
+ */
+export function buildHarmonizedThemeVars(modeId = 'dark', bgTintColor = null, customAccentOverride = null) {
+  const cleanMode = normalizeThemeModeId(modeId);
+  const base = MODE_BASES[cleanMode] || MODE_BASES.dark;
+  const cleanTint = normalizeHex(bgTintColor);
+
+  let bgCanvas = base.canvas;
+  let bgSurface = base.surface;
+  let bgElevated = base.elevated;
+  let borderHairline = base.border;
+  let rawAccent = normalizeHex(customAccentOverride) || base.defaultAccent;
+
+  if (cleanTint) {
+    const oklch = hexToOklch(cleanTint);
+    // Normaliza a cor em OKLCH para evitar que tons extremos quebrem a harmonia
+    const normalizedTintHex = oklchToHex(
+      base.isLight ? 0.62 : 0.42,
+      Math.min(0.14, Math.max(0.03, oklch.c)),
+      oklch.h
+    );
+
+    // 5 variáveis derivadas conforme especificação OKLCH v1.3.0:
+    // --bg-canvas: 90% base + 10% tint
+    // --bg-surface: 86% base + 14% tint
+    // --bg-elevated: 82% base + 18% tint
+    // --border-hairline: derivada do mesmo matiz com 14% de peso
+    bgCanvas = mixHex(base.canvas, normalizedTintHex, 0.10);
+    bgSurface = mixHex(base.surface, normalizedTintHex, 0.14);
+    bgElevated = mixHex(base.elevated, normalizedTintHex, 0.18);
+    borderHairline = mixHex(base.border, normalizedTintHex, 0.14);
+
+    if (!customAccentOverride) {
+      rawAccent = oklchToHex(
+        base.isLight ? 0.48 : 0.72,
+        Math.max(0.14, Math.min(0.21, oklch.c || 0.15)),
+        oklch.h
+      );
+    }
+  }
+
+  const surfaces = [bgCanvas, bgSurface, bgElevated];
+  const textPrimary = ensureMinimumContrast(base.textPrimary, surfaces, base.isLight, 7.0);
+  const textMuted = ensureMinimumContrast(base.textMuted, surfaces, base.isLight, 5.2);
+  const textSubtle = ensureMinimumContrast(base.textSubtle, surfaces, base.isLight, 4.6);
+
+  const { accentPrimary, accentContrast } = calibrateAccessibleAccent(
+    rawAccent,
     surfaces,
-    isLight,
-    7.0
-  );
-  const textMuted = ensureMinimumContrast(
-    isLight ? '#404047' : '#B8B8C2',
-    surfaces,
-    isLight,
-    5.2
-  );
-  const textSubtle = ensureMinimumContrast(
-    isLight ? '#52525B' : '#9696A3',
-    surfaces,
-    isLight,
-    4.6
+    base.isLight
   );
 
   return {
-    isLight,
+    mode: cleanMode,
+    isLight: base.isLight,
+    bgTintColor: cleanTint,
+    accentColor: accentPrimary,
+    accentContrast,
     vars: {
-      '--bg-app': bg,
-      '--bg-card': card,
-      '--bg-elevated': elevated,
-      '--border-subtle': border,
+      '--bg-canvas': bgCanvas,
+      '--bg-surface': bgSurface,
+      '--bg-elevated': bgElevated,
+      '--border-hairline': borderHairline,
+      '--accent-primary': accentPrimary,
+      '--accent-contrast': accentContrast,
+      // Tokens equivalentes usados pelos componentes existentes
+      '--bg-app': bgCanvas,
+      '--bg-primary': bgCanvas,
+      '--bg-card': bgSurface,
+      '--bg-secondary': bgSurface,
+      '--border-subtle': borderHairline,
+      '--border-color': borderHairline,
+      '--accent-color': accentPrimary,
       '--text-primary': textPrimary,
       '--text-muted': textMuted,
       '--text-secondary': textMuted,
@@ -126,33 +317,57 @@ export function buildSurfaceVarsFromBg(bgHex, cardHexOverride = null) {
   };
 }
 
+export function buildSurfaceVarsFromBg(bgHex, cardHexOverride = null) {
+  const bg = normalizeHex(bgHex) || '#0B0D12';
+  const isLight = getRelativeLuminance(bg) > 0.35;
+  const modeGuess = isLight ? 'white' : 'dark';
+  const built = buildHarmonizedThemeVars(modeGuess, bg);
+  if (cardHexOverride) {
+    const cleanCard = normalizeHex(cardHexOverride);
+    if (cleanCard) {
+      built.vars['--bg-card'] = cleanCard;
+      built.vars['--bg-surface'] = cleanCard;
+    }
+  }
+  return {
+    isLight: built.isLight,
+    vars: built.vars,
+  };
+}
+
 export const THEME_MODES = [
   {
-    id: 'parchment',
-    label: 'Papel Pergaminho',
-    previewBg: '#FAF8F5',
-    previewCard: '#F0EDE6',
-    vars: buildSurfaceVarsFromBg('#FAF8F5', '#F0EDE6').vars,
+    id: 'dark',
+    label: MODE_BASES.dark.label,
+    shortLabel: MODE_BASES.dark.shortLabel,
+    description: MODE_BASES.dark.description,
+    previewBg: MODE_BASES.dark.canvas,
+    previewCard: MODE_BASES.dark.surface,
+    defaultAccent: MODE_BASES.dark.defaultAccent,
+    vars: buildHarmonizedThemeVars('dark', null).vars,
+    isLight: false,
+  },
+  {
+    id: 'white',
+    label: MODE_BASES.white.label,
+    shortLabel: MODE_BASES.white.shortLabel,
+    description: MODE_BASES.white.description,
+    previewBg: MODE_BASES.white.canvas,
+    previewCard: MODE_BASES.white.surface,
+    defaultAccent: MODE_BASES.white.defaultAccent,
+    vars: buildHarmonizedThemeVars('white', null).vars,
     isLight: true,
   },
   {
-    id: 'night_library',
-    label: 'Biblioteca Noturna',
-    previewBg: '#121316',
-    previewCard: '#1B1D22',
-    vars: buildSurfaceVarsFromBg('#121316', '#1B1D22').vars,
-    isLight: false,
-  },
-  {
-    id: 'oled',
-    label: 'Tinta OLED',
-    previewBg: '#000000',
-    previewCard: '#0A0A0A',
-    vars: {
-      ...buildSurfaceVarsFromBg('#000000', '#0A0A0A').vars,
-      '--text-primary': '#FFFFFF',
-    },
-    isLight: false,
+    id: 'sepia',
+    label: MODE_BASES.sepia.label,
+    shortLabel: MODE_BASES.sepia.shortLabel,
+    description: MODE_BASES.sepia.description,
+    previewBg: MODE_BASES.sepia.canvas,
+    previewCard: MODE_BASES.sepia.surface,
+    defaultAccent: MODE_BASES.sepia.defaultAccent,
+    vars: buildHarmonizedThemeVars('sepia', null).vars,
+    isLight: true,
   },
 ];
 
@@ -197,7 +412,8 @@ export const FONT_PRESETS = [
     label: 'Sans Humanista (Source Sans 3)',
     shortLabel: 'Source Sans 3',
     fontName: 'Source Sans 3 Variable',
-    cssValue: '"Source Sans 3 Variable", "Codice Sans Fallback", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    cssValue:
+      '"Source Sans 3 Variable", "Codice Sans Fallback", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   },
   {
     id: 'jakarta',
@@ -234,29 +450,4 @@ export const TEXTURE_OPTIONS = [
   { id: 'paper', label: 'Grão de Papel' },
   { id: 'grid', label: 'Grade de Fichamento' },
   { id: 'glow', label: 'Brilho Sutil' },
-];
-
-export const EDITORIAL_PRESETS = [
-  { id: 'kindle-paperwhite', label: 'Kindle Paperwhite', bg: '#FAF8F5', card: '#F0EDE6', accent: '#2B5B84' },
-  { id: 'dark-academia', label: 'Dark Academia', bg: '#161310', card: '#211D18', accent: '#C89B54' },
-  { id: 'fantasia-epica', label: 'Fantasia Épica', bg: '#12111A', card: '#1B1926', accent: '#B469FF' },
-  { id: 'cyberpunk-scifi', label: 'Cyberpunk / Sci-Fi', bg: '#090B14', card: '#111524', accent: '#00E5FF' },
-  { id: 'terror-gotico', label: 'Terror Gótico', bg: '#0D090B', card: '#181114', accent: '#EF4444' },
-  { id: 'romance-classico', label: 'Romance Clássico', bg: '#FAF4F4', card: '#F1E6E8', accent: '#AD2E4E' },
-  { id: 'biblioteca-alexandria', label: 'Biblioteca de Alexandria', bg: '#1C1712', card: '#272019', accent: '#F59E0B' },
-  { id: 'floresta-elfica', label: 'Floresta Élfica', bg: '#0E1612', card: '#15221B', accent: '#10B981' },
-  { id: 'manga-ink', label: 'Mangá Ink', bg: '#000000', card: '#0A0A0A', accent: '#FFFFFF' },
-  { id: 'minimalismo-nordico', label: 'Minimalismo Nórdico', bg: '#F4F6F8', card: '#E8ECEF', accent: '#334155' },
-  { id: 'misterio-noir', label: 'Mistério Noir', bg: '#121316', card: '#1B1D22', accent: '#EAB308' },
-  { id: 'poesia-crepusculo', label: 'Poesia Crepúsculo', bg: '#17121F', card: '#211A2C', accent: '#F472B6' },
-  { id: 'cafe-chuva', label: 'Café & Chuva', bg: '#1B1614', card: '#261F1C', accent: '#E59467' },
-  { id: 'arquivo-academico', label: 'Arquivo Acadêmico', bg: '#F6F7F4', card: '#EAECE6', accent: '#1D4ED8' },
-  { id: 'solarized-pergaminho', label: 'Solarized Pergaminho', bg: '#FDF6E3', card: '#EEE8D5', accent: '#0F62A4' },
-  { id: 'veludo-real', label: 'Veludo Real', bg: '#140F1C', card: '#1E1729', accent: '#C084FC' },
-  { id: 'shonen-jump', label: 'Shonen Jump', bg: '#111216', card: '#1A1C22', accent: '#FB923C' },
-  { id: 'tokyo-neon', label: 'Tokyo Neon', bg: '#0B0C14', card: '#141624', accent: '#F472B6' },
-  { id: 'codice-medieval', label: 'Códice Medieval', bg: '#191410', card: '#241D17', accent: '#D97706' },
-  { id: 'nordic-frost', label: 'Nordic Frost', bg: '#F1F5F9', card: '#E2E8F0', accent: '#0369A1' },
-  { id: 'ouro-imperial', label: 'Ouro Imperial', bg: '#0C0B09', card: '#171511', accent: '#F59E0B' },
-  { id: 'cafe-kyoto', label: 'Café Kyoto', bg: '#171412', card: '#211C19', accent: '#10B981' },
 ];

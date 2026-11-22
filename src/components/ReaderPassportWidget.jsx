@@ -81,7 +81,7 @@ export function ReaderPassportWidget({
 
   return (
     <section
-      aria-label="Carteira da Cinemateca"
+      aria-label="Carteira do Catálogo"
       className="rounded-[6px] border border-line bg-card p-3.5 space-y-3"
     >
       <div className="flex items-center justify-between gap-2">
@@ -89,7 +89,7 @@ export function ReaderPassportWidget({
           <Stamp className="h-4 w-4 text-accent" strokeWidth={1.5} />
           <div>
             <h3 className="text-xs font-semibold text-ink">
-              Carteira da Cinemateca
+              Carteira do Catálogo
             </h3>
             <p className="text-[11px] text-subtle tabular-nums">
               {unlockedCount}/{stamps.length} carimbos de cineclubista conquistados

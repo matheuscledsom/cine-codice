@@ -32,7 +32,7 @@ import { useEffect, useRef, useState } from 'react';
 import { domainConfig } from '../config/domainConfig';
 import { SOCIAL_ENABLED } from '../config/flags';
 import { CODICE_RELEASE } from '../config/versioning';
-import { SPECIAL_THEMES } from '../data/themePresets';
+import { THEME_MODES } from '../data/themePresets';
 import { FONT_SCALE_OPTIONS } from '../design/themeEngine';
 import {
   DNA_DENSITY_OPTIONS,
@@ -54,7 +54,6 @@ import {
   toggleStructuredGenre,
   toggleViewerFocusInList,
 } from '../utils/readerPreferences';
-import { PastelPaletteCustomizer } from './ThemeModal';
 
 export const SETTINGS_TABS = [
   { id: 'appearance', hash: '#settings-appearance', label: 'Aparência', icon: Palette },
@@ -72,7 +71,7 @@ const VISIBILITY_OPTIONS = [
   {
     id: 'public',
     label: 'Público',
-    description: 'Qualquer espectador no Cine Códice pode ver seu perfil e acervo.',
+    description: 'Qualquer espectador no Cine Códice pode ver seu perfil e catálogo.',
     icon: Globe,
   },
   {
@@ -410,12 +409,12 @@ export function ProfileSettingsDrawer({
                   <Palette className="h-4 w-4 text-accent" strokeWidth={1.5} />
                   <span>
                     Temas &amp; Aparência
-                    {themeProps?.specialThemeId && (
+                    {themeProps?.mode && (
                       <span className="ml-1.5 text-[10px] font-normal text-subtle">
                         (
-                        {SPECIAL_THEMES.find(
-                          (item) => item.id === themeProps.specialThemeId
-                        )?.label || themeProps.specialThemeId}
+                        {THEME_MODES.find(
+                          (item) => item.id === themeProps.mode
+                        )?.shortLabel || themeProps.mode}
                         )
                       </span>
                     )}
@@ -423,17 +422,6 @@ export function ProfileSettingsDrawer({
                 </span>
                 <span className="text-[11px] font-medium text-accent">Abrir estúdio</span>
               </button>
-
-              {themeProps?.specialThemeId === 'pastel-glass' && (
-                <div className="rounded-[4px] border border-line bg-app p-3">
-                  <PastelPaletteCustomizer
-                    pastelSubpaletteId={themeProps.pastelSubpaletteId}
-                    pastelCustomColor={themeProps.pastelCustomColor}
-                    onSelectPastelSubpalette={themeProps.onSelectPastelSubpalette}
-                    onChangePastelColor={themeProps.onChangePastelColor}
-                  />
-                </div>
-              )}
 
               {themeProps && (
                 <div className="space-y-2 rounded-[4px] border border-line bg-app p-3">
@@ -1019,7 +1007,7 @@ export function ProfileSettingsDrawer({
                   <PrivacySwitchRow
                     icon={Zap}
                     label="Ativar Gamificação (XP, Níveis e Insígnias)"
-                    description="Exibe horas assistidas, sequência e patente da cinemateca."
+                    description="Exibe horas assistidas, sequência e patente do catálogo."
                     checked={gamificationEnabled}
                     onToggle={() =>
                       onUpdateProfile?.({

@@ -95,7 +95,7 @@ export function AboutCreditsModal({ isOpen, onClose }) {
           <div className="rounded-[4px] border border-line bg-app p-3 text-xs leading-relaxed text-muted">
             <div className="mb-1 flex items-center gap-1.5 font-semibold text-ink">
               <ShieldCheck className="h-4 w-4 text-accent" strokeWidth={1.5} />
-              <span>Cinemateca pessoal e privada</span>
+              <span>Catálogo pessoal e privada</span>
             </div>
             <p>
               Todo o catálogo, notas, diário e backups ficam armazenados exclusivamente no seu dispositivo.

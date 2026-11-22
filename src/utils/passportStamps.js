@@ -45,8 +45,8 @@ export function computePassportStamps({
     {
       id: 'silver-archive',
       code: 'ACV-15',
-      title: 'Curador de Acervo',
-      requirement: 'Concluir 15 obras na cinemateca',
+      title: 'Curador de Catálogo',
+      requirement: 'Concluir 15 obras no catálogo',
       unlocked: completed.length >= 15,
       progressLabel: `${Math.min(15, completed.length)}/15`,
     },

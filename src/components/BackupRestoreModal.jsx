@@ -121,7 +121,7 @@ export function BackupRestoreModal({
         },
         {
           reason: 'manual',
-          label: 'Snapshot manual do acervo',
+          label: 'Snapshot manual do catálogo',
           force: true,
         }
       );
@@ -200,7 +200,7 @@ export function BackupRestoreModal({
           {/* Seção 1: Exportação Assinada + Planilhas / BibTeX */}
           <section className="space-y-2.5">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-subtle">
-              Exportar Acervo
+              Exportar Catálogo
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
@@ -396,7 +396,7 @@ export function BackupRestoreModal({
                     <span>
                       {restoreMode === 'merge'
                         ? 'Confirmar Mesclagem'
-                        : 'Substituir Acervo'}
+                        : 'Substituir Catálogo'}
                     </span>
                   </button>
                 </div>
@@ -430,7 +430,7 @@ export function BackupRestoreModal({
               <div className="h-16 rounded-[4px] border border-line bg-app opacity-50" />
             ) : snapshots.length === 0 ? (
               <div className="rounded-[4px] border border-line bg-app px-4 py-5 text-center text-xs text-muted">
-                Nenhum snapshot salvo ainda. Os backups automáticos serão listados aqui conforme o acervo evoluir.
+                Nenhum snapshot salvo ainda. Os backups automáticos serão listados aqui conforme o catálogo evoluir.
               </div>
             ) : (
               <div className="space-y-2">

@@ -1,11 +1,24 @@
-# Progresso — Cine Códice v1.2.0 · Lumière
+# Progresso — Cine Códice v1.3.0 · Lumière
 
-**Branch ativa:** `feat/v1.2.0-lumiere`
-**Ciclo anterior concluído e publicado:** `v1.1.0 · Lumière` (merge na `main` `99478e0` + tag `v1.1.0` + `git push origin main --tags`)
-**Última fase concluída (v1.2.0):** `6` (Todas as fases 0 a 6 concluídas na branch `feat/v1.2.0-lumiere` — aguardando **`publicar`**)
-**Próxima fase (v1.2.0):** Publicação (`git merge --no-ff feat/v1.2.0-lumiere`, tag `v1.2.0` e `git push origin main --tags` após aprovação do dono)
+**Branch ativa:** `feat/v1.3.0-lumiere`
+**Ciclo anterior concluído e publicado:** `v1.2.0 · Lumière` (merge na `main` `bbf099c` + tag `v1.2.0` + `git push origin main --tags`)
+**Última fase concluída (v1.3.0):** `1`
+**Próxima fase (v1.3.0):** `2` (PWA Instalável PC/Android, Compressão GZIP, Criptografia AES-GCM & Backup Google Drive)
 
-## Linha do Tempo das Fases — Ciclo v1.2.0 · Lumière
+## Linha do Tempo das Fases — Ciclo v1.3.0 · Lumière
+- [x] **Fase 0 (v1.3.0) — Auditoria Técnica & Mapeamento de Impacto** — concluída sem alterações; roteiro salvo em [`docs/PROMPT_MESTRE_V1_3.md`](./PROMPT_MESTRE_V1_3.md).
+- [x] **Fase 1 (v1.3.0) — Git Setup (`v1.2.0` na `main` + `feat/v1.3.0-lumiere`) & Novo Motor Visual OKLCH + Vocabulário "Catálogo"** — concluída na branch `feat/v1.3.0-lumiere`.
+  - Publicada a `v1.2.0` na `main` (`git merge --no-ff feat/v1.2.0-lumiere`, tag `v1.2.0` e `git push origin main --tags`) e criada a branch `feat/v1.3.0-lumiere`.
+  - Implementado motor de cores OKLCH em [`src/utils/themeTokens.js`](../src/utils/themeTokens.js), [`src/design/themeEngine.js`](../src/design/themeEngine.js), [`src/data/themePresets.js`](../src/data/themePresets.js), [`src/hooks/useTheme.js`](../src/hooks/useTheme.js), [`src/components/ThemeModal.jsx`](../src/components/ThemeModal.jsx) e [`scripts/validate-contrast.mjs`](../scripts/validate-contrast.mjs) com os 3 Modos Base Oficiais (`dark`, `white`, `sepia`) e 8 cores de ambiente curadas + seletor de cor livre (`bgTintColor`) gerando `--bg-canvas` (10%), `--bg-surface` (14%), `--bg-elevated` (18%), `--border-hairline` (14%) e `--accent-primary`/`--accent-contrast` com contraste WCAG 2.2 AA (`>= 4.5:1`).
+  - Padronizado todo o vocabulário visível da interface de *"Cinemateca"* e *"Acervo"* para **"Catálogo"**.
+  - Criada suíte [`tests/fase1-v130-oklch-catalog.test.mjs`](../tests/fase1-v130-oklch-catalog.test.mjs) (`101/101` testes aprovados).
+- [ ] **Fase 2 (v1.3.0) — PWA Instalável (PC & Android), Compressão GZIP, Criptografia AES-GCM & Backup Google Drive**
+- [ ] **Fase 3 (v1.3.0) — Página da Obra Imersiva: Paleta Dinâmica por Obra, Episódios Reais Paginados (*One Piece*) & Selos de Crítica**
+- [ ] **Fase 4 (v1.3.0) — Franquias (Filmes) vs. Universos (Séries/Animes), Onde Assistir (BR) & Distinção Visual no Catálogo**
+- [ ] **Fase 5 (v1.3.0) — Métricas Compactas ("Zero-Scroll"), Início Refinada & Perfil Editorial**
+- [ ] **Fase 6 (v1.3.0) — Regressão Ponta-a-Ponta, Auditoria Visual Multi-Resolução & Preparação v1.3.0**
+
+## Linha do Tempo das Fases — Ciclo v1.2.0 · Lumière (Concluído)
 - [x] **Fase 0 (v1.2.0) — Auditoria Técnica, Git Pre-Flight & Mapeamento de Causa Raiz** — concluída sem alterações de código; roteiro salvo em [`docs/PROMPT_MESTRE_V1_2.md`](./PROMPT_MESTRE_V1_2.md).
 - [x] **Fase 1 (v1.2.0) — Git Setup, IndexedDB Relacional, Correção de Sinopse, Temporadas & Auto-Tagging** — concluída na branch `feat/v1.2.0-lumiere`.
   - Publicada a `v1.1.0` na `main` (`git merge --no-ff feat/v1.1.0-lumiere`, tag `v1.1.0` e `git push origin main --tags`) e criada a branch `feat/v1.2.0-lumiere`.

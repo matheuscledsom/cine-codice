@@ -73,7 +73,7 @@ export function buildWrappedSummary({
     : null;
 
   return {
-    periodLabel: period === 'all' ? 'Cinemateca Completa' : `Cine Wrapped ${targetYear}`,
+    periodLabel: period === 'all' ? 'Catálogo Completa' : `Cine Wrapped ${targetYear}`,
     totalScopedCount: scopedItems.length,
     completedCount: completed.length,
     totalMinutesWatched,

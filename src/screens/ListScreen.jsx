@@ -626,7 +626,7 @@ export function ListScreen({
     const removedCount = snap?.removedItems?.length || selectedIds.length;
     clearSelectionMode();
     showToast({
-      message: `${removedCount} obra(s) removida(s) da cinemateca.`,
+      message: `${removedCount} obra(s) removida(s) do catálogo.`,
       type: 'info',
       duration: 8000,
       action:
@@ -860,7 +860,7 @@ export function ListScreen({
             value={localQuery}
             onChange={(e) => setLocalQuery(e.target.value)}
             placeholder="Buscar filme, diretor, anime, saga..."
-            aria-label="Buscar obras no acervo"
+            aria-label="Buscar obras no catálogo"
             className="min-h-[44px] w-full rounded-[4px] border border-line bg-card py-1.5 pl-8 pr-8 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
           />
           {localQuery && (
@@ -964,7 +964,7 @@ export function ListScreen({
                   Direção/Estúdio: {creatorFilterBanner}
                 </p>
                 <p className="text-[11px] tabular-nums text-subtle">
-                  {filteredAndSortedItems.length} título(s) encontrado(s) no acervo local
+                  {filteredAndSortedItems.length} título(s) encontrado(s) no catálogo local
                 </p>
               </div>
             </div>
@@ -1028,7 +1028,7 @@ export function ListScreen({
                 </div>
               ) : moreCreatorState.results.length === 0 ? (
                 <p className="rounded-[4px] border border-line bg-app px-3 py-2 text-xs text-muted">
-                  Nenhum outro título novo encontrado para {creatorFilterBanner} além do que já está no seu acervo.
+                  Nenhum outro título novo encontrado para {creatorFilterBanner} além do que já está no seu catálogo.
                 </p>
               ) : (
                 <>
@@ -1067,7 +1067,7 @@ export function ListScreen({
                           </div>
                           {alreadyInLibrary ? (
                             <span className="inline-flex min-h-[44px] items-center rounded-[4px] border border-line bg-card px-2.5 text-[11px] font-medium text-muted">
-                              No acervo
+                              No catálogo
                             </span>
                           ) : (
                             onAddItem && (

@@ -3150,7 +3150,7 @@ export async function backfillWorkHeroBackdrop(
 /**
  * Busca sugestões externas baseadas nos gêneros e focos escolhidos no onboarding (Fase 5):
  * - Reutiliza TMDB /discover e AniList GraphQL com cache de 24 h (D4) e máx. 2 reqs simultâneas.
- * - Nunca chama OMDb e nunca retorna obras já presentes no acervo.
+ * - Nunca chama OMDb e nunca retorna obras já presentes no catálogo.
  */
 export async function fetchOnboardingGenreSuggestions(
   profile = null,
@@ -3478,7 +3478,7 @@ export async function fetchOnboardingGenreSuggestions(
 
 /**
  * Resolve e cacheia no IndexedDB (api_cache) pôsteres 2:3 reais (coverUrl),
- * sinopse e temporadas para sugestões curadas ("Sugestões rápidas para seu acervo"
+ * sinopse e temporadas para sugestões curadas ("Sugestões rápidas para seu catálogo"
  * e "Sugestões para Você").
  */
 export async function resolveCuratedSuggestions(

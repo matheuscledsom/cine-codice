@@ -770,11 +770,11 @@ export async function runCollectionOracle(
     focusLabels.length > 0 ? focusLabels.join(', ') : readerFocus || 'Geral';
 
   const systemInstruction =
-    'Você é o Curador de Sessões da Cinemateca. Recomende exclusivamente obras presentes na lista "Quero Ver" fornecida pelo usuário. Não invente títulos fora do acervo. Responda em JSON estrito e em português do Brasil.';
+    'Você é o Curador de Sessões do Catálogo. Recomende exclusivamente obras presentes na lista "Quero Ver" fornecida pelo usuário. Não invente títulos fora do catálogo. Responda em JSON estrito e em português do Brasil.';
 
   const prompt = `Cruze o humor/objetivo atual do espectador com as obras em "Quero Ver", suas preferências do perfil e o histórico de notas das obras "Concluídas" para indicar a próxima sessão ideal.
 
-Humor / Objetivo atual do espectador: ${mood || 'Surpreenda-me com a melhor escolha do meu acervo'}
+Humor / Objetivo atual do espectador: ${mood || 'Surpreenda-me com a melhor escolha do meu catálogo'}
 Perfil do espectador: ${focusSummary} | Critério valorizado: ${preferredCriterion || 'Equilibrado'}
 Gêneros favoritos do perfil: ${
         Array.isArray(favoriteGenres) && favoriteGenres.length

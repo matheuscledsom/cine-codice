@@ -317,7 +317,7 @@ export function ProfileScreen({
   const tabs = useMemo(
     () => [
       { id: 'journal', label: 'Últimas Cenas & Avaliações' },
-      { id: 'shelf', label: 'Meu Acervo' },
+      { id: 'shelf', label: 'Meu Catálogo' },
       { id: 'badges', label: calmMode ? 'Passaporte' : 'Insígnias' },
     ],
     [calmMode]
@@ -569,12 +569,12 @@ export function ProfileScreen({
             </div>
           </section>
 
-          {/* Resumo Acumulado do Acervo */}
+          {/* Resumo Acumulado do Catálogo */}
           <div className="grid grid-cols-1 gap-2 border-y border-line py-2.5 sm:grid-cols-3 tabular-nums">
             <button
               type="button"
               onClick={() => setActiveTab('shelf')}
-              aria-label={`Ver ${profileMetrics.totalWorks} obras no acervo`}
+              aria-label={`Ver ${profileMetrics.totalWorks} obras no catálogo`}
               className="flex min-h-[44px] flex-col justify-center rounded-xl border border-line bg-app px-3 py-2 text-left transition-colors hover:border-accent"
             >
               <span
@@ -639,7 +639,7 @@ export function ProfileScreen({
         </div>
       </header>
 
-      {/* Abas Editoriais: Últimas Cenas & Avaliações | Meu Acervo | Insígnias */}
+      {/* Abas Editoriais: Últimas Cenas & Avaliações | Meu Catálogo | Insígnias */}
       <section className="-mx-4 sm:-mx-6 pt-1">
         <div
           role="tablist"
@@ -776,12 +776,12 @@ export function ProfileScreen({
           </div>
         )}
 
-        {/* ABA 2: MEU ACERVO */}
+        {/* ABA 2: MEU CATÁLOGO */}
         {resolvedActiveTab === 'shelf' && (
           <div className="px-4 sm:px-6 pt-4">
             {backlogItems.length === 0 ? (
               <p className="rounded-2xl border border-line bg-card py-8 text-center text-xs text-muted">
-                Nenhuma obra catalogada no acervo ainda.
+                Nenhuma obra catalogada no catálogo ainda.
               </p>
             ) : (
               <div className="space-y-3">
@@ -915,7 +915,7 @@ export function ProfileScreen({
                   Escolher Favorito da Vida · Top #{pickerSlot}
                 </h3>
                 <p className="text-[11px] text-muted">
-                  Selecione uma obra do seu acervo para destacar na vitrine
+                  Selecione uma obra do seu catálogo para destacar na vitrine
                 </p>
               </div>
               <button
@@ -939,7 +939,7 @@ export function ProfileScreen({
 
             {backlogItems.length === 0 ? (
               <p className="py-6 text-center text-xs text-muted">
-                Catalogue obras no seu acervo para escolher seus 4 favoritos da vida.
+                Catalogue obras no seu catálogo para escolher seus 4 favoritos da vida.
               </p>
             ) : (
               <div className="divide-y divide-line rounded-xl border border-line bg-app">

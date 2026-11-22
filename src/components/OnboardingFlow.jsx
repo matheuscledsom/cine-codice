@@ -293,7 +293,7 @@ export function OnboardingFlow({
                   <User className="h-5 w-5" strokeWidth={1.5} />
                 </div>
                 <h1 className="mt-3 text-lg font-semibold tracking-tight text-ink">
-                  Bem-vindo à sua Cinemateca Física Curada
+                  Bem-vindo à sua Catálogo Física Curada
                 </h1>
                 <p className="mt-1 text-xs leading-relaxed text-muted">
                   Organize filmes, séries e animes 100% no seu aparelho com controle de minutagem, episódios, franquias e backup portátil em JSON.
@@ -337,7 +337,7 @@ export function OnboardingFlow({
                   className="flex min-h-[44px] w-full items-center justify-center gap-2 text-xs font-medium text-muted transition-colors hover:text-accent"
                 >
                   <Upload className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                  <span>Já tenho um backup (.json) — Restaurar cinemateca</span>
+                  <span>Já tenho um backup (.json) — Restaurar catálogo</span>
                 </button>
                 <input
                   ref={fileInputRef}
@@ -766,7 +766,7 @@ export function OnboardingFlow({
                 className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-2xl bg-accent py-3 text-sm font-semibold text-accent-ink transition-opacity hover:opacity-90"
               >
                 <CheckCircle2 className="h-4 w-4" strokeWidth={1.5} />
-                <span>Entrar na Cinemateca</span>
+                <span>Entrar no Catálogo</span>
               </button>
             )}
           </div>

@@ -864,7 +864,7 @@ export function AddScreen({
             Sessão Secreta dos Irmãos Lumière (1895)
           </h2>
           <p className="text-xs text-muted">
-            Cinematógrafo calibrado. Sua cinemateca privada está pronta para novas projeções.
+            Cinematógrafo calibrado. Seu catálogo privada está pronta para novas projeções.
           </p>
         </div>
       ) : isLoading ? (

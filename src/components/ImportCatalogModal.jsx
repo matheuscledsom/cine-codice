@@ -55,7 +55,7 @@ export function ImportCatalogModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Importar acervo audiovisual"
+      aria-label="Importar catálogo audiovisual"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={onClose}
     >
@@ -67,7 +67,7 @@ export function ImportCatalogModal({
           <div className="flex items-center gap-2">
             <FileSpreadsheet className="h-4 w-4 text-accent" strokeWidth={1.5} />
             <div>
-              <h2 className="text-sm font-semibold">Importar Acervo em Lote</h2>
+              <h2 className="text-sm font-semibold">Importar Catálogo em Lote</h2>
               <p className="text-[11px] text-subtle">
                 Letterboxd CSV, IMDb CSV, MyAnimeList CSV ou lista simples
               </p>
@@ -143,7 +143,7 @@ export function ImportCatalogModal({
                   onChange={(e) => setSkipDuplicates(e.target.checked)}
                   className="h-4 w-4 accent-[var(--accent-color)]"
                 />
-                <span>Ignorar obras que já existem na cinemateca ({preview.duplicateCount})</span>
+                <span>Ignorar obras que já existem no catálogo ({preview.duplicateCount})</span>
               </label>
             )}
 

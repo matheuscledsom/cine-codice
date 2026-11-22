@@ -694,7 +694,7 @@ export function WorkDetailPage({
                 {metadataParts.join(' · ')}
               </p>
 
-              {/* Diretor / Estúdio clicável para filtrar acervo */}
+              {/* Diretor / Estúdio clicável para filtrar catálogo */}
               {clickableCreators.length > 0 && onFilterByCreator && (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   {clickableCreators.map((creatorName) => (
@@ -702,7 +702,7 @@ export function WorkDetailPage({
                       key={creatorName}
                       type="button"
                       onClick={() => onFilterByCreator(creatorName)}
-                      aria-label={`Filtrar acervo e buscar mais títulos de ${creatorName}`}
+                      aria-label={`Filtrar catálogo e buscar mais títulos de ${creatorName}`}
                       className="inline-flex min-h-[44px] items-center rounded-lg border border-line bg-app px-3 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
                     >
                       {creatorName}

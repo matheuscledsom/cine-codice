@@ -41,7 +41,7 @@ export function StatsScreen({
             {stats.title}
           </h1>
           <p className="mt-0.5 text-xs text-subtle">
-            Tempo em tela, episódios assistidos e memória acumulada da sua cinemateca
+            Tempo em tela, episódios assistidos e memória acumulada da seu catálogo
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -158,7 +158,7 @@ export function StatsScreen({
           </div>
           <span className="text-xs font-medium tabular-nums text-muted">
             {analytics.totalCount}{' '}
-            {analytics.totalCount === 1 ? 'título no acervo' : 'títulos no acervo'}
+            {analytics.totalCount === 1 ? 'título no catálogo' : 'títulos no catálogo'}
           </span>
         </div>
 
@@ -334,7 +334,7 @@ export function StatsScreen({
         dailyLogs={dailyLogs}
       />
 
-      {/* Panorama do Acervo por Status */}
+      {/* Panorama do Catálogo por Status */}
       <section className="rounded-2xl border border-line bg-card p-5 space-y-3.5">
         <div className="flex items-center gap-2">
           <Layers className="h-4 w-4 text-accent" strokeWidth={1.5} />

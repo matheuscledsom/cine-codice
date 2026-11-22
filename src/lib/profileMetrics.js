@@ -3,7 +3,7 @@
  * Módulo puro em .js sem React/CSS/DOM.
  *
  * Fórmulas:
- * - Obras: total no acervo (inBacklog !== false) e total com status === 'completed'.
+ * - Obras: total no catálogo (inBacklog !== false) e total com status === 'completed'.
  * - Episódios / Horas: soma episódios assistidos e apenas as durações conhecidas
  *   (filmes com totalSeconds > 0 ou durationMinutes > 0; séries/animes com
  *   episodeDurationMinutes > 0 ou durationMinutes > 0). Obras ativas/concluídas
@@ -147,7 +147,7 @@ export const PROFILE_AVATAR_EMBLEMS = [
   { id: 'Tv', label: 'Tela & Séries' },
   { id: 'Sparkles', label: 'Animação & Fantasia' },
   { id: 'Award', label: 'Palma de Ouro' },
-  { id: 'Compass', label: 'Explorador de Acervo' },
+  { id: 'Compass', label: 'Explorador de Catálogo' },
   { id: 'Flame', label: 'Sessão Contínua' },
   { id: 'Star', label: 'Crítica & Curadoria' },
 ];
@@ -176,7 +176,7 @@ export function resolveTop4Favorites(items = []) {
 
 /**
  * Constrói o feed pessoal dinâmico com Últimas Avaliações, Episódios Vistos & Cenas Favoritas
- * extraídas automaticamente do acervo do espectador.
+ * extraídas automaticamente do catálogo do espectador.
  */
 export function buildProfilePersonalFeed(items = [], posts = [], { limit = 16 } = {}) {
   const backlog = (Array.isArray(items) ? items : []).filter(

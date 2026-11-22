@@ -816,7 +816,7 @@ export async function runMultiSmartCataloging({ item, signal, overrideKeys } = {
   const truncatedSynopsis = truncateAiText(item?.synopsis || '', MAX_AI_INPUT_CHARS);
 
   const system =
-    'Curador de cinemateca (filmes, séries e animes). Responda apenas JSON estrito em PT-BR, sem spoilers e sem emojis.';
+    'Curador de catálogo (filmes, séries e animes). Responda apenas JSON estrito em PT-BR, sem spoilers e sem emojis.';
   const input = `Catalogar obra audiovisual em JSON:
 {"synopsis":"2-3 frases sem spoilers","genres":["até 3"],"atmosphere":["1-3 de: ${allowedAtmospheres.join(', ')}"],"franchiseName":"","director":"","studio":""}
 Título: ${item?.title || ''}
@@ -911,7 +911,7 @@ export async function runMultiCollectionOracle({
     focusLabels.length > 0 ? focusLabels.join(', ') : readerFocus || 'Geral';
 
   const system =
-    'Você é o Curador de Sessões da Cinemateca. Recomende exclusivamente obras presentes em Quero Ver. Responda em JSON estrito em português do Brasil.';
+    'Você é o Curador de Sessões do Catálogo. Recomende exclusivamente obras presentes em Quero Ver. Responda em JSON estrito em português do Brasil.';
   const input = `Clima desejado: ${truncateAiText(mood || 'Melhor escolha da fila', 200)}
 Focos do espectador: ${focusSummary} | Critério: ${preferredCriterion || 'Equilibrado'}
 Gêneros favoritos: ${genreLabels.slice(0, 6).join(', ') || 'Diversos'}

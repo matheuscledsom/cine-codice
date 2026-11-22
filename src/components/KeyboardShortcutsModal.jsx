@@ -3,9 +3,9 @@ import { useEffect } from 'react';
 
 const SHORTCUTS_LIST = [
   { keys: 'Ctrl + K / Cmd + K', description: 'Abrir Paleta de Comandos global' },
-  { keys: '/', description: 'Focar busca rápida no Acervo' },
+  { keys: '/', description: 'Focar busca rápida no Catálogo' },
   { keys: 'g  h', description: 'Ir para Início (Home)' },
-  { keys: 'g  a', description: 'Ir para Acervo / Estante' },
+  { keys: 'g  a', description: 'Ir para Catálogo / Estante' },
   { keys: 'g  m', description: 'Ir para Métricas' },
   { keys: 'n', description: 'Catalogar Nova Obra' },
   { keys: '?', description: 'Abrir ou fechar este guia de atalhos' },

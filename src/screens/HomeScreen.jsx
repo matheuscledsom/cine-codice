@@ -383,16 +383,16 @@ export function HomeScreen({
         />
       )}
 
-      {/* HERO EM 4 ESTADOS: carregando | ativo | fila Quero Ver | acervo vazio */}
+      {/* HERO EM 4 ESTADOS: carregando | ativo | fila Quero Ver | catálogo vazio */}
       {hero.state === 'loading' ? (
         <section
-          aria-label="Carregando destaque da cinemateca"
+          aria-label="Carregando destaque do catálogo"
           aria-busy="true"
           className="h-56 w-full animate-pulse rounded-[6px] border border-line bg-card"
         />
       ) : hero.state === 'empty' ? (
         <section
-          aria-label="Boas-vindas à cinemateca"
+          aria-label="Boas-vindas ao catálogo"
           className="rounded-[6px] border border-line bg-card px-5 py-9 text-center"
         >
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-[4px] border border-line bg-app text-accent">

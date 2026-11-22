@@ -140,7 +140,7 @@ export function FranchiseRadarPanel({
             <select
               value={selectedTargetId}
               onChange={(e) => setSelectedTargetId(e.target.value)}
-              aria-label="Escolher obra do acervo"
+              aria-label="Escolher obra do catálogo"
               className="min-h-[44px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
             >
               <option value="">Selecionar obra já cadastrada (opcional)...</option>

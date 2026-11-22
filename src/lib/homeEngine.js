@@ -60,9 +60,9 @@ export function formatHonestHeroProgressLabel(work) {
  * Seleciona um dos 4 estados obrigatórios do Hero:
  * - 'loading'      (d) carregando (skeleton)
  * - 'active'       (a) obra mais recente em Assistindo / Reassistindo
- * - 'queued'       (b) acervo existe, nada em andamento -> destaque da fila Quero Ver ("Começar")
- * - 'library-idle' (b2) acervo existe sem fila/ativos -> última obra catalogada
- * - 'empty'        (c) acervo vazio -> boas-vindas com 1 botão ("Catalogar Primeira Obra")
+ * - 'queued'       (b) catálogo existe, nada em andamento -> destaque da fila Quero Ver ("Começar")
+ * - 'library-idle' (b2) catálogo existe sem fila/ativos -> última obra catalogada
+ * - 'empty'        (c) catálogo vazio -> boas-vindas com 1 botão ("Catalogar Primeira Obra")
  */
 export function selectHeroPresentation(items = [], { loading = false } = {}) {
   if (loading) {

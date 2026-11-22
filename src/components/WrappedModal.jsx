@@ -46,7 +46,7 @@ export async function generateWrappedCardPng(summary, readerName = 'Espectador C
 
   ctx.fillStyle = textMuted;
   ctx.font = `400 26px ${fontFamily}`;
-  ctx.fillText(`Cinemateca pessoal de ${readerName}`, LEFT, 272);
+  ctx.fillText(`Catálogo pessoal de ${readerName}`, LEFT, 272);
 
   ctx.fillStyle = borderSubtle;
   ctx.fillRect(LEFT, 312, WIDTH - LEFT * 2, 2);
@@ -180,7 +180,7 @@ export function WrappedModal({
         <div className="grid grid-cols-2 rounded-[4px] border border-line bg-app p-0.5">
           {[
             { id: 'year', label: `Ano ${domainConfig.currentYear}` },
-            { id: 'all', label: 'Todo o acervo' },
+            { id: 'all', label: 'Todo o catálogo' },
           ].map((opt) => (
             <button
               key={opt.id}

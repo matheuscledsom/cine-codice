@@ -20,7 +20,7 @@ export function safeSetLocalStorageJson(
   value,
   {
     storage = typeof localStorage !== 'undefined' ? localStorage : null,
-    label = 'acervo',
+    label = 'catálogo',
   } = {}
 ) {
   const key = String(storageKey || '').trim();
