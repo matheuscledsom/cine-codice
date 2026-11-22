@@ -1,6 +1,6 @@
-# Cine Códice — v1.1.0 · Lumière
+# Cine Códice — v1.2.0 · Lumière
 
-Cinemateca pessoal, privada e offline-first construída em **React + Vite + Tailwind CSS v4** para catalogar, avaliar e acompanhar **filmes, séries e animes** com estética física de videolocadora curada.
+Cinemateca pessoal, privada e offline-first construída em **React + Vite + Tailwind CSS v4** para catalogar, avaliar e acompanhar **filmes, séries e animes** com direção de arte editorial cinematográfica e banco relacional local em IndexedDB.
 
 ## Principais Recursos
 

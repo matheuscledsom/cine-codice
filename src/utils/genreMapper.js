@@ -193,12 +193,13 @@ export function autoMapAtmosphereAndTags({
  */
 export function buildPrefilledCatalogDraft(
   item = {},
-  {
+  options = {}
+) {
+  const {
     defaultWorkType = 'movie',
     defaultFormat = 'Streaming',
     defaultAudioFormat = 'Legendado',
-  } = {}
-) {
+  } = options || {};
   const workType = item.workType || defaultWorkType;
   const rawCats =
     Array.isArray(item.rawCategories) && item.rawCategories.length > 0

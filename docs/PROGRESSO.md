@@ -2,8 +2,8 @@
 
 **Branch ativa:** `feat/v1.2.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.1.0 · Lumière` (merge na `main` `99478e0` + tag `v1.1.0` + `git push origin main --tags`)
-**Última fase concluída (v1.2.0):** `5`
-**Próxima fase (v1.2.0):** `6` (Regressão Completa, Auditoria Visual Multi-Resolução & Preparação v1.2.0)
+**Última fase concluída (v1.2.0):** `6` (Todas as fases 0 a 6 concluídas na branch `feat/v1.2.0-lumiere` — aguardando **`publicar`**)
+**Próxima fase (v1.2.0):** Publicação (`git merge --no-ff feat/v1.2.0-lumiere`, tag `v1.2.0` e `git push origin main --tags` após aprovação do dono)
 
 ## Linha do Tempo das Fases — Ciclo v1.2.0 · Lumière
 - [x] **Fase 0 (v1.2.0) — Auditoria Técnica, Git Pre-Flight & Mapeamento de Causa Raiz** — concluída sem alterações de código; roteiro salvo em [`docs/PROMPT_MESTRE_V1_2.md`](./PROMPT_MESTRE_V1_2.md).
@@ -28,7 +28,10 @@
   - Redesenhado [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx) e [`src/components/ProfileEditModal.jsx`](../src/components/ProfileEditModal.jsx) com Avatar Customizável (upload local `256×256 px` em [`src/components/ImageCropModal.jsx`](../src/components/ImageCropModal.jsx) persistido no IndexedDB ou escolha entre os 8 emblemas cinematográficos minimalistas `PROFILE_AVATAR_EMBLEMS`), Vitrine *Favoritos da Vida · Top 4* (`resolveTop4Favorites`, grade `2:3` de 4 slots com seletor rápido `+ Escolher favorito`) e Feed Pessoal Dinâmico de *Últimas Cenas & Avaliações* (`buildProfilePersonalFeed` em [`src/lib/profileMetrics.js`](../src/lib/profileMetrics.js)).
   - Removidos fisicamente os 10 arquivos sociais mortos (R6: `CommunityScreen.jsx`, `ProfileWall.jsx`, `DirectChatDrawer.jsx`, `UserProfileModal.jsx`, `FriendProfileCardModal.jsx`, `ShareProfileCardModal.jsx`, `ActivityFeed.jsx`, `AuthModal.jsx`, `BuddyReadPanel.jsx`, `buddyReadService.js`) e enxugados [`src/services/codiceBackend.js`](../src/services/codiceBackend.js), [`src/App.jsx`](../src/App.jsx) e [`src/components/BottomNav.jsx`](../src/components/BottomNav.jsx).
   - Criada suíte [`tests/fase5-v120-profile-nosocial.test.mjs`](../tests/fase5-v120-profile-nosocial.test.mjs) (`92/92` testes aprovados).
-- [ ] **Fase 6 (v1.2.0) — Regressão Completa, Auditoria Visual Multi-Resolução & Preparação v1.2.0**
+- [x] **Fase 6 (v1.2.0) — Regressão Completa, Auditoria Visual Multi-Resolução & Preparação v1.2.0** — concluída na branch `feat/v1.2.0-lumiere`.
+  - Atualizados [`package.json`](../package.json), [`package-lock.json`](../package-lock.json), [`src/config/versioning.js`](../src/config/versioning.js), [`README.md`](../README.md), [`CHANGELOG.md`](../CHANGELOG.md) e [`tests/fase7-release-regression.test.mjs`](../tests/fase7-release-regression.test.mjs) para **`1.2.0 · Lumière`** preservando o histórico de `1.0.0` e `1.1.0`.
+  - Criada suíte de regressão ponta a ponta [`tests/fase6-v120-regression.test.mjs`](../tests/fase6-v120-regression.test.mjs) (`98/98` testes aprovados em `27` suítes).
+  - Executada auditoria visual real em navegador headless Chromium (Playwright) em `360 px`, `768 px` e `1280 px` confirmando `scrollWidth === innerWidth` em todas as telas e zero `<input>`, `<textarea>` ou `<select>` abertos no modo leitura.
 
 ## Linha do Tempo das Fases — Ciclo v1.1.0 · Lumière (Concluído)
 - [x] **Fase 0 — Auditoria (somente leitura)** — concluída na `main` sem alterações.
