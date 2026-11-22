@@ -1,15 +1,25 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { UserCheck, UserPlus, X } from 'lucide-react';
+import { AlertTriangle, UserCheck, UserPlus, X } from 'lucide-react';
+import { getAllEpisodeEvaluations, importEpisodeEvaluations } from './api/cacheDb';
 import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SkeletonScreen } from './components/SkeletonScreen';
+import { domainConfig } from './config/domainConfig';
 import { useToast } from './context/ToastContext';
 import { GraphicFilters } from './design/GraphicFilters';
 import { useAiConfig } from './hooks/useAiConfig';
-import { useBacklog } from './hooks/useBacklog';
+import { readRawBacklogStorageState, useBacklog } from './hooks/useBacklog';
 import { useReadingStreak } from './hooks/useReadingStreak';
 import { useSocialProfile } from './hooks/useSocialProfile';
 import { useTheme } from './hooks/useTheme';
+import {
+  CURRENT_MIGRATION_VERSION,
+  MIGRATION_VERSION_KEY,
+  executeAtomicWorkspaceMigration,
+  migrateProfileData,
+  migrateWorkItem,
+  needsWorkspaceMigration,
+} from './lib/migrations';
 import {
   getBackupReminderStatus,
   listAutoSnapshots,
@@ -18,6 +28,7 @@ import {
   saveAutoSnapshot,
   saveEmergencyMirror,
   shareOrDownloadSignedBackup,
+  verifyAutoSnapshotIntegrity,
 } from './services/backupEngine';
 import {
   bootstrapBackend,
@@ -34,6 +45,7 @@ import {
   updateActiveProfileInBackend,
 } from './services/codiceBackend';
 import {
+  CODICE_DB_STORAGE_KEY,
   buildCodiceDatabase,
   createUuid,
   persistCodiceDatabase,
@@ -149,6 +161,85 @@ const OfflineBookPickerModal = lazy(() =>
     default: m.OfflineBookPickerModal,
   }))
 );
+const AboutCreditsModal = lazy(() =>
+  import('./components/AboutCreditsModal').then((m) => ({
+    default: m.AboutCreditsModal,
+  }))
+);
+
+function readRawWorkspaceSnapshotForMigration() {
+  if (typeof localStorage === 'undefined') {
+    return { hasExistingUserData: false, storedMigrationVersion: CURRENT_MIGRATION_VERSION, rawWorkspace: null };
+  }
+  try {
+    const storedMigrationVersion =
+      Number(localStorage.getItem(MIGRATION_VERSION_KEY) || 0) || 0;
+    const rawBacklog = readRawBacklogStorageState();
+    let rawProfile = null;
+    try {
+      const profileStr = localStorage.getItem(domainConfig.profileStorageKey);
+      if (profileStr) rawProfile = JSON.parse(profileStr);
+    } catch {
+      rawProfile = null;
+    }
+    if (!rawProfile && rawBacklog.storedDb?.tables?.user_profile) {
+      const dbProfile = rawBacklog.storedDb.tables.user_profile;
+      rawProfile = Array.isArray(dbProfile) ? (dbProfile[0] || null) : dbProfile;
+    }
+
+    let rawPosts = [];
+    try {
+      const postsStr = localStorage.getItem(domainConfig.postsStorageKey);
+      if (postsStr) {
+        const parsed = JSON.parse(postsStr);
+        if (Array.isArray(parsed)) rawPosts = parsed;
+      }
+    } catch {
+      rawPosts = [];
+    }
+
+    const hasExistingUserData = Boolean(rawBacklog.hasStoredItems || rawProfile);
+    if (!hasExistingUserData) {
+      return {
+        hasExistingUserData: false,
+        storedMigrationVersion,
+        rawWorkspace: null,
+      };
+    }
+
+    return {
+      hasExistingUserData: true,
+      storedMigrationVersion,
+      rawWorkspace: {
+        items: rawBacklog.items || [],
+        profile: rawProfile,
+        posts: rawPosts,
+      },
+    };
+  } catch {
+    return {
+      hasExistingUserData: false,
+      storedMigrationVersion: 0,
+      rawWorkspace: null,
+    };
+  }
+}
+
+function initBootMigrationState() {
+  const probe = readRawWorkspaceSnapshotForMigration();
+  if (!probe.hasExistingUserData || !probe.rawWorkspace) {
+    return { locked: false, warning: null, status: 'up-to-date' };
+  }
+  const needed = needsWorkspaceMigration(
+    probe.rawWorkspace,
+    probe.storedMigrationVersion
+  );
+  return {
+    locked: needed,
+    warning: null,
+    status: needed ? 'pending' : 'up-to-date',
+  };
+}
 
 export function App() {
   const [activeTab, setActiveTab] = useState('home');
@@ -162,6 +253,9 @@ export function App() {
   const [importCatalogOpen, setImportCatalogOpen] = useState(false);
   const [wrappedOpen, setWrappedOpen] = useState(false);
   const [globalRouletteOpen, setGlobalRouletteOpen] = useState(false);
+  const [aboutCreditsOpen, setAboutCreditsOpen] = useState(false);
+  const [migrationState, setMigrationState] = useState(initBootMigrationState);
+  const bootMigrationPromiseRef = useRef(null);
   const [requestedCollectionId, setRequestedCollectionId] = useState(null);
   const [privateStorageMode, setPrivateStorageMode] = useState(false);
   const [onboardingReopened, setOnboardingReopened] = useState(false);
@@ -252,7 +346,7 @@ export function App() {
     addPostComment,
     deletePostComment,
     restoreSocialBackup,
-  } = useSocialProfile();
+  } = useSocialProfile({ migrationLocked: migrationState.locked });
 
   const {
     items,
@@ -275,7 +369,9 @@ export function App() {
     exportCatalogCsv,
     exportCatalogMarkdown,
     importBackup,
-  } = useBacklog(profile?.readerDna || null);
+  } = useBacklog(profile?.readerDna || null, {
+    migrationLocked: migrationState.locked,
+  });
 
   const {
     streakData,
@@ -363,7 +459,123 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!backendReady) return undefined;
+    if (migrationState.status !== 'pending') return undefined;
+    let active = true;
+
+    const runMigration = async () => {
+      if (!bootMigrationPromiseRef.current) {
+        bootMigrationPromiseRef.current = (async () => {
+          const probe = readRawWorkspaceSnapshotForMigration();
+          if (!probe.hasExistingUserData || !probe.rawWorkspace) {
+            return { status: 'up-to-date', workspace: null };
+          }
+          const episodeEvaluations = await getAllEpisodeEvaluations().catch(() => []);
+          const rawWorkspace = {
+            ...probe.rawWorkspace,
+            streak: streakData,
+            readingSessions,
+            collections,
+            episodeEvaluations,
+          };
+
+          return executeAtomicWorkspaceMigration({
+            rawWorkspace,
+            storedMigrationVersion: probe.storedMigrationVersion,
+            saveSnapshotFn: saveAutoSnapshot,
+            verifySnapshotFn: verifyAutoSnapshotIntegrity,
+            commitFn: async (migrated) => {
+              if (typeof localStorage === 'undefined') return;
+              const prevStorage = localStorage.getItem(domainConfig.storageKey);
+              const prevProfile = localStorage.getItem(domainConfig.profileStorageKey);
+              const prevDb = localStorage.getItem(CODICE_DB_STORAGE_KEY);
+              const prevVersion = localStorage.getItem(MIGRATION_VERSION_KEY);
+
+              try {
+                localStorage.setItem(
+                  domainConfig.storageKey,
+                  JSON.stringify(migrated.items)
+                );
+                if (migrated.profile) {
+                  localStorage.setItem(
+                    domainConfig.profileStorageKey,
+                    JSON.stringify(migrated.profile)
+                  );
+                }
+                const db = buildCodiceDatabase({
+                  items: migrated.items,
+                  profile: migrated.profile || null,
+                  posts: migrated.posts || [],
+                  streak: migrated.streak || null,
+                  readingSessions: migrated.readingSessions || [],
+                  collections: migrated.collections || [],
+                  episodeEvaluations: migrated.episodeEvaluations || [],
+                });
+                localStorage.setItem(CODICE_DB_STORAGE_KEY, JSON.stringify(db));
+                localStorage.setItem(
+                  MIGRATION_VERSION_KEY,
+                  String(CURRENT_MIGRATION_VERSION)
+                );
+              } catch (err) {
+                const restoreKey = (k, prevVal) => {
+                  if (prevVal === null) localStorage.removeItem(k);
+                  else localStorage.setItem(k, prevVal);
+                };
+                try {
+                  restoreKey(domainConfig.storageKey, prevStorage);
+                  restoreKey(domainConfig.profileStorageKey, prevProfile);
+                  restoreKey(CODICE_DB_STORAGE_KEY, prevDb);
+                  restoreKey(MIGRATION_VERSION_KEY, prevVersion);
+                } catch {
+                  // Silencioso
+                }
+                throw err;
+              }
+            },
+          });
+        })();
+      }
+
+      const result = await bootMigrationPromiseRef.current;
+      if (!active) return;
+
+      if (result.status === 'migrated' || result.status === 'up-to-date') {
+        if (result.workspace?.items) {
+          replaceWorkspaceData({ items: result.workspace.items });
+        }
+        if (result.workspace?.profile) {
+          restoreSocialBackup({ profile: result.workspace.profile });
+        }
+        setMigrationState({
+          locked: false,
+          warning: null,
+          status: result.status,
+        });
+      } else {
+        setMigrationState({
+          locked: true,
+          warning:
+            result.warning ||
+            'Não foi possível validar o snapshot antes da migração. Seus dados antigos permanecem intactos.',
+          status: 'aborted',
+        });
+      }
+    };
+
+    runMigration();
+    return () => {
+      active = false;
+    };
+  }, [
+    migrationState.status,
+    streakData,
+    readingSessions,
+    collections,
+    replaceWorkspaceData,
+    restoreSocialBackup,
+  ]);
+
+  useEffect(() => {
+    if (!backendReady || migrationState.locked) return undefined;
     const timer = setTimeout(() => {
       syncActiveWorkspaceToBackend({
         profile,
@@ -374,7 +586,15 @@ export function App() {
       }).catch(() => {});
     }, 300);
     return () => clearTimeout(timer);
-  }, [backendReady, profile, items, posts, streakData, readingSessions]);
+  }, [
+    backendReady,
+    migrationState.locked,
+    profile,
+    items,
+    posts,
+    streakData,
+    readingSessions,
+  ]);
 
   const handleUpdateProfileWithSync = useCallback(
     (updates, toastMessage = 'Perfil atualizado') => {
@@ -595,47 +815,87 @@ export function App() {
   const handleApplyRestoreSnapshot = useCallback(
     async (incomingSnapshot, modeArg = 'merge') => {
       if (!incomingSnapshot) return;
+      const currentEvals = await getAllEpisodeEvaluations().catch(() => []);
+
       if (modeArg === 'replace') {
         await saveAutoSnapshot(
-          { items, profile, posts, streak: streakData, readingSessions },
+          {
+            items,
+            profile,
+            posts,
+            streak: streakData,
+            readingSessions,
+            collections,
+            episodeEvaluations: currentEvals,
+          },
           { reason: 'pre-restore', label: 'Pré-restauração automática', force: true }
         ).catch(() => {});
 
+        const migratedItems = (incomingSnapshot.items || []).map((entry) =>
+          migrateWorkItem(entry)
+        );
+        const migratedProfile = incomingSnapshot.profile
+          ? migrateProfileData(incomingSnapshot.profile)
+          : undefined;
+
         replaceWorkspaceData({
-          items: incomingSnapshot.items || [],
+          items: migratedItems,
           readingSessions: incomingSnapshot.readingSessions || [],
           collections: incomingSnapshot.collections || [],
         });
         restoreSocialBackup({
-          profile: incomingSnapshot.profile,
+          profile: migratedProfile,
           posts: incomingSnapshot.posts || [],
         });
         restoreStreakBackup(
           incomingSnapshot.streak || { count: 0, lastDate: null, history: [] }
         );
+        if (
+          Array.isArray(incomingSnapshot.episodeEvaluations) &&
+          incomingSnapshot.episodeEvaluations.length > 0
+        ) {
+          await importEpisodeEvaluations(incomingSnapshot.episodeEvaluations).catch(() => {});
+        }
         showToast({
-          message: `Cinemateca restaurada (${incomingSnapshot.items?.length || 0} obras)`,
+          message: `Cinemateca restaurada (${migratedItems.length} obras)`,
           type: 'success',
         });
         return;
       }
 
       const merged = mergeSnapshots(
-        { items, profile, posts, streak: streakData, readingSessions, collections },
+        {
+          items,
+          profile,
+          posts,
+          streak: streakData,
+          readingSessions,
+          collections,
+          episodeEvaluations: currentEvals,
+        },
         incomingSnapshot
       );
+      const migratedMergedItems = (merged.items || []).map((entry) =>
+        migrateWorkItem(entry)
+      );
       replaceWorkspaceData({
-        items: merged.items,
+        items: migratedMergedItems,
         readingSessions: merged.readingSessions,
         collections: merged.collections || [],
       });
       restoreSocialBackup({
-        profile: merged.profile,
+        profile: merged.profile ? migrateProfileData(merged.profile) : merged.profile,
         posts: merged.posts,
       });
       restoreStreakBackup(merged.streak);
+      if (
+        Array.isArray(merged.episodeEvaluations) &&
+        merged.episodeEvaluations.length > 0
+      ) {
+        await importEpisodeEvaluations(merged.episodeEvaluations).catch(() => {});
+      }
       showToast({
-        message: `Backup mesclado com sucesso (${merged.items.length} obras no acervo)`,
+        message: `Backup mesclado com sucesso (${migratedMergedItems.length} obras no acervo)`,
         type: 'success',
       });
     },
@@ -654,6 +914,7 @@ export function App() {
   );
 
   useEffect(() => {
+    if (migrationState.locked) return;
     const db = buildCodiceDatabase({
       items,
       profile,
@@ -669,14 +930,14 @@ export function App() {
       streak: streakData,
       readingSessions,
     });
-  }, [items, profile, posts, streakData, readingSessions, collections]);
+  }, [migrationState.locked, items, profile, posts, streakData, readingSessions, collections]);
 
   useEffect(() => {
     requestPersistentStorage().catch(() => {});
   }, []);
 
   useEffect(() => {
-    if (!items || items.length === 0) return undefined;
+    if (migrationState.locked || !items || items.length === 0) return undefined;
     listAutoSnapshots()
       .then((snaps) => {
         if (!Array.isArray(snaps) || snaps.length === 0) {
@@ -690,18 +951,35 @@ export function App() {
       .catch(() => {});
     return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [migrationState.locked]);
 
   useEffect(() => {
-    if (!items || items.length === 0) return undefined;
-    const timer = setTimeout(() => {
+    if (migrationState.locked || !items || items.length === 0) return undefined;
+    const timer = setTimeout(async () => {
+      const episodeEvaluations = await getAllEpisodeEvaluations().catch(() => []);
       saveAutoSnapshot(
-        { items, profile, posts, streak: streakData, readingSessions, collections },
+        {
+          items,
+          profile,
+          posts,
+          streak: streakData,
+          readingSessions,
+          collections,
+          episodeEvaluations,
+        },
         { reason: 'auto', label: 'Auto-snapshot automático' }
       ).catch(() => {});
     }, 8000);
     return () => clearTimeout(timer);
-  }, [items, profile, posts, streakData, readingSessions, collections]);
+  }, [
+    migrationState.locked,
+    items,
+    profile,
+    posts,
+    streakData,
+    readingSessions,
+    collections,
+  ]);
 
   const handleRegisterToday = () => {
     registerToday();
@@ -924,6 +1202,7 @@ export function App() {
 
   const handleSaveBackupCopyNow = useCallback(async () => {
     try {
+      const episodeEvaluations = await getAllEpisodeEvaluations().catch(() => []);
       const res = await shareOrDownloadSignedBackup({
         items,
         profile,
@@ -931,6 +1210,7 @@ export function App() {
         streak: streakData,
         readingSessions,
         collections,
+        episodeEvaluations,
       });
       setBackupReminderTick((t) => t + 1);
       if (res.method === 'share') {
@@ -1154,6 +1434,24 @@ export function App() {
             }[activeTab] || activeTab
           }
         </div>
+        {migrationState.warning && (
+          <div
+            role="alert"
+            className="mx-4 sm:mx-6 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-accent bg-card px-3 py-2.5 text-xs text-ink"
+          >
+            <span className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+              <span>{migrationState.warning}</span>
+            </span>
+            <button
+              type="button"
+              onClick={handleSaveBackupCopyNow}
+              className="min-h-[44px] rounded-[4px] border border-accent bg-accent/10 px-3 text-[11px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+            >
+              Salvar Cópia
+            </button>
+          </div>
+        )}
         {privateStorageMode && (
           <div
             role="status"
@@ -1349,6 +1647,7 @@ export function App() {
                   onExportBibtex={handleExportMarkdown}
                   onImportBackup={handleImportBackup}
                   onOpenBackupModal={() => setBackupModalOpen(true)}
+                  onOpenAboutCredits={() => setAboutCreditsOpen(true)}
                   onWallMutated={refreshSocialSignals}
                   onSelectPeerProfile={(id) => setViewingUserProfileId(id)}
                 />
@@ -1448,6 +1747,7 @@ export function App() {
                 posts,
                 streak: streakData,
                 readingSessions,
+                collections,
               }}
               onExportBackup={handleExportBackup}
               onExportCsv={handleExportCsv}
@@ -1632,6 +1932,13 @@ export function App() {
               items={items}
               profile={profile}
               streakCount={streakCount}
+            />
+          )}
+
+          {aboutCreditsOpen && (
+            <AboutCreditsModal
+              isOpen={aboutCreditsOpen}
+              onClose={() => setAboutCreditsOpen(false)}
             />
           )}
 

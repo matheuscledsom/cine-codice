@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getAllEpisodeEvaluations } from '../api/cacheDb';
 import { useToast } from '../context/ToastContext';
 import {
   inspectBackupPayload,
@@ -110,11 +111,20 @@ export function BackupRestoreModal({
   const handleCreateManualSnapshot = async () => {
     setSavingSnapshot(true);
     try {
-      const res = await saveAutoSnapshot(currentWorkspace, {
-        reason: 'manual',
-        label: 'Snapshot manual do acervo',
-        force: true,
-      });
+      const episodeEvaluations =
+        currentWorkspace?.episodeEvaluations ||
+        (await getAllEpisodeEvaluations().catch(() => []));
+      const res = await saveAutoSnapshot(
+        {
+          ...currentWorkspace,
+          episodeEvaluations,
+        },
+        {
+          reason: 'manual',
+          label: 'Snapshot manual do acervo',
+          force: true,
+        }
+      );
       await refreshSnapshots();
       if (res?.snapshot) {
         showToast({

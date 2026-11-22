@@ -1,4 +1,6 @@
 import { catalogItems } from '../data/mockData.js';
+import { extractFavoriteGenreLabels } from '../lib/genreCatalog.js';
+import { isConfirmedUserRating } from '../lib/ratings.js';
 import { normalizePreferredCriteria } from '../utils/readerPreferences.js';
 import {
   computeDnaWeightedScore,
@@ -72,16 +74,14 @@ export function buildSpectatorTasteProfile(items = [], profile = null) {
     ? items.filter((i) => i && i.inBacklog !== false)
     : [];
   const highRated = backlog
-    .filter((item) => Number(item.rating) >= 80 || Boolean(item.isPlatinum))
+    .filter((item) => (isConfirmedUserRating(item) && Number(item.rating) >= 80) || Boolean(item.isPlatinum))
     .sort((a, b) => {
       const timeB = Date.parse(b.completedDate || b.updatedAt || '') || 0;
       const timeA = Date.parse(a.completedDate || a.updatedAt || '') || 0;
       return timeB - timeA || (Number(b.rating) || 0) - (Number(a.rating) || 0);
     });
 
-  const onboardingGenreLabels = Array.isArray(profile?.favoriteGenres)
-    ? profile.favoriteGenres.map((g) => String(g || '').trim()).filter(Boolean)
-    : [];
+  const onboardingGenreLabels = extractFavoriteGenreLabels(profile?.favoriteGenres);
 
   const onboardingGenres = new Set(onboardingGenreLabels.map(normalizeToken).filter(Boolean));
   const onboardingCanonicalTags = new Set();

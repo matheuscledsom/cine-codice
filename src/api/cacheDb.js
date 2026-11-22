@@ -499,3 +499,13 @@ export async function getAllEpisodeEvaluations({ idbFactory = null } = {}) {
   }
   return Array.from(memoryStores.get(DURABLE_STORES.episodeEvaluations).values());
 }
+
+export async function importEpisodeEvaluations(records = [], { idbFactory = null } = {}) {
+  const list = Array.isArray(records) ? records.filter((r) => r && r.workId) : [];
+  const saved = [];
+  for (const rec of list) {
+    const out = await saveEpisodeEvaluation(rec, { idbFactory });
+    if (out) saved.push(out);
+  }
+  return saved;
+}

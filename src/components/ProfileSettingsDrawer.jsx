@@ -9,6 +9,7 @@ import {
   Film,
   Globe,
   HardDrive,
+  Info,
   Keyboard,
   Lock,
   MessageSquare,
@@ -54,7 +55,7 @@ export const SETTINGS_TABS = [
   { id: 'appearance', hash: '#settings-appearance', label: 'Aparência', icon: Palette },
   { id: 'dna', hash: '#settings-dna', label: 'DNA Espectador', icon: SlidersHorizontal },
   { id: 'privacy', hash: '#settings-privacy', label: 'Privacidade', icon: Shield },
-  { id: 'data', hash: '#settings-data', label: 'Dados & IA', icon: Database },
+  { id: 'data', hash: '#settings-data', label: 'Dados & APIs', icon: Database },
 ];
 
 const VISIBILITY_OPTIONS = [
@@ -143,6 +144,7 @@ export function ProfileSettingsDrawer({
   onOpenBackupModal,
   onOpenImportCatalog,
   onOpenShortcuts,
+  onOpenAboutCredits,
   aiPanelSlot = null,
 }) {
   const drawerRef = useRef(null);
@@ -1030,6 +1032,19 @@ export function ProfileSettingsDrawer({
                       <span>Atalhos de Teclado (?)</span>
                     </button>
                   )}
+                  {onOpenAboutCredits && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose?.();
+                        onOpenAboutCredits();
+                      }}
+                      className="flex min-h-[44px] w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-ink hover:bg-card"
+                    >
+                      <Info className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                      <span>Sobre, Créditos &amp; Fontes (TMDB, OMDb, AniList...)</span>
+                    </button>
+                  )}
                 </div>
               </section>
 
@@ -1037,7 +1052,7 @@ export function ProfileSettingsDrawer({
                 <div className="flex items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink">
                     <Cpu className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                    <span>Provedor de IA (Opcional)</span>
+                    <span>Chaves de API (TMDB, OMDb &amp; IA)</span>
                   </span>
                   {onOpenGeminiSettings && (
                     <button

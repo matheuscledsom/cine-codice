@@ -37,7 +37,6 @@ import { createUuid } from '../services/codiceDatabase';
 import {
   calculateSmartRating,
   calculateWorkProgress,
-  createDefaultReviewCriteria,
   getDisplayTitles,
   getTodayLocalISO,
   getVerdictForScore,
@@ -88,11 +87,18 @@ function buildDraftWithStatus(baseDraft, nextStatus) {
       updated.totalSeconds = totalSec;
       updated.currentSeconds = totalSec;
     }
-    if (!updated.reviewCriteria) {
-      updated.reviewCriteria = createDefaultReviewCriteria(80);
+    if (updated.reviewCriteria) {
+      updated.rating = calculateSmartRating(updated.reviewCriteria);
+      updated.verdict = getVerdictForScore(updated.rating);
+      updated.ratingSource = updated.ratingSource || 'manual';
+    } else if (typeof updated.rating === 'number' && !Number.isNaN(updated.rating)) {
+      updated.verdict = updated.verdict || getVerdictForScore(updated.rating);
+      updated.ratingSource = updated.ratingSource || 'manual';
+    } else {
+      updated.rating = null;
+      updated.verdict = null;
+      updated.ratingSource = null;
     }
-    updated.rating = calculateSmartRating(updated.reviewCriteria);
-    updated.verdict = getVerdictForScore(updated.rating);
   }
 
   if (nextStatus === 'queued') {

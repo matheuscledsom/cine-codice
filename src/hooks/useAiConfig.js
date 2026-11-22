@@ -7,12 +7,18 @@ import {
   saveAiKeyForProvider,
   saveAiPreferences,
 } from '../services/aiProvider';
-import { loadTmdbApiKey, saveTmdbApiKey } from '../services/cinemaApi';
+import {
+  loadOmdbApiKey,
+  loadTmdbApiKey,
+  saveOmdbApiKey,
+  saveTmdbApiKey,
+} from '../services/cinemaApi';
 
 export function useAiConfig() {
   const [keys, setKeys] = useState(() => ({
     ...loadAiKeys(),
     tmdb: loadTmdbApiKey(),
+    omdb: loadOmdbApiKey(),
   }));
   const [preferences, setPreferences] = useState(loadAiPreferences);
 
@@ -20,6 +26,11 @@ export function useAiConfig() {
     if (providerId === 'tmdb') {
       const clean = saveTmdbApiKey(rawKey);
       setKeys((prev) => ({ ...prev, tmdb: clean }));
+      return clean;
+    }
+    if (providerId === 'omdb') {
+      const clean = saveOmdbApiKey(rawKey);
+      setKeys((prev) => ({ ...prev, omdb: clean }));
       return clean;
     }
     const clean = saveAiKeyForProvider(providerId, rawKey);
@@ -31,6 +42,11 @@ export function useAiConfig() {
     if (providerId === 'tmdb') {
       saveTmdbApiKey('');
       setKeys((prev) => ({ ...prev, tmdb: '' }));
+      return;
+    }
+    if (providerId === 'omdb') {
+      saveOmdbApiKey('');
+      setKeys((prev) => ({ ...prev, omdb: '' }));
       return;
     }
     clearAiKeyForProvider(providerId);
@@ -53,6 +69,7 @@ export function useAiConfig() {
     hasGeminiKey: Boolean(keys.gemini),
     geminiKey: keys.gemini,
     tmdbKey: keys.tmdb,
+    omdbKey: keys.omdb,
     activeProvider,
     saveProviderKey,
     clearProviderKey,

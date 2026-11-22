@@ -98,6 +98,7 @@ export function ProfileScreen({
   onOpenBackupModal,
   onOpenImportCatalog,
   onOpenShortcuts,
+  onOpenAboutCredits,
   onWallMutated,
   onSelectPeerProfile,
 }) {
@@ -956,6 +957,7 @@ export function ProfileScreen({
         onOpenBackupModal={onOpenBackupModal}
         onOpenImportCatalog={onOpenImportCatalog}
         onOpenShortcuts={onOpenShortcuts}
+        onOpenAboutCredits={onOpenAboutCredits}
         aiPanelSlot={
           <AiProvidersPanel
             keys={resolvedAiConfig.keys}
@@ -1011,15 +1013,25 @@ export function ProfileScreen({
         onDeleteComment={onDeletePostComment}
       />
 
-      <footer className="pt-2 text-center">
+      <footer className="flex flex-wrap items-center justify-center gap-3 pt-2 text-center">
         <button
           type="button"
           onClick={() => setReleaseModalOpen(true)}
-          className="min-h-[36px] px-2 text-[11px] tabular-nums underline-offset-2 hover:underline"
+          className="min-h-[44px] px-2 text-[11px] tabular-nums underline-offset-2 hover:underline"
           style={{ color: 'var(--text-secondary)' }}
         >
           Cine Códice {CODICE_RELEASE.label}
         </button>
+        {onOpenAboutCredits && (
+          <button
+            type="button"
+            onClick={onOpenAboutCredits}
+            className="min-h-[44px] px-2 text-[11px] underline-offset-2 hover:underline"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            Sobre / Créditos &amp; Fontes
+          </button>
+        )}
       </footer>
 
       <ReleaseHistoryModal

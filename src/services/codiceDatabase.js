@@ -4,6 +4,10 @@ import {
   normalizeCinemaStatus,
   normalizeCinemaWorkType,
 } from '../config/domainConfig.js';
+import { migrateFavoriteGenresToObjects } from '../lib/genreCatalog.js';
+import { applyCanonicalIdsToWork } from '../lib/idBridge.js';
+import { classifyLegacyRatingSource, normalizeViewerFocusList } from '../lib/migrations.js';
+import { createEmptyExternalRatings, normalizeExternalRatings } from '../lib/ratings.js';
 import {
   calculateSmartRating,
   calculateWorkProgress,
@@ -12,12 +16,11 @@ import {
   syncCinemaEpisodeFields,
 } from '../utils/backlogHelpers.js';
 import {
-  normalizeFavoriteGenres,
   normalizePreferredCriteria,
 } from '../utils/readerPreferences.js';
 import { normalizeReaderDna } from './dnaScoring.js';
 
-export const CODICE_SCHEMA_VERSION = '1.0-cine-codice';
+export const CODICE_SCHEMA_VERSION = '1.1-cine-codice';
 export const CODICE_DB_STORAGE_KEY = 'cine_codice_relational_db_v1';
 
 export function createUuid() {
@@ -85,6 +88,13 @@ function buildDefaultUserProfile(profileData) {
     profileData?.preferredCriteria ?? profileData?.preferred_criteria,
     profileData?.preferredCriterion ?? profileData?.preferred_criterion
   );
+  const viewerFocus = normalizeViewerFocusList(
+    profileData?.viewerFocus ?? profileData?.viewer_focus,
+    profileData?.readerFocus ?? profileData?.reader_focus
+  );
+  const favoriteGenres = migrateFavoriteGenresToObjects(
+    profileData?.favoriteGenres ?? profileData?.favorite_genres
+  );
 
   return {
     id: profileData?.id || deterministicUuid('user_profile:primary'),
@@ -98,7 +108,8 @@ function buildDefaultUserProfile(profileData) {
     linkLabel: profileData?.linkLabel || publicLink.label,
     linkUrl: profileData?.linkUrl || publicLink.url,
     age: profileData?.age || '',
-    readerFocus: profileData?.readerFocus || 'Cinéfilo Curador',
+    viewerFocus,
+    readerFocus: viewerFocus[0] || 'Cinéfilo Curador',
     annualGoal: Math.max(
       1,
       Number(profileData?.annualGoal ?? profileData?.annual_goal) || 24
@@ -107,8 +118,8 @@ function buildDefaultUserProfile(profileData) {
     preferredCriteria,
     preferredCriterion: preferredCriteria.join(', '),
     preferredAtmosphere: profileData?.preferredAtmosphere || 'Tinta OLED',
-    favoriteGenres: normalizeFavoriteGenres(profileData?.favoriteGenres),
-    profileSchemaVersion: 2,
+    favoriteGenres,
+    profileSchemaVersion: 3,
     readerDna: normalizeReaderDna(profileData?.readerDna ?? profileData?.reader_dna),
     privacyLevel: normalizePrivacyLevel(profileData?.privacyLevel ?? profileData?.privacy_level),
     allowWallPosts:
@@ -171,6 +182,7 @@ export function buildCodiceDatabase({
   streak = null,
   readingSessions = [],
   collections = [],
+  episodeEvaluations = [],
   follows = [],
   wallPosts = [],
   directMessages = [],
@@ -178,6 +190,22 @@ export function buildCodiceDatabase({
   const safeItems = Array.isArray(items) ? items : [];
   const safePosts = Array.isArray(posts) ? posts : [];
   const safeSessions = Array.isArray(readingSessions) ? readingSessions : [];
+  const safeEpisodeEvaluations = (Array.isArray(episodeEvaluations) ? episodeEvaluations : [])
+    .filter((e) => e && e.workId)
+    .map((e) => ({
+      evalKey: String(e.evalKey || `${e.workId}:${Math.max(1, Number(e.season) || 1)}:${Math.max(1, Number(e.episode) || 1)}`),
+      workId: String(e.workId),
+      source: e.source || null,
+      season: Math.max(1, Math.round(Number(e.season) || 1)),
+      episode: Math.max(1, Math.round(Number(e.episode) || 1)),
+      rating:
+        e.rating !== null && e.rating !== undefined && e.rating !== ''
+          ? Math.max(0, Math.min(100, Math.round(Number(e.rating))))
+          : null,
+      tag: e.tag || null,
+      reaction: String(e.reaction || '').slice(0, 280),
+      updatedAt: e.updatedAt || Date.now(),
+    }));
   const fallbackNow = new Date().toISOString();
 
   const authorsByNorm = new Map();
@@ -232,6 +260,12 @@ export function buildCodiceDatabase({
 
     const epFields = syncCinemaEpisodeFields(rawItem, isCompleted);
 
+    const resolvedRatingSource = classifyLegacyRatingSource(rawItem);
+    const workWithIds = applyCanonicalIdsToWork(rawItem);
+    const externalRatings = rawItem.externalRatings
+      ? normalizeExternalRatings(rawItem.externalRatings)
+      : createEmptyExternalRatings();
+
     const workRow = {
       id: workId,
       title: String(rawItem.title || 'Obra sem título'),
@@ -263,13 +297,21 @@ export function buildCodiceDatabase({
       franchiseRelations: Array.isArray(rawItem.franchiseRelations)
         ? rawItem.franchiseRelations
         : [],
+      franchiseLinks: Array.isArray(rawItem.franchiseLinks)
+        ? rawItem.franchiseLinks
+        : [],
       chronologicalOrder: Number(rawItem.chronologicalOrder) || null,
-      anilistId: rawItem.anilistId || null,
-      malId: rawItem.malId || null,
-      tvmazeId: rawItem.tvmazeId || null,
-      tmdbId: rawItem.tmdbId || null,
+      ids: workWithIds.ids,
+      anilistId: workWithIds.anilistId || null,
+      malId: workWithIds.malId || null,
+      tvmazeId: workWithIds.tvmazeId || null,
+      tmdbId: workWithIds.tmdbId || null,
       tmdbMediaType: rawItem.tmdbMediaType || null,
-      imdbId: String(rawItem.imdbId || '').trim(),
+      imdbId: workWithIds.imdbId || '',
+      belongsToCollection: rawItem.belongsToCollection || null,
+      tmdbStatus: rawItem.tmdbStatus || null,
+      externalRatings,
+      ratingSource: resolvedRatingSource,
       sourceBadge: String(rawItem.sourceBadge || '').trim(),
       mergedSources: Array.isArray(rawItem.mergedSources) ? rawItem.mergedSources : [],
       openAccessUrl: String(rawItem.openAccessUrl || '').trim(),
@@ -304,6 +346,7 @@ export function buildCodiceDatabase({
           : null,
       dropDate: rawItem.dropDate || null,
       coverUrl: rawItem.coverUrl || null,
+      backdropUrl: rawItem.backdropUrl || null,
       coverSources: Array.isArray(rawItem.coverSources)
         ? rawItem.coverSources.filter(Boolean)
         : rawItem.coverUrl
@@ -357,11 +400,17 @@ export function buildCodiceDatabase({
         id: deterministicUuid(`review:${workId}`),
         workId,
         rating: cleanRating,
+        ratingSource: resolvedRatingSource,
         verdict: rawItem.verdict || getVerdictForScore(cleanRating),
         recommended:
           rawItem.recommended !== undefined
             ? Boolean(rawItem.recommended)
-            : Boolean(rawItem.isPlatinum || (cleanRating !== null && cleanRating >= 80)),
+            : Boolean(
+                rawItem.isPlatinum ||
+                  (cleanRating !== null &&
+                    resolvedRatingSource !== 'legacy-default' &&
+                    cleanRating >= 80)
+              ),
         reviewCriteria: rawItem.reviewCriteria || null,
         notes: String(rawItem.notes || ''),
         createdAt,
@@ -438,6 +487,7 @@ export function buildCodiceDatabase({
       reviews,
       quotes_notes,
       journal_entries,
+      episode_evaluations: safeEpisodeEvaluations,
       user_profile: buildDefaultUserProfile(profile),
       follows: Array.isArray(follows) ? follows : [],
       wall_posts: Array.isArray(wallPosts) ? wallPosts : [],
@@ -481,26 +531,42 @@ export function migrateDatabase(rawData) {
         .map((l) => authorMap.get(l.authorId))
         .filter(Boolean)
         .join(', ');
-      return {
+      return applyCanonicalIdsToWork({
         ...w,
         director: w.director || linkedCreators || '',
         rating: review ? review.rating : w.rating ?? null,
+        ratingSource:
+          (review && review.ratingSource) ||
+          w.ratingSource ||
+          classifyLegacyRatingSource({
+            ...w,
+            rating: review ? review.rating : w.rating ?? null,
+            reviewCriteria: review ? review.reviewCriteria : w.reviewCriteria ?? null,
+            notes: review ? review.notes : w.notes || '',
+          }),
         verdict: review ? review.verdict : w.verdict ?? null,
         recommended: review ? Boolean(review.recommended) : Boolean(w.recommended),
         reviewCriteria: review ? review.reviewCriteria : w.reviewCriteria ?? null,
         notes: review ? review.notes : w.notes || '',
         quotes: quotesByWork.get(w.id) || w.quotes || [],
-      };
+      });
     });
+
+    const resolvedProfile = Array.isArray(t.user_profile)
+      ? t.user_profile[0] || null
+      : t.user_profile || null;
 
     return buildCodiceDatabase({
       items: reconstructedItems,
-      profile: t.user_profile || null,
+      profile: resolvedProfile,
       posts: Array.isArray(t.journal_entries) ? t.journal_entries : [],
       streak: rawData.metadata?.streak || null,
       readingSessions: Array.isArray(t.reading_sessions) ? t.reading_sessions : [],
       collections: Array.isArray(rawData.metadata?.collections)
         ? rawData.metadata.collections
+        : [],
+      episodeEvaluations: Array.isArray(t.episode_evaluations)
+        ? t.episode_evaluations
         : [],
       follows: Array.isArray(t.follows) ? t.follows : [],
       wallPosts: Array.isArray(t.wall_posts) ? t.wall_posts : [],
@@ -521,6 +587,9 @@ export function migrateDatabase(rawData) {
     streak: rawData.streak || null,
     readingSessions: Array.isArray(rawData.readingSessions) ? rawData.readingSessions : [],
     collections: Array.isArray(rawData.collections) ? rawData.collections : [],
+    episodeEvaluations: Array.isArray(rawData.episodeEvaluations)
+      ? rawData.episodeEvaluations
+      : [],
   });
 }
 
@@ -560,6 +629,7 @@ export function hydrateAppSnapshotFromDatabase(db) {
     reviews,
     quotes_notes,
     journal_entries,
+    episode_evaluations,
     user_profile,
     follows,
     wall_posts,
@@ -588,16 +658,28 @@ export function hydrateAppSnapshotFromDatabase(db) {
     const review = reviewByWork.get(work.id) || null;
     const workQuotes = quotesByWork.get(work.id) || [];
 
-    return {
+    const rating = review ? review.rating : null;
+    const ratingSource =
+      (review && review.ratingSource) ||
+      work.ratingSource ||
+      classifyLegacyRatingSource({
+        ...work,
+        rating,
+        reviewCriteria: review ? review.reviewCriteria : null,
+        notes: review ? review.notes : '',
+      });
+
+    return applyCanonicalIdsToWork({
       ...work,
       director: work.director || directorNames || '',
-      rating: review ? review.rating : null,
+      rating,
+      ratingSource,
       verdict: review ? review.verdict : null,
       recommended: review ? Boolean(review.recommended) : false,
       reviewCriteria: review ? review.reviewCriteria : null,
       notes: review ? review.notes : '',
       quotes: workQuotes,
-    };
+    });
   });
 
   const posts = journal_entries.map((entry) => ({
@@ -614,6 +696,7 @@ export function hydrateAppSnapshotFromDatabase(db) {
       ? normalized.metadata.collections
       : [],
     readingSessions: reading_sessions,
+    episodeEvaluations: Array.isArray(episode_evaluations) ? episode_evaluations : [],
     follows: follows || [],
     wallPosts: wall_posts || [],
     directMessages: direct_messages || [],

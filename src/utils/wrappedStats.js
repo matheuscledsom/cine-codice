@@ -1,4 +1,5 @@
 import { domainConfig } from '../config/domainConfig.js';
+import { isConfirmedUserRating } from '../lib/ratings.js';
 import { getWatchedEpisodesCount, getWatchedMinutes } from './backlogHelpers.js';
 
 export function buildWrappedSummary({
@@ -62,7 +63,7 @@ export function buildWrappedSummary({
     'Direções diversas';
 
   const rated = completed
-    .filter((i) => typeof i.rating === 'number')
+    .filter((i) => isConfirmedUserRating(i))
     .sort((a, b) => (b.rating || 0) - (a.rating || 0));
 
   const topWork = rated[0] || completed[0] || scopedItems[0] || null;

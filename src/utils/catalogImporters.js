@@ -320,6 +320,7 @@ export function parseCatalogImport({ text = '', existingItems = [] } = {}) {
           currentEpisode,
           rewatchCount: isRewatch ? 1 : 0,
           rating,
+          ratingSource: rating !== null ? 'manual' : null,
           genres,
           tags,
           completedDate,

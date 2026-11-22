@@ -33,6 +33,7 @@ import {
 import {
   getDisplayTitles,
   getTodayLocalISO,
+  getVerdictForScore,
   getVerdictMeta,
   isLoanOverdue,
   normalizeTagsList,
@@ -213,10 +214,29 @@ export function ItemDetailSheet({
             <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
               <StatusBadge statusId={item.status} />
               {typeof item.rating === 'number' && (
-                <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
-                  <Star className="h-3 w-3 fill-current" />
-                  {item.rating}/100
-                </span>
+                item.ratingSource === 'legacy-default' ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateItem(item.id, {
+                        rating: item.rating,
+                        ratingSource: 'manual',
+                        verdict: item.verdict || getVerdictForScore(item.rating),
+                      })
+                    }
+                    title="Nota padrão criada automaticamente na versão anterior — toque para confirmar"
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-full border border-dashed border-line bg-app px-3 py-1 text-[10px] font-medium tabular-nums text-muted opacity-75 transition-opacity hover:border-accent hover:text-ink hover:opacity-100"
+                  >
+                    <Star className="h-3 w-3 text-subtle" strokeWidth={1.5} />
+                    <span>{item.rating}/100 · nota padrão</span>
+                    <span className="font-semibold text-accent">Confirmar</span>
+                  </button>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
+                    <Star className="h-3 w-3 fill-current" strokeWidth={1.5} />
+                    {item.rating}/100
+                  </span>
+                )
               )}
               {Number(item.rewatchCount) > 0 && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-line bg-app px-2 py-0.5 text-[10px] font-medium tabular-nums text-ink">

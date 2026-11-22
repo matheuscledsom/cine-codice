@@ -268,6 +268,17 @@ export function computeExternalPublicAverage100(externalRatings) {
 }
 
 /**
+ * Verifica se a obra possui nota efetiva do usuário (excluindo 'legacy-default' e null).
+ */
+export function isConfirmedUserRating(item) {
+  if (!item || typeof item !== 'object') return false;
+  if (item.ratingSource === 'legacy-default') return false;
+  if (item.rating === null || item.rating === undefined || item.rating === '') return false;
+  const n = Number(item.rating);
+  return Number.isFinite(n) && n >= 0 && n <= 100;
+}
+
+/**
  * Compara a nota do usuário (escala 0–100 do app) com a média normalizada das fontes públicas.
  * Exclui notas 'legacy-default' e retorna null quando faltar nota do usuário ou fontes públicas.
  */

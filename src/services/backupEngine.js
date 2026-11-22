@@ -93,6 +93,9 @@ export function countDatabaseEntities(db, snapshot) {
     readingSessions: Array.isArray(tables.reading_sessions)
       ? tables.reading_sessions.length
       : (snapshot?.readingSessions || []).length,
+    episodeEvaluations: Array.isArray(tables.episode_evaluations)
+      ? tables.episode_evaluations.length
+      : (snapshot?.episodeEvaluations || []).length,
   };
 }
 
@@ -252,6 +255,32 @@ export function mergeSnapshots(currentSnapshot = {}, incomingSnapshot = {}) {
   const latestLastDate =
     [currStreak.lastDate, incStreak.lastDate].filter(Boolean).sort().pop() || null;
 
+  const currEvalList = Array.isArray(currentSnapshot.episodeEvaluations)
+    ? currentSnapshot.episodeEvaluations
+    : [];
+  const incEvalList = Array.isArray(incomingSnapshot.episodeEvaluations)
+    ? incomingSnapshot.episodeEvaluations
+    : [];
+  const evalMap = new Map();
+  const buildEvalKey = (r) =>
+    r?.evalKey || (r?.workId ? `${r.workId}:s${Number(r.season) || 1}:e${Number(r.episode) || 1}` : null);
+  for (const row of currEvalList) {
+    const k = buildEvalKey(row);
+    if (k) evalMap.set(k, row);
+  }
+  for (const row of incEvalList) {
+    const k = buildEvalKey(row);
+    if (!k) continue;
+    const existing = evalMap.get(k);
+    if (!existing) {
+      evalMap.set(k, row);
+    } else {
+      const incT = Date.parse(row.updatedAt || '') || 0;
+      const curT = Date.parse(existing.updatedAt || '') || 0;
+      if (incT > curT) evalMap.set(k, row);
+    }
+  }
+
   return {
     items: Array.from(itemMap.values()),
     posts: mergeById(currentSnapshot.posts, incomingSnapshot.posts),
@@ -263,6 +292,7 @@ export function mergeSnapshots(currentSnapshot = {}, incomingSnapshot = {}) {
       ...(currentSnapshot.collections || []),
       ...(incomingSnapshot.collections || []),
     ]),
+    episodeEvaluations: Array.from(evalMap.values()),
     profile: mergedProfile,
     streak: {
       count: Math.max(Number(currStreak.count) || 0, Number(incStreak.count) || 0),
@@ -349,6 +379,7 @@ export async function saveAutoSnapshot(
           streak: workspaceData.streak || null,
           readingSessions: workspaceData.readingSessions || [],
           collections: workspaceData.collections || [],
+          episodeEvaluations: workspaceData.episodeEvaluations || [],
         });
 
   const snapshot = hydrateAppSnapshotFromDatabase(db);
@@ -412,9 +443,68 @@ export async function saveAutoSnapshot(
       idb.close();
       reject(tx.error || new Error('Erro ao gravar auto-snapshot'));
     };
+    tx.onabort = () => {
+      idb.close();
+      reject(tx.error || new Error('Gravação de auto-snapshot abortada'));
+    };
   });
 
   return { saved: true, deduplicated: false, snapshot: record };
+}
+
+/**
+ * Lê um snapshot gravado de volta diretamente do storage (IndexedDB ou store em testes)
+ * e confirma existência, digest SHA-256 válido e consistência das contagens (Regra extra 1).
+ */
+export async function verifyAutoSnapshotIntegrity(snapshotId, expectedWorkspace = null) {
+  if (!snapshotId) {
+    return { ok: false, reason: 'Identificador do snapshot ausente.' };
+  }
+
+  let found = null;
+  if (!hasIndexedDb()) {
+    found = memorySnapshotStore.get(snapshotId) || null;
+  } else {
+    try {
+      const db = await openSnapshotDb();
+      found = await new Promise((resolve) => {
+        const tx = db.transaction(AUTO_SNAPSHOT_STORE_NAME, 'readonly');
+        const req = tx.objectStore(AUTO_SNAPSHOT_STORE_NAME).get(snapshotId);
+        req.onsuccess = () => {
+          try { db.close(); } catch { /* silencioso */ }
+          resolve(req.result || null);
+        };
+        req.onerror = () => {
+          try { db.close(); } catch { /* silencioso */ }
+          resolve(null);
+        };
+      });
+    } catch {
+      return { ok: false, reason: 'Não foi possível reler o snapshot no IndexedDB.' };
+    }
+  }
+
+  if (!found?.payload) {
+    return { ok: false, reason: 'Snapshot não encontrado ao tentar relê-lo.' };
+  }
+
+  const verified = await inspectBackupPayload(JSON.stringify(found.payload));
+  if (!verified.ok) {
+    return { ok: false, reason: verified.error || 'Payload do snapshot inválido.' };
+  }
+  if (verified.checksumStatus !== 'valid') {
+    return { ok: false, reason: 'Checksum SHA-256 do snapshot divergente.' };
+  }
+  if (expectedWorkspace && Array.isArray(expectedWorkspace.items)) {
+    if (verified.counts.works !== expectedWorkspace.items.length) {
+      return {
+        ok: false,
+        reason: `Contagem divergente no snapshot (${verified.counts.works} vs ${expectedWorkspace.items.length}).`,
+      };
+    }
+  }
+
+  return { ok: true, snapshot: found, verified };
 }
 
 export async function deleteAutoSnapshot(snapshotId) {
@@ -619,6 +709,14 @@ const MIRROR_ITEM_ALLOWED_KEYS = [
   'language',
   'franchiseName',
   'chronologicalOrder',
+  'tmdbMediaType',
+  'tmdbStatus',
+  'belongsToCollection',
+  'ids',
+  'backdropUrl',
+  'externalRatings',
+  'ratingSource',
+  'franchiseLinks',
   'anilistId',
   'malId',
   'tvmazeId',

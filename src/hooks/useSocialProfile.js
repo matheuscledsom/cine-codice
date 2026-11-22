@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { buildPublicProfileLink, domainConfig } from '../config/domainConfig';
+import { migrateFavoriteGenresToObjects } from '../lib/genreCatalog';
+import { normalizeViewerFocusList } from '../lib/migrations';
 import {
-  normalizeFavoriteGenres,
   normalizePreferredCriteria,
 } from '../utils/readerPreferences';
 
@@ -29,6 +30,7 @@ function getDefaultProfile() {
     linkLabel: profile.linkLabel,
     linkUrl: profile.linkUrl,
     age: '',
+    viewerFocus: ['Cinéfilo Curador'],
     readerFocus: 'Cinéfilo Curador',
     annualGoal: 24,
     preferredFormat: 'Streaming',
@@ -36,6 +38,7 @@ function getDefaultProfile() {
     preferredCriterion: 'Roteiro & Ritmo',
     preferredAtmosphere: 'Tinta OLED',
     favoriteGenres: [],
+    profileSchemaVersion: 3,
     privacyLevel: 'public',
     allowWallPosts: true,
     allowComments: true,
@@ -55,16 +58,22 @@ function normalizeProfileObject(rawProfile, fallback) {
     parsed.preferredCriterion ?? parsed.preferred_criterion,
     base.preferredCriteria
   );
+  const viewerFocus = normalizeViewerFocusList(
+    parsed.viewerFocus ?? parsed.viewer_focus,
+    parsed.readerFocus ?? parsed.reader_focus ?? base.readerFocus
+  );
   const merged = {
     ...base,
     ...parsed,
+    viewerFocus,
+    readerFocus: viewerFocus[0] || base.readerFocus,
     annualGoal: Math.max(
       1,
       Number(parsed.annualGoal ?? parsed.annual_goal) || base.annualGoal
     ),
     preferredCriteria,
     preferredCriterion: preferredCriteria.join(', '),
-    favoriteGenres: normalizeFavoriteGenres(
+    favoriteGenres: migrateFavoriteGenresToObjects(
       parsed.favoriteGenres ?? parsed.favorite_genres ?? base.favoriteGenres
     ),
     privacyLevel: normalizePrivacyLevel(
@@ -143,25 +152,27 @@ function loadPosts() {
   }
 }
 
-export function useSocialProfile() {
+export function useSocialProfile({ migrationLocked = false } = {}) {
   const [profile, setProfile] = useState(loadProfile);
   const [posts, setPosts] = useState(loadPosts);
 
   useEffect(() => {
+    if (migrationLocked) return;
     try {
       localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
     } catch {
       // Ignora erro caso quota de storage esteja cheia
     }
-  }, [profile]);
+  }, [profile, migrationLocked]);
 
   useEffect(() => {
+    if (migrationLocked) return;
     try {
       localStorage.setItem(POSTS_KEY, JSON.stringify(posts));
     } catch {
       // Ignora erro caso quota de storage esteja cheia
     }
-  }, [posts]);
+  }, [posts, migrationLocked]);
 
   const updateProfile = useCallback((updates) => {
     setProfile((prev) => {
@@ -203,8 +214,16 @@ export function useSocialProfile() {
         next.preferredCriteria = normalizedCriteria;
         next.preferredCriterion = normalizedCriteria.join(', ');
       }
+      if (updates.viewerFocus !== undefined || updates.readerFocus !== undefined) {
+        const nextFocus = normalizeViewerFocusList(
+          updates.viewerFocus ?? updates.viewer_focus,
+          updates.readerFocus ?? updates.reader_focus ?? prev.readerFocus
+        );
+        next.viewerFocus = nextFocus;
+        next.readerFocus = nextFocus[0] || 'Cinéfilo Curador';
+      }
       if (updates.favoriteGenres !== undefined) {
-        next.favoriteGenres = normalizeFavoriteGenres(updates.favoriteGenres);
+        next.favoriteGenres = migrateFavoriteGenresToObjects(updates.favoriteGenres);
       }
       if (updates.privacyLevel !== undefined || updates.privacy_level !== undefined) {
         next.privacyLevel = normalizePrivacyLevel(

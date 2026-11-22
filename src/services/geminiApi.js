@@ -783,7 +783,11 @@ export async function runCollectionOracle(
 
 Humor / Objetivo atual do leitor: ${mood || 'Surpreenda-me com a melhor escolha do meu acervo'}
 Perfil do leitor: ${readerFocus || 'Geral'} | Critério valorizado: ${preferredCriterion || 'Equilibrado'}
-Gêneros favoritos do perfil: ${favoriteGenres.length ? favoriteGenres.join(', ') : 'Diversos'}
+Gêneros favoritos do perfil: ${
+        Array.isArray(favoriteGenres) && favoriteGenres.length
+          ? favoriteGenres.map((g) => (typeof g === 'string' ? g : g?.label || '')).filter(Boolean).join(', ')
+          : 'Diversos'
+      }
 
 Obras em Na Estante (escolha SOMENTE dentre estes IDs):
 ${JSON.stringify(shelfSummary)}

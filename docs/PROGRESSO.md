@@ -1,8 +1,8 @@
 # Progresso — Cine Códice v1.1.0 · Lumière
 
 **Branch ativa:** `feat/v1.1.0-lumiere`
-**Última fase concluída:** `1A`
-**Próxima fase:** `1B` (Dados e migração)
+**Última fase concluída:** `1B`
+**Próxima fase:** `2` (Onboarding e Configurações)
 
 ## Linha do Tempo das Fases
 - [x] **Fase 0 — Auditoria (somente leitura)** — concluída na `main` sem alterações.
@@ -12,7 +12,13 @@
   - Atualizado [`public/_headers`](../public/_headers) liberando `www.omdbapi.com` e hosts de imagem (`image.tmdb.org`, `s4.anilist.co`, `cdn.myanimelist.net`, `static.tvmaze.com`, `m.media-amazon.com`, `img.omdbapi.com`).
   - Criada suíte [`tests/fase1a-api.test.mjs`](../tests/fase1a-api.test.mjs) (`24/24` testes passando no total, sem rede).
   - Verificações extras da Fase 1A: remoção de `apikey`/`api_key` antes de gerar chaves de cache/deduplicação, mascaramento de chaves em mensagens de erro e proteção completa contra `IndexedDB` bloqueado (modo privado / `SecurityError` / cota cheia).
-- [ ] **Fase 1B — Dados, migração, chaves OMDb e Sobre/Créditos**
+- [x] **Fase 1B — Dados, migração, chaves OMDb e Sobre/Créditos** — concluída na branch `feat/v1.1.0-lumiere`.
+  - Criados [`src/lib/genreCatalog.js`](../src/lib/genreCatalog.js), [`src/lib/migrations.js`](../src/lib/migrations.js), [`src/lib/emojiCheck.js`](../src/lib/emojiCheck.js) e [`src/components/AboutCreditsModal.jsx`](../src/components/AboutCreditsModal.jsx).
+  - Eliminada criação automática de `rating: 80` ao concluir ou cadastrar obras em [`src/hooks/useBacklog.js`](../src/hooks/useBacklog.js) e [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx); notas herdadas de v1.0.0 com `80` sem critérios/resenha recebem `ratingSource: 'legacy-default'` e confirmação em 1 toque em [`src/components/ItemDetailSheet.jsx`](../src/components/ItemDetailSheet.jsx) / [`src/components/TactileStatusFields.jsx`](../src/components/TactileStatusFields.jsx), ficando fora de médias ([`src/screens/StatsScreen.jsx`](../src/screens/StatsScreen.jsx), [`src/utils/wrappedStats.js`](../src/utils/wrappedStats.js)) e recomendações ([`src/services/recommendationEngine.js`](../src/services/recommendationEngine.js), [`src/services/aiProvider.js`](../src/services/aiProvider.js)).
+  - Migração atômica no boot ([`src/App.jsx`](../src/App.jsx), [`src/services/backupEngine.js`](../src/services/backupEngine.js)) com trava prévia de persistência: grava snapshot automático, lê de volta para confirmar checksum SHA-256 e contagem, aborta mantendo dados antigos intactos se falhar e realiza commit "tudo ou nada" com rollback em erro de gravação.
+  - Esquema [`src/services/codiceDatabase.js`](../src/services/codiceDatabase.js) atualizado para `1.1-cine-codice` com ida-e-volta completa de `episodeEvaluations`, `ids`, `ratingSource`, `viewerFocus`, `favoriteGenres` em objetos e `franchiseLinks`.
+  - Configurada chave OMDb + contador diário (`0/1000`) em [`src/hooks/useAiConfig.js`](../src/hooks/useAiConfig.js) e [`src/components/AiProvidersPanel.jsx`](../src/components/AiProvidersPanel.jsx); modal **Sobre / Créditos & Fontes** com atribuições obrigatórias (TMDB, OMDb, AniList, Jikan, TVmaze CC BY-SA 4.0, Wikidata/IMDb/Archive e nota futura de streaming) integrado em [`src/components/ProfileSettingsDrawer.jsx`](../src/components/ProfileSettingsDrawer.jsx) e [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx).
+  - Alinhamento da Regra R1 (`\p{Extended_Pictographic}` com exceções explícitas `© ® ™` + bloqueio de texto `★ ✓ ✕`) em [`scripts/validate-design.mjs`](../scripts/validate-design.mjs) e [`tests/cine-codice.test.mjs`](../tests/cine-codice.test.mjs), além de suíte [`tests/fase1b-migration.test.mjs`](../tests/fase1b-migration.test.mjs).
 - [ ] **Fase 2 — Onboarding e Configurações**
 - [ ] **Fase 3 — Notas externas e backdrops**
 - [ ] **Fase 4 — Episódios, Obra e Franquia**
@@ -33,3 +39,9 @@
 - **D4:** Fila por provedor e limites em `src/api/limits.js`, deduplicação *in-flight*, retry com `Retry-After` em HTTP `429`, batching GraphQL com aliases na AniList, e cache persistente em `IndexedDB` (`ratings`, `episodes`, `relations`, `search`) + armazenamento durável para `episodeEvaluations`.
 - **D5:** Escala 0–100 preservada no app; `src/lib/ratings.js` normaliza notas externas para 0–100 apenas para comparação e cálculo de médias, nunca inventando `"N/A"` nem valores ausentes.
 - **Social & Legado:** Flag `SOCIAL_ENABLED = false` em `src/config/` (Fase 6) e marcação `ratingSource: 'legacy-default'` (Fase 1B) sem apagar dados existentes.
+
+## Requisito Obrigatório da Fase 4 (Regra Extra 3)
+- Salvar uma avaliação de episódio nunca pode falhar em silêncio. Caso o `IndexedDB` esteja indisponível ou ocorra estouro de cota (`QuotaExceededError`), a interface deve avisar explicitamente o usuário que a avaliação **não foi salva de forma persistente** — a cópia mantida em memória vale apenas como estado provisório e isso deve estar claramente indicado na tela.
+
+## Pendências Planejadas para v1.2.0 (Regra Extra 4)
+- Endurecer o cabeçalho CSP (`Content-Security-Policy`) em [`public/_headers`](../public/_headers): substituir o curinga amplo `https:` em `img-src` por hosts estritamente necessários e remover domínios herdados de Supabase e de provedores de IA que não sejam mais utilizados.

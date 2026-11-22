@@ -898,11 +898,16 @@ export async function runMultiCollectionOracle({
       genres: (item.genres || []).slice(0, 3),
     }));
 
+  const genreLabels = (Array.isArray(favoriteGenres) ? favoriteGenres : [])
+    .map((g) => (typeof g === 'string' ? g : g?.label || ''))
+    .map((s) => String(s || '').trim())
+    .filter(Boolean);
+
   const system =
     'Você é o Curador de Sessões da Cinemateca. Recomende exclusivamente obras presentes em Quero Ver. Responda em JSON estrito em português do Brasil.';
   const input = `Clima desejado: ${truncateAiText(mood || 'Melhor escolha da fila', 200)}
 Perfil: ${readerFocus || 'Geral'} | Critério: ${preferredCriterion || 'Equilibrado'}
-Gêneros favoritos: ${favoriteGenres.slice(0, 6).join(', ') || 'Diversos'}
+Gêneros favoritos: ${genreLabels.slice(0, 6).join(', ') || 'Diversos'}
 Quero Ver: ${JSON.stringify(shelfSummary)}
 Concluídas bem avaliadas: ${JSON.stringify(tasteHistory)}
 Retorne JSON estrito:
