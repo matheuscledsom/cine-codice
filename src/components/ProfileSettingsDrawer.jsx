@@ -44,10 +44,14 @@ import {
 import {
   CRITERION_OPTIONS,
   FOCUS_OPTIONS_META,
-  GENRE_OPTIONS,
-  normalizeFavoriteGenres,
+  getOrderedGenreGroups,
+  getStructuredGenresByGroup,
+  normalizeFavoriteGenreObjects,
   normalizePreferredCriteria,
+  normalizeViewerFocusList,
   toggleCriterionInList,
+  toggleStructuredGenre,
+  toggleViewerFocusInList,
 } from '../utils/readerPreferences';
 import { PastelPaletteCustomizer } from './ThemeModal';
 
@@ -167,8 +171,16 @@ export function ProfileSettingsDrawer({
     profile?.preferredCriteria ?? profile?.preferred_criteria,
     profile?.preferredCriterion ?? profile?.preferred_criterion
   );
-  const selectedGenres = normalizeFavoriteGenres(profile?.favoriteGenres);
-  const selectedFocus = profile?.readerFocus || 'Cinéfilo Curador';
+  const selectedGenreObjects = normalizeFavoriteGenreObjects(
+    profile?.favoriteGenres ?? profile?.favorite_genres
+  );
+  const selectedGenreIds = new Set(selectedGenreObjects.map((g) => g.id));
+  const selectedFocusList = normalizeViewerFocusList(
+    profile?.viewerFocus ?? profile?.viewer_focus,
+    profile?.readerFocus ?? profile?.reader_focus
+  );
+  const orderedGenreGroups = getOrderedGenreGroups(selectedFocusList);
+  const outrosGenreObjects = selectedGenreObjects.filter((g) => g.group === 'outros');
   const readerDna = normalizeReaderDna(profile?.readerDna ?? profile?.reader_dna);
 
   const selectTab = (tabId) => {
@@ -197,10 +209,18 @@ export function ProfileSettingsDrawer({
     });
   };
 
-  const handleToggleGenre = (genre) => {
-    const next = selectedGenres.includes(genre)
-      ? selectedGenres.filter((g) => g !== genre)
-      : [...selectedGenres, genre];
+  const handleToggleFocus = (focusId) => {
+    const nextFocus = toggleViewerFocusInList(selectedFocusList, focusId, {
+      allowEmpty: false,
+    });
+    onUpdateProfile?.({
+      viewerFocus: nextFocus,
+      readerFocus: nextFocus[0] || 'Cinéfilo Curador',
+    });
+  };
+
+  const handleToggleGenre = (entry) => {
+    const next = toggleStructuredGenre(selectedGenreObjects, entry);
     onUpdateProfile?.({ favoriteGenres: next });
   };
 
@@ -677,18 +697,26 @@ export function ProfileSettingsDrawer({
                   Preferências de Sessão &amp; Gêneros
                 </h3>
                 <div>
-                  <p className="mb-1.5 text-[11px] font-medium text-muted">
-                    Foco principal
-                  </p>
+                  <div className="mb-1.5 flex items-baseline justify-between gap-2">
+                    <p className="text-[11px] font-medium text-muted">
+                      Focos de visualização
+                    </p>
+                    <span
+                      className="text-[10px]"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      1 ou mais
+                    </span>
+                  </div>
                   <div className="flex flex-wrap gap-1.5">
                     {FOCUS_OPTIONS_META.map((opt) => {
-                      const isSelected = selectedFocus === opt.id;
+                      const isSelected = selectedFocusList.includes(opt.id);
                       return (
                         <button
                           key={opt.id}
                           type="button"
                           aria-pressed={isSelected}
-                          onClick={() => onUpdateProfile?.({ readerFocus: opt.id })}
+                          onClick={() => handleToggleFocus(opt.id)}
                           className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-left text-[11px] font-medium transition-colors ${
                             isSelected
                               ? 'border-accent bg-accent/15 text-ink'
@@ -744,34 +772,95 @@ export function ProfileSettingsDrawer({
                   </div>
                 </div>
 
-                <div>
-                  <p className="mb-1.5 text-[11px] font-medium text-muted">
-                    Gêneros Favoritos ({selectedGenres.length})
+                <div className="space-y-3">
+                  <p className="text-[11px] font-medium tabular-nums text-muted">
+                    Gêneros Favoritos ({selectedGenreObjects.length})
                   </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {GENRE_OPTIONS.map((genre) => {
-                      const isSelected = selectedGenres.includes(genre);
-                      return (
-                        <button
-                          key={genre}
-                          type="button"
-                          aria-pressed={isSelected}
-                          onClick={() => handleToggleGenre(genre)}
-                          className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                            isSelected
-                              ? 'border-accent bg-accent/15 text-ink'
-                              : 'border-line bg-app hover:text-ink'
-                          }`}
-                          style={!isSelected ? { color: 'var(--text-secondary)' } : undefined}
-                        >
-                          {isSelected && (
+                  {orderedGenreGroups.map((group) => {
+                    const { genres, tags } = getStructuredGenresByGroup(group.id);
+                    return (
+                      <div key={group.id} className="space-y-1.5 rounded-[4px] border border-line bg-app p-2.5">
+                        <p className="text-[11px] font-semibold text-ink">{group.label}</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {genres.map((entry) => {
+                            const isSelected = selectedGenreIds.has(entry.id);
+                            return (
+                              <button
+                                key={entry.id}
+                                type="button"
+                                aria-pressed={isSelected}
+                                onClick={() => handleToggleGenre(entry)}
+                                className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                                  isSelected
+                                    ? 'border-accent bg-accent/15 text-ink'
+                                    : 'border-line bg-card hover:text-ink'
+                                }`}
+                                style={!isSelected ? { color: 'var(--text-secondary)' } : undefined}
+                              >
+                                {isSelected && (
+                                  <Check className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.5} />
+                                )}
+                                <span>{entry.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {tags.length > 0 && (
+                          <div className="space-y-1 pt-1.5 border-t border-line/60">
+                            <p className="text-[10px] font-medium uppercase tracking-wider text-subtle">
+                              Tags de Anime (Demografias &amp; Temas)
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {tags.map((entry) => {
+                                const isSelected = selectedGenreIds.has(entry.id);
+                                return (
+                                  <button
+                                    key={entry.id}
+                                    type="button"
+                                    aria-pressed={isSelected}
+                                    onClick={() => handleToggleGenre(entry)}
+                                    className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                                      isSelected
+                                        ? 'border-accent bg-accent/15 text-ink'
+                                        : 'border-line bg-card hover:text-ink'
+                                    }`}
+                                    style={!isSelected ? { color: 'var(--text-secondary)' } : undefined}
+                                  >
+                                    {isSelected && (
+                                      <Check className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.5} />
+                                    )}
+                                    <span>{entry.label}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {outrosGenreObjects.length > 0 && (
+                    <div className="space-y-1.5 rounded-[4px] border border-dashed border-line bg-app p-2.5">
+                      <p className="text-[11px] font-semibold text-muted">
+                        Outros (preservados do perfil anterior)
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {outrosGenreObjects.map((entry) => (
+                          <button
+                            key={entry.id}
+                            type="button"
+                            aria-pressed={true}
+                            onClick={() => handleToggleGenre(entry)}
+                            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent/15 px-2.5 py-1.5 text-[11px] font-medium text-ink"
+                          >
                             <Check className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.5} />
-                          )}
-                          <span>{genre}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                            <span>{entry.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
             </div>

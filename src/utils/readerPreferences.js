@@ -1,7 +1,12 @@
 import {
   extractFavoriteGenreLabels,
+  getOrderedGenreGroups,
+  getStructuredGenresByGroup,
   migrateFavoriteGenresToObjects,
+  toggleStructuredGenre,
+  toggleViewerFocusInList,
 } from '../lib/genreCatalog.js';
+import { normalizeViewerFocusList } from '../lib/migrations.js';
 
 export const FOCUS_OPTIONS_META = [
   { id: 'Cinéfilo Curador', iconName: 'Film' },
@@ -91,6 +96,14 @@ export function normalizeFavoriteGenres(rawGenres) {
 export function normalizeFavoriteGenreObjects(rawGenres) {
   return migrateFavoriteGenresToObjects(rawGenres);
 }
+
+export {
+  getOrderedGenreGroups,
+  getStructuredGenresByGroup,
+  normalizeViewerFocusList,
+  toggleStructuredGenre,
+  toggleViewerFocusInList,
+};
 
 export function toggleCriterionInList(currentList, criterion) {
   const list = normalizePreferredCriteria(currentList, null, DEFAULT_PREFERRED_CRITERIA);

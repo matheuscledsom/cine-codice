@@ -744,6 +744,7 @@ export async function runCollectionOracle(
     queuedItems = [],
     completedItems = [],
     favoriteGenres = [],
+    viewerFocus = [],
     readerFocus = '',
     preferredCriterion = '',
   },
@@ -776,13 +777,19 @@ export async function runCollectionOracle(
       atmosphere: item.atmosphere || [],
     }));
 
+  const focusLabels = (Array.isArray(viewerFocus) ? viewerFocus : [])
+    .map((f) => String(f || '').trim())
+    .filter(Boolean);
+  const focusSummary =
+    focusLabels.length > 0 ? focusLabels.join(', ') : readerFocus || 'Geral';
+
   const systemInstruction =
     'Você é o Oráculo do Acervo de um aplicativo literário. Recomende exclusivamente obras presentes na lista "Na Estante" fornecida pelo usuário. Não invente títulos fora do acervo. Responda em JSON estrito e em português do Brasil.';
 
   const prompt = `Cruze o humor/objetivo atual do leitor com as obras em "Na Estante", suas preferências do perfil e o histórico de notas das obras "Concluídas" para indicar a próxima leitura ideal.
 
 Humor / Objetivo atual do leitor: ${mood || 'Surpreenda-me com a melhor escolha do meu acervo'}
-Perfil do leitor: ${readerFocus || 'Geral'} | Critério valorizado: ${preferredCriterion || 'Equilibrado'}
+Perfil do leitor: ${focusSummary} | Critério valorizado: ${preferredCriterion || 'Equilibrado'}
 Gêneros favoritos do perfil: ${
         Array.isArray(favoriteGenres) && favoriteGenres.length
           ? favoriteGenres.map((g) => (typeof g === 'string' ? g : g?.label || '')).filter(Boolean).join(', ')

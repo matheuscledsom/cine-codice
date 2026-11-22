@@ -1,9 +1,7 @@
 import { ArrowRight, Compass, Film, KeyRound, Sparkles } from 'lucide-react';
 import { useState } from 'react';
-import {
-  AI_PROVIDER_META,
-  runMultiCollectionOracle,
-} from '../services/aiProvider';
+import { AI_PROVIDER_META, runMultiCollectionOracle } from '../services/aiProvider';
+import { normalizeViewerFocusList } from '../lib/migrations';
 import { generateOfflineRecommendations } from '../services/recommendationEngine';
 import { getDisplayTitles } from '../utils/backlogHelpers';
 import { formatPreferredCriteriaText } from '../utils/readerPreferences';
@@ -71,12 +69,17 @@ export function OracleWidget({
 
     setIsLoading(true);
     try {
+      const resolvedFocusList = normalizeViewerFocusList(
+        profile?.viewerFocus ?? profile?.viewer_focus,
+        profile?.readerFocus ?? profile?.reader_focus
+      );
       const recommendation = await runMultiCollectionOracle({
         mood: moodQuery,
         queuedItems,
         completedItems,
         favoriteGenres: profile?.favoriteGenres || [],
-        readerFocus: profile?.readerFocus || '',
+        viewerFocus: resolvedFocusList,
+        readerFocus: resolvedFocusList[0] || '',
         preferredCriterion: formatPreferredCriteriaText(profile),
         overrideKeys: geminiKey ? { gemini: geminiKey } : null,
       });

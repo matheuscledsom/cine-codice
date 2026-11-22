@@ -12,6 +12,19 @@ export const GENRE_GROUPS = Object.freeze({
   outros: 'outros',
 });
 
+export const GENRE_GROUPS_META = Object.freeze([
+  { id: 'cinema', label: 'Cinema (Filmes)' },
+  { id: 'series', label: 'Séries' },
+  { id: 'animes', label: 'Animes' },
+]);
+
+export const FOCUS_GROUP_PRIORITY = Object.freeze({
+  'Cinéfilo Curador': 'cinema',
+  'Pesquisador de Cinema': 'cinema',
+  'Maratonista de Séries': 'series',
+  'Curador de Animes': 'animes',
+});
+
 export const STRUCTURED_GENRE_CATALOG = Object.freeze([
   // Cinema (Filmes)
   { group: 'cinema', id: 'cinema-drama', label: 'Drama', tmdbGenreId: 18 },
@@ -177,4 +190,100 @@ export function migrateFavoriteGenresToObjects(rawGenres) {
 export function extractFavoriteGenreLabels(rawGenres) {
   const objs = migrateFavoriteGenresToObjects(rawGenres);
   return Array.from(new Set(objs.map((g) => g.label).filter(Boolean)));
+}
+
+/**
+ * Ordena os 3 grupos fixos (`Cinema (Filmes)`, `Séries`, `Animes`) colocando
+ * primeiro os grupos correspondentes aos focos escolhidos pelo espectador.
+ */
+export function getOrderedGenreGroups(viewerFocus = []) {
+  const focusList = Array.isArray(viewerFocus)
+    ? viewerFocus
+    : typeof viewerFocus === 'string' && viewerFocus.trim()
+      ? [viewerFocus.trim()]
+      : [];
+
+  const prioritizedIds = [];
+  for (const focus of focusList) {
+    const groupId = FOCUS_GROUP_PRIORITY[String(focus || '').trim()];
+    if (groupId && !prioritizedIds.includes(groupId)) {
+      prioritizedIds.push(groupId);
+    }
+  }
+
+  for (const meta of GENRE_GROUPS_META) {
+    if (!prioritizedIds.includes(meta.id)) {
+      prioritizedIds.push(meta.id);
+    }
+  }
+
+  return prioritizedIds
+    .map((id) => GENRE_GROUPS_META.find((m) => m.id === id))
+    .filter(Boolean);
+}
+
+/**
+ * Retorna os gêneros estruturados de um grupo fixo (`cinema` | `series` | `animes`).
+ * Em `animes`, separa `genres` (kind: 'genre') de `tags` (kind: 'tag', exclusivas de Animes).
+ */
+export function getStructuredGenresByGroup(groupId) {
+  const entries = STRUCTURED_GENRE_CATALOG.filter((entry) => entry.group === groupId);
+  if (groupId === 'animes') {
+    return {
+      genres: entries.filter((entry) => entry.kind !== 'tag'),
+      tags: entries.filter((entry) => entry.kind === 'tag'),
+    };
+  }
+  return {
+    genres: entries,
+    tags: [],
+  };
+}
+
+/**
+ * Alterna um foco na lista de `viewerFocus`.
+ * Em onboarding (`allowEmpty = true`), permite ficar vazio para acionar a trava acessível do botão Avançar.
+ */
+export function toggleViewerFocusInList(
+  currentList = [],
+  focusId,
+  { allowEmpty = true } = {}
+) {
+  const cleanId = String(focusId || '').trim();
+  const normalized = Array.from(
+    new Set(
+      (Array.isArray(currentList) ? currentList : [])
+        .map((v) => String(v || '').trim())
+        .filter(Boolean)
+    )
+  );
+  if (!cleanId) return normalized;
+
+  if (normalized.includes(cleanId)) {
+    if (!allowEmpty && normalized.length <= 1) {
+      return normalized;
+    }
+    return normalized.filter((item) => item !== cleanId);
+  }
+  return [...normalized, cleanId];
+}
+
+/**
+ * Alterna um gênero estruturado `{ group, id, label, ... }` na lista mantendo
+ * demais itens e preservando gêneros migrados em `group: 'outros'`.
+ */
+export function toggleStructuredGenre(currentList = [], targetEntry) {
+  const objs = migrateFavoriteGenresToObjects(currentList);
+  const candidate =
+    targetEntry && typeof targetEntry === 'object'
+      ? sanitizeGenreEntryObject(targetEntry)
+      : migrateFavoriteGenresToObjects([targetEntry])[0] || null;
+
+  if (!candidate) return objs;
+
+  const exists = objs.some((entry) => entry.id === candidate.id);
+  if (exists) {
+    return objs.filter((entry) => entry.id !== candidate.id);
+  }
+  return [...objs, candidate];
 }

@@ -9,9 +9,8 @@ import {
   Plus,
   Sparkles,
   Star,
-  Target,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { BackupReminderBanner } from '../components/BackupReminderBanner';
 import { CoverArt } from '../components/CoverArt';
 import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
@@ -102,25 +101,6 @@ export function HomeScreen({
       ).length,
     [backlogItems, currentYear]
   );
-
-  const annualGoal = Math.max(1, Number(profile?.annualGoal) || 24);
-  const annualGoalPct = Math.min(100, Math.round((completedYearCount / annualGoal) * 100));
-
-  const [animatedGoalPct, setAnimatedGoalPct] = useState(0);
-
-  useEffect(() => {
-    const prefersReduced =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    if (prefersReduced) {
-      setAnimatedGoalPct(annualGoalPct);
-      return undefined;
-    }
-    const raf = window.requestAnimationFrame(() => {
-      setAnimatedGoalPct(annualGoalPct);
-    });
-    return () => window.cancelAnimationFrame(raf);
-  }, [annualGoalPct]);
 
   const featuredHub = continueHub.featured;
   const otherHubEntries = continueHub.others;
@@ -496,66 +476,27 @@ export function HomeScreen({
       ) : (
         <>
           {!calmMode && (
-            <>
-              <section aria-label="Resumo rápido" className="grid grid-cols-3 gap-2.5 sm:gap-3">
-                {summaryCards.map((card) => (
-                  <div
-                    key={card.id}
-                    className={`rounded-[6px] border bg-card p-3.5 sm:p-4 transition-colors ${
-                      card.highlight ? 'border-accent/40' : 'border-line'
+            <section aria-label="Resumo rápido" className="grid grid-cols-3 gap-2.5 sm:gap-3">
+              {summaryCards.map((card) => (
+                <div
+                  key={card.id}
+                  className={`rounded-[6px] border bg-card p-3.5 sm:p-4 transition-colors ${
+                    card.highlight ? 'border-accent/40' : 'border-line'
+                  }`}
+                >
+                  <span
+                    className={`block text-2xl font-semibold tabular-nums tracking-tight ${
+                      card.highlight ? 'text-accent' : 'text-ink'
                     }`}
                   >
-                    <span
-                      className={`block text-2xl font-semibold tabular-nums tracking-tight ${
-                        card.highlight ? 'text-accent' : 'text-ink'
-                      }`}
-                    >
-                      {card.value}
-                    </span>
-                    <span className="mt-1 block text-[11px] leading-tight text-muted">
-                      {card.label}
-                    </span>
-                  </div>
-                ))}
-              </section>
-
-              <section
-                aria-label={ui.home.annualGoalTitle}
-                className="rounded-[6px] border border-line bg-card p-4"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Target className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
-                    <h2 className="text-xs font-semibold tracking-tight text-ink">
-                      {ui.home.annualGoalTitle}
-                    </h2>
-                  </div>
-                  <div className="flex items-baseline gap-2 text-xs tabular-nums">
-                    <span className="font-medium text-muted">
-                      <strong className="font-semibold text-ink">{completedYearCount}</strong> / {annualGoal}
-                    </span>
-                    <span className="font-semibold text-accent">{annualGoalPct}%</span>
-                  </div>
+                    {card.value}
+                  </span>
+                  <span className="mt-1 block text-[11px] leading-tight text-muted">
+                    {card.label}
+                  </span>
                 </div>
-
-                <div
-                  role="progressbar"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={annualGoalPct}
-                  aria-label={`Progresso da Meta Anual: ${annualGoalPct}%`}
-                  className="mt-3 h-[4px] w-full overflow-hidden rounded-[2px] bg-line"
-                >
-                  <div
-                    className="codice-goal-fill h-full"
-                    style={{
-                      width: `${animatedGoalPct}%`,
-                      backgroundColor: 'var(--accent-color)',
-                    }}
-                  />
-                </div>
-              </section>
-            </>
+              ))}
+            </section>
           )}
 
           {/* Sagas & Universos em Andamento */}

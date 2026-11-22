@@ -1,8 +1,8 @@
 # Progresso — Cine Códice v1.1.0 · Lumière
 
 **Branch ativa:** `feat/v1.1.0-lumiere`
-**Última fase concluída:** `1B`
-**Próxima fase:** `2` (Onboarding e Configurações)
+**Última fase concluída:** `2`
+**Próxima fase:** `3` (Notas externas e backdrops)
 
 ## Linha do Tempo das Fases
 - [x] **Fase 0 — Auditoria (somente leitura)** — concluída na `main` sem alterações.
@@ -19,7 +19,12 @@
   - Esquema [`src/services/codiceDatabase.js`](../src/services/codiceDatabase.js) atualizado para `1.1-cine-codice` com ida-e-volta completa de `episodeEvaluations`, `ids`, `ratingSource`, `viewerFocus`, `favoriteGenres` em objetos e `franchiseLinks`.
   - Configurada chave OMDb + contador diário (`0/1000`) em [`src/hooks/useAiConfig.js`](../src/hooks/useAiConfig.js) e [`src/components/AiProvidersPanel.jsx`](../src/components/AiProvidersPanel.jsx); modal **Sobre / Créditos & Fontes** com atribuições obrigatórias (TMDB, OMDb, AniList, Jikan, TVmaze CC BY-SA 4.0, Wikidata/IMDb/Archive e nota futura de streaming) integrado em [`src/components/ProfileSettingsDrawer.jsx`](../src/components/ProfileSettingsDrawer.jsx) e [`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx).
   - Alinhamento da Regra R1 (`\p{Extended_Pictographic}` com exceções explícitas `© ® ™` + bloqueio de texto `★ ✓ ✕`) em [`scripts/validate-design.mjs`](../scripts/validate-design.mjs) e [`tests/cine-codice.test.mjs`](../tests/cine-codice.test.mjs), além de suíte [`tests/fase1b-migration.test.mjs`](../tests/fase1b-migration.test.mjs).
-- [ ] **Fase 2 — Onboarding e Configurações**
+- [x] **Fase 2 — Onboarding e Configurações** — concluída na branch `feat/v1.1.0-lumiere`.
+  - Atualizado [`src/components/OnboardingFlow.jsx`](../src/components/OnboardingFlow.jsx) mantendo intactas as etapas 1, 4 (Gemini) e 5: Etapa 2 com seleção múltipla em `"Qual é o seu foco?"` (`viewerFocus`, mínimo 1 com aviso acessível e botão Avançar/Pular bloqueados se vazio), mantendo critérios e atmosfera ao vivo, e removendo `"Meta anual de obras"` e `"Onde você mais assiste"`.
+  - Etapa 3 reestruturada em 3 grupos fixos (`Cinema (Filmes)`, `Séries`, `Animes`) ordenados pelos focos selecionados ([`src/lib/genreCatalog.js`](../src/lib/genreCatalog.js)), separando em **Animes** gêneros (`genre`) e tags exclusivas (`tag`: `Shonen`, `Seinen`, `Isekai`, `Mecha`), salvando objetos estruturados `{ group, id, label, tmdbGenreId?, anilistKey? }` e preservando gêneros migrados em `group: 'outros'`.
+  - Removido o bloco de Meta Anual de [`src/screens/HomeScreen.jsx`](../src/screens/HomeScreen.jsx) e mantidos `annualGoal`/`preferredFormat` salvos no perfil sem leitura na interface.
+  - Atualizados [`src/components/ProfileSettingsDrawer.jsx`](../src/components/ProfileSettingsDrawer.jsx), [`src/services/recommendationEngine.js`](../src/services/recommendationEngine.js), [`src/components/OracleWidget.jsx`](../src/components/OracleWidget.jsx), [`src/services/aiProvider.js`](../src/services/aiProvider.js) e [`src/services/geminiApi.js`](../src/services/geminiApi.js) para ler `viewerFocus` (mantendo `readerFocus` derivado para legados) e gêneros estruturados.
+  - Criada suíte [`tests/fase2-onboarding.test.mjs`](../tests/fase2-onboarding.test.mjs).
 - [ ] **Fase 3 — Notas externas e backdrops**
 - [ ] **Fase 4 — Episódios, Obra e Franquia**
 - [ ] **Fase 5 — Home**
