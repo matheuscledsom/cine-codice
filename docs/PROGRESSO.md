@@ -1,8 +1,8 @@
 # Progresso — Cine Códice v1.1.0 · Lumière
 
 **Branch ativa:** `feat/v1.1.0-lumiere`
-**Última fase concluída:** `4`
-**Próxima fase:** `5` (Home)
+**Última fase concluída:** `5`
+**Próxima fase:** `6` (Perfil, social oculto e resíduos de livro)
 
 ## Linha do Tempo das Fases
 - [x] **Fase 0 — Auditoria (somente leitura)** — concluída na `main` sem alterações.
@@ -38,7 +38,11 @@
   - Estendido [`src/services/cinemaApi.js`](../src/services/cinemaApi.js) (`fetchTmdbSeasonDetails`, `fetchTmdbEpisodeGroups`, `fetchTmdbEpisodeGroupDetails`, `fetchOmdbSeasonEpisodes`, dados ricos do TVmaze) e [`src/services/franchiseEngine.js`](../src/services/franchiseEngine.js) (agrupamento por `belongsToCollection` + `franchiseLinks` manuais, `traverseFranchiseGraph` imune a ciclos com profundidade máx. `3` e teto de `60` nós, exclusão de `legacy-default` das médias e comparativo `#k de N`, oculto em obra única, mais progresso separado em Filmes, OVAs, Especiais e Spin-offs).
   - Criada suíte [`tests/fase4-episodes-franchise.test.mjs`](../tests/fase4-episodes-franchise.test.mjs).
   - Reforços pós-verificação (`fix`): botão **"Tentar de novo"** no alerta de `"Provisório (não salvo)"` e trava contra falha silenciosa no `localStorage` ([`src/lib/storagePersistence.js`](../src/lib/storagePersistence.js), [`src/hooks/useBacklog.js`](../src/hooks/useBacklog.js), [`src/App.jsx`](../src/App.jsx)); relações automáticas de anime via AniList Bridge + [`fetchJikanAnimeRelations`](../src/services/cinemaApi.js) e grafo bidirecional em [`src/services/franchiseEngine.js`](../src/services/franchiseEngine.js); preservação R10 completa (`profile` estruturado e `episodeEvaluations`) também no espelho LZW [`src/services/backupEngine.js`](../src/services/backupEngine.js). (`58/58` testes aprovados.)
-- [ ] **Fase 5 — Home**
+- [x] **Fase 5 — Home** — concluída na branch `feat/v1.1.0-lumiere` após aprovação da tabela de/para.
+  - Criados [`src/lib/homeEngine.js`](../src/lib/homeEngine.js) e [`src/components/HomeRail.jsx`](../src/components/HomeRail.jsx); redesenhada [`src/screens/HomeScreen.jsx`](../src/screens/HomeScreen.jsx) com renderização imediata do acervo local, chip compacto de constância (`Registrar Sessão Hoje`), Hero nos 4 estados (`carregando`, `ativo`, `fila Quero Ver` com `"Começar"` e `acervo vazio` sem caixa tracejada e 1 botão `"Catalogar Primeira Obra"`), hierarquia visual (`backdropUrl` > capa com desfoque > gradiente do tema) com scrim `>= 70%`, ações `+1 Ep` (confirmação ao atingir/passar do total) e `+20 min` (limitado à duração) com trava anti-toque duplo e toast **Desfazer** de `6 s` em [`src/App.jsx`](../src/App.jsx).
+  - Backfill único em segundo plano de `backdropUrl` via [`backfillWorkHeroBackdrop`](../src/services/cinemaApi.js) (máx. `2` simultâneos na fila, sem OMDb, cooldown de `30` dias em `backdropCheckedAt` preservando `updatedAt`).
+  - Pílulas circulares (`56x56 px`, anel de progresso, máx. `12` + `"Ver todas"`, 1 toque sem texto aberto); trilhos sob demanda (`IntersectionObserver`) com os 5 estados D6: **Continuar Assistindo** (sem `legacy-default`), **Franquias & Sagas** (`>= 2` obras, % e média), **Sugestões do DNA / Quero Ver** (TMDB `/discover` + AniList cache `24 h` em [`src/components/RecommendationsSection.jsx`](../src/components/RecommendationsSection.jsx), botão `"O que assistir hoje?"` com Roleta e Curador opcional) e **Cápsula do Tempo & Destaques** (com campo opcional `favoriteScene` até `200` caracteres em [`src/components/ItemDetailSheet.jsx`](../src/components/ItemDetailSheet.jsx), persistido nos backups R10).
+  - Validada convivência de `safe-area` e `360x800 px` do alerta fixo de `localStorage` (`[data-testid="storage-quota-alert"]`) com Hero e pílulas no Chrome headless via Playwright, além da suíte [`tests/fase5-home.test.mjs`](../tests/fase5-home.test.mjs) (`64/64` testes aprovados).
 - [ ] **Fase 6 — Perfil, social oculto e resíduos de livro**
 - [ ] **Fase 7 — Testes finais, versão 1.1.0 e publicação**
 

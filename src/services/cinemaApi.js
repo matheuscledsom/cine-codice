@@ -23,6 +23,7 @@ import {
 } from '../api/httpClient.js';
 import {
   API_TIMEOUT_MS,
+  BACKDROP_RETRY_COOLDOWN_MS,
   CACHE_STORES,
   CACHE_TTL_MS,
   OMDB_KEY_STORAGE,
@@ -34,6 +35,8 @@ import {
   setCachedEntry,
 } from '../api/cacheDb.js';
 import { fetchAniListBatchByIds } from '../api/anilistBatch.js';
+import { migrateFavoriteGenresToObjects } from '../lib/genreCatalog.js';
+import { normalizeViewerFocusList } from '../lib/migrations.js';
 import { catalogItems } from '../data/mockData.js';
 import {
   mapCategoriesToGenreAndSubgenres,
@@ -2800,6 +2803,448 @@ export async function fetchOmdbSeasonEpisodes(
       episodes: [],
     };
   }
+}
+
+/**
+ * Backfill silencioso de backdropUrl para o Hero da Home (Fase 5 / Regra Extra 2):
+ * - Nunca chama a OMDb.
+ * - Respeita fila de API e teto de concorrência (máx. 2 simultâneos).
+ * - Memoriza tentativa/falha via checkedAt (cooldown de 30 dias em backdropCheckedAt).
+ */
+export async function backfillWorkHeroBackdrop(
+  work,
+  {
+    tmdbApiKey = '',
+    signal,
+    fetchImpl = fetch,
+    nowFn = Date.now,
+    maxConcurrency = 2,
+  } = {}
+) {
+  if (!work || typeof work !== 'object') {
+    return { attempted: false, backdropUrl: null, checkedAt: null, failed: false };
+  }
+  if (work.backdropUrl && /^https?:\/\//i.test(String(work.backdropUrl).trim())) {
+    return {
+      attempted: false,
+      backdropUrl: String(work.backdropUrl).trim(),
+      checkedAt: Number(work.backdropCheckedAt) || null,
+      failed: false,
+    };
+  }
+
+  const now = nowFn();
+  const prevChecked = Number(work.backdropCheckedAt) || 0;
+  if (prevChecked > 0 && now - prevChecked < BACKDROP_RETRY_COOLDOWN_MS) {
+    return {
+      attempted: false,
+      skippedCooldown: true,
+      backdropUrl: null,
+      checkedAt: prevChecked,
+      failed: false,
+    };
+  }
+
+  const withIds = applyCanonicalIdsToWork(work);
+  const tmdbId = Number(withIds.ids?.tmdb || withIds.tmdbId) || null;
+  const anilistId = Number(withIds.ids?.anilist || withIds.anilistId) || null;
+  const key = sanitizeApiKey(tmdbApiKey) || loadTmdbApiKey();
+
+  const tasks = [];
+  let resolvedUrl = null;
+  let hadError = false;
+
+  if (tmdbId && key) {
+    tasks.push(async () => {
+      try {
+        const mediaType =
+          withIds.workType === 'series' ||
+          withIds.tmdbMediaType === 'tv' ||
+          (withIds.workType === 'anime' && withIds.tmdbMediaType === 'tv')
+            ? 'tv'
+            : 'movie';
+        const res = await fetchTmdbDetailsInternal(tmdbId, mediaType, {
+          apiKey: key,
+          signal,
+          fetchImpl,
+          nowFn,
+        });
+        if (res?.ok && res.data?.backdropUrl) {
+          resolvedUrl = resolvedUrl || res.data.backdropUrl;
+        } else if (res && !res.ok) {
+          hadError = true;
+        }
+      } catch {
+        hadError = true;
+      }
+    });
+  }
+
+  if (anilistId) {
+    tasks.push(async () => {
+      try {
+        const map = await fetchAniListMediaByIds([anilistId], {
+          signal,
+          fetchImpl,
+          nowFn,
+        });
+        const media = map.get(anilistId) || null;
+        if (media?.backdropUrl) {
+          resolvedUrl = resolvedUrl || media.backdropUrl;
+        }
+      } catch {
+        hadError = true;
+      }
+    });
+  }
+
+  if (tasks.length === 0) {
+    return {
+      attempted: false,
+      backdropUrl: null,
+      checkedAt: prevChecked || null,
+      failed: false,
+    };
+  }
+
+  const safeConc = Math.max(1, Math.min(2, Number(maxConcurrency) || 2));
+  await runBoundedConcurrency(tasks, safeConc);
+
+  return {
+    attempted: true,
+    backdropUrl: resolvedUrl,
+    checkedAt: now,
+    failed: !resolvedUrl && hadError,
+  };
+}
+
+/**
+ * Busca sugestões externas baseadas nos gêneros e focos escolhidos no onboarding (Fase 5):
+ * - Reutiliza TMDB /discover e AniList GraphQL com cache de 24 h (D4) e máx. 2 reqs simultâneas.
+ * - Nunca chama OMDb e nunca retorna obras já presentes no acervo.
+ */
+export async function fetchOnboardingGenreSuggestions(
+  profile = null,
+  existingItems = [],
+  {
+    tmdbApiKey = '',
+    forceRefresh = false,
+    allowStaleOffline = true,
+    signal,
+    fetchImpl = fetch,
+    nowFn = Date.now,
+    maxConcurrency = 2,
+  } = {}
+) {
+  const safeFocus = normalizeViewerFocusList(
+    profile?.viewerFocus ?? profile?.viewer_focus,
+    profile?.readerFocus ?? profile?.reader_focus
+  );
+  const genres = migrateFavoriteGenresToObjects(profile?.favoriteGenres);
+
+  const tmdbMovieGenres = Array.from(
+    new Set(
+      genres
+        .filter((g) => g.group === 'filmes' && Number(g.tmdbGenreId) > 0)
+        .map((g) => Number(g.tmdbGenreId))
+    )
+  );
+  const tmdbTvGenres = Array.from(
+    new Set(
+      genres
+        .filter((g) => g.group === 'series' && Number(g.tmdbGenreId) > 0)
+        .map((g) => Number(g.tmdbGenreId))
+    )
+  );
+  const anilistGenres = Array.from(
+    new Set(
+      genres
+        .filter((g) => g.group === 'animes' && g.kind === 'genre' && g.anilistKey)
+        .map((g) => String(g.anilistKey))
+    )
+  );
+  const anilistTags = Array.from(
+    new Set(
+      genres
+        .filter((g) => g.group === 'animes' && g.kind === 'tag' && g.anilistKey)
+        .map((g) => String(g.anilistKey))
+    )
+  );
+
+  const wantsAnime =
+    safeFocus.some((f) => /anime/i.test(f)) ||
+    anilistGenres.length > 0 ||
+    anilistTags.length > 0;
+  const wantsSeries =
+    safeFocus.some((f) => /s[eé]rie/i.test(f)) || tmdbTvGenres.length > 0;
+  const wantsMovies =
+    safeFocus.some((f) => /filme|cinema/i.test(f)) || tmdbMovieGenres.length > 0 || !wantsAnime;
+
+  const focusSig = safeFocus.join(',').toLowerCase();
+  const genresSig = genres.map((g) => g.id).sort().join(',');
+  const cacheKey = `home:discover:${focusSig}:${genresSig || 'default'}`;
+  const now = nowFn();
+
+  const cached = forceRefresh
+    ? { hit: false, stale: false, data: null }
+    : await getCachedEntry(CACHE_STORES.search, cacheKey, {
+        now,
+        allowStaleOffline,
+      });
+
+  const filterExistingOut = (rawCandidates = []) => {
+    const existingIds = new Set();
+    const existingTitles = new Set();
+    (Array.isArray(existingItems) ? existingItems : []).forEach((w) => {
+      if (!w) return;
+      const tmdb = Number(w.ids?.tmdb || w.tmdbId);
+      const ani = Number(w.ids?.anilist || w.anilistId);
+      const mal = Number(w.ids?.mal || w.malId);
+      const imdb = sanitizeImdbId(w.ids?.imdb || w.imdbId);
+      if (Number.isInteger(tmdb) && tmdb > 0) existingIds.add(`tmdb:${tmdb}`);
+      if (Number.isInteger(ani) && ani > 0) existingIds.add(`ani:${ani}`);
+      if (Number.isInteger(mal) && mal > 0) existingIds.add(`mal:${mal}`);
+      if (imdb) existingIds.add(`imdb:${imdb}`);
+      const nt = normalizeTitleForDedup(w.title || '');
+      const no = normalizeTitleForDedup(w.originalTitle || '');
+      if (nt) existingTitles.add(nt);
+      if (no) existingTitles.add(no);
+    });
+
+    return rawCandidates.filter((cand) => {
+      if (!cand || !cand.title) return false;
+      const tmdb = Number(cand.ids?.tmdb || cand.tmdbId);
+      const ani = Number(cand.ids?.anilist || cand.anilistId);
+      const mal = Number(cand.ids?.mal || cand.malId);
+      const imdb = sanitizeImdbId(cand.ids?.imdb || cand.imdbId);
+      if (Number.isInteger(tmdb) && existingIds.has(`tmdb:${tmdb}`)) return false;
+      if (Number.isInteger(ani) && existingIds.has(`ani:${ani}`)) return false;
+      if (Number.isInteger(mal) && existingIds.has(`mal:${mal}`)) return false;
+      if (imdb && existingIds.has(`imdb:${imdb}`)) return false;
+      const nt = normalizeTitleForDedup(cand.title);
+      if (nt && existingTitles.has(nt)) return false;
+      return true;
+    });
+  };
+
+  if (cached.hit && !cached.stale && Array.isArray(cached.data)) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: false,
+      cacheDateLabel: cached.cacheDateLabel,
+      results: filterExistingOut(cached.data),
+      failedSources: [],
+      partial: false,
+      allFailed: false,
+    };
+  }
+
+  const key = sanitizeApiKey(tmdbApiKey) || loadTmdbApiKey();
+  const tasks = [];
+  const collected = [];
+  const failedSources = [];
+
+  if (key && (wantsMovies || wantsSeries)) {
+    if (wantsMovies && (tmdbMovieGenres.length > 0 || safeFocus.some((f) => /filme|cinema/i.test(f)))) {
+      tasks.push(async () => {
+        try {
+          const genreParam =
+            tmdbMovieGenres.length > 0
+              ? `&with_genres=${encodeURIComponent(tmdbMovieGenres.slice(0, 3).join('|'))}`
+              : '';
+          const url = `${TMDB_API_BASE}/discover/movie?api_key=${encodeURIComponent(key)}&language=pt-BR&sort_by=popularity.desc&vote_count.gte=150${genreParam}`;
+          const res = await fetchWithTimeout(url, { signal, nowFn }, API_TIMEOUT_MS, fetchImpl, 'tmdb');
+          if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+          const json = await res.json();
+          const list = Array.isArray(json?.results) ? json.results.slice(0, 8) : [];
+          list.forEach((m) => {
+            if (!m?.title) return;
+            const year = m.release_date ? Number(String(m.release_date).slice(0, 4)) : null;
+            const poster = m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null;
+            const backdrop = m.backdrop_path ? `${TMDB_BACKDROP_BASE}${m.backdrop_path}` : null;
+            collected.push(
+              applyCanonicalIdsToWork({
+                id: `tmdb-movie-${m.id}`,
+                tmdbId: m.id,
+                tmdbMediaType: 'movie',
+                title: m.title,
+                originalTitle: m.original_title || m.title,
+                workType: 'movie',
+                releaseYear: Number.isFinite(year) ? year : null,
+                coverUrl: poster,
+                backdropUrl: backdrop,
+                synopsis: String(m.overview || '').trim(),
+                genres: [],
+                externalRatings: {
+                  ...createEmptyExternalRatings(),
+                  tmdb: buildTmdbRating(m.vote_average, m.vote_count, nowFn()),
+                },
+                sourceBadge: 'TMDB',
+                mergedSources: ['TMDB'],
+                monogram: buildMonogram(m.title),
+              })
+            );
+          });
+        } catch {
+          if (!failedSources.includes('tmdb')) failedSources.push('tmdb');
+        }
+      });
+    }
+
+    if (wantsSeries && (tmdbTvGenres.length > 0 || safeFocus.some((f) => /s[eé]rie/i.test(f)))) {
+      tasks.push(async () => {
+        try {
+          const genreParam =
+            tmdbTvGenres.length > 0
+              ? `&with_genres=${encodeURIComponent(tmdbTvGenres.slice(0, 3).join('|'))}`
+              : '';
+          const url = `${TMDB_API_BASE}/discover/tv?api_key=${encodeURIComponent(key)}&language=pt-BR&sort_by=popularity.desc&vote_count.gte=120${genreParam}`;
+          const res = await fetchWithTimeout(url, { signal, nowFn }, API_TIMEOUT_MS, fetchImpl, 'tmdb');
+          if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+          const json = await res.json();
+          const list = Array.isArray(json?.results) ? json.results.slice(0, 8) : [];
+          list.forEach((s) => {
+            if (!s?.name) return;
+            const year = s.first_air_date ? Number(String(s.first_air_date).slice(0, 4)) : null;
+            const poster = s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : null;
+            const backdrop = s.backdrop_path ? `${TMDB_BACKDROP_BASE}${s.backdrop_path}` : null;
+            collected.push(
+              applyCanonicalIdsToWork({
+                id: `tmdb-tv-${s.id}`,
+                tmdbId: s.id,
+                tmdbMediaType: 'tv',
+                title: s.name,
+                originalTitle: s.original_name || s.name,
+                workType: 'series',
+                releaseYear: Number.isFinite(year) ? year : null,
+                coverUrl: poster,
+                backdropUrl: backdrop,
+                synopsis: String(s.overview || '').trim(),
+                genres: [],
+                externalRatings: {
+                  ...createEmptyExternalRatings(),
+                  tmdb: buildTmdbRating(s.vote_average, s.vote_count, nowFn()),
+                },
+                sourceBadge: 'TMDB',
+                mergedSources: ['TMDB'],
+                monogram: buildMonogram(s.name),
+              })
+            );
+          });
+        } catch {
+          if (!failedSources.includes('tmdb')) failedSources.push('tmdb');
+        }
+      });
+    }
+  }
+
+  if (wantsAnime) {
+    tasks.push(async () => {
+      try {
+        const gql = `
+          query ($genres: [String], $tags: [String]) {
+            Page(page: 1, perPage: 10) {
+              media(type: ANIME, sort: SCORE_DESC, isAdult: false, genre_in: $genres, tag_in: $tags) {
+                id
+                idMal
+                type
+                format
+                status
+                episodes
+                duration
+                seasonYear
+                startDate { year }
+                averageScore
+                genres
+                bannerImage
+                description(asHtml: false)
+                title { romaji english native }
+                coverImage { extraLarge large medium }
+                studios(isMain: true) { nodes { name } }
+              }
+            }
+          }
+        `;
+        const variables = {
+          genres: anilistGenres.length > 0 ? anilistGenres.slice(0, 4) : undefined,
+          tags: anilistTags.length > 0 ? anilistTags.slice(0, 3) : undefined,
+        };
+        const res = await fetchWithTimeout(
+          ANILIST_GRAPHQL_URL,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ query: gql, variables }),
+            signal,
+            nowFn,
+          },
+          API_TIMEOUT_MS,
+          fetchImpl,
+          'anilist'
+        );
+        if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
+        const json = await res.json();
+        const list = Array.isArray(json?.data?.Page?.media) ? json.data.Page.media : [];
+        list.forEach((m) => {
+          const item = normalizeAniListMedia(m);
+          if (item) collected.push(item);
+        });
+      } catch {
+        if (!failedSources.includes('anilist')) failedSources.push('anilist');
+      }
+    });
+  }
+
+  if (tasks.length === 0) {
+    return {
+      ok: true,
+      fromCache: false,
+      isOfflineCache: false,
+      cacheDateLabel: '',
+      results: [],
+      failedSources: [],
+      partial: false,
+      allFailed: false,
+    };
+  }
+
+  const safeConc = Math.max(1, Math.min(2, Number(maxConcurrency) || 2));
+  await runBoundedConcurrency(tasks, safeConc);
+
+  const deduplicated = deduplicateCinemaResults(collected);
+  const allFailed = tasks.length > 0 && failedSources.length > 0 && deduplicated.length === 0;
+
+  if (allFailed && cached.hit && allowStaleOffline && Array.isArray(cached.data)) {
+    return {
+      ok: true,
+      fromCache: true,
+      isOfflineCache: true,
+      cacheDateLabel: cached.cacheDateLabel,
+      results: filterExistingOut(cached.data),
+      failedSources,
+      partial: true,
+      allFailed: false,
+    };
+  }
+
+  if (deduplicated.length > 0) {
+    await setCachedEntry(CACHE_STORES.search, cacheKey, deduplicated, {
+      ttlMs: CACHE_TTL_MS.discovery,
+      now: nowFn(),
+    });
+  }
+
+  return {
+    ok: !allFailed,
+    fromCache: false,
+    isOfflineCache: false,
+    cacheDateLabel: '',
+    results: filterExistingOut(deduplicated),
+    failedSources,
+    partial: failedSources.length > 0 && deduplicated.length > 0,
+    allFailed,
+  };
 }
 
 export { getOmdbDailyUsage };

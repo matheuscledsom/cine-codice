@@ -987,6 +987,34 @@ export function ItemDetailSheet({
                 )}
               </div>
 
+              <div className="border-t border-line pt-2.5 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label
+                    htmlFor={`fav-scene-${item.id}`}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-ink"
+                  >
+                    <Quote className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                    <span>Citação ou cena favorita (opcional)</span>
+                  </label>
+                  <span className="text-[10px] tabular-nums text-subtle">
+                    {String(item.favoriteScene || '').length}/200
+                  </span>
+                </div>
+                <textarea
+                  id={`fav-scene-${item.id}`}
+                  rows={2}
+                  maxLength={200}
+                  value={item.favoriteScene || ''}
+                  onChange={(e) =>
+                    onUpdateItem(item.id, {
+                      favoriteScene: e.target.value.slice(0, 200),
+                    })
+                  }
+                  placeholder="Frase marcante ou cena que definiu a obra para destacar na Home..."
+                  className="w-full resize-none rounded-[4px] border border-line bg-app px-2.5 py-2 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                />
+              </div>
+
               <div className="border-t border-line pt-2.5 space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium text-ink">

@@ -714,6 +714,8 @@ const MIRROR_ITEM_ALLOWED_KEYS = [
   'belongsToCollection',
   'ids',
   'backdropUrl',
+  'backdropCheckedAt',
+  'favoriteScene',
   'externalRatings',
   'ratingSource',
   'franchiseRelations',

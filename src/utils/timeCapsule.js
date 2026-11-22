@@ -72,18 +72,21 @@ export function buildTimeCapsuleEntries({
         dateIso: item.completedDate,
         work: item,
         subtitle: creator ? `Sessão concluída · ${creator}` : 'Sessão concluída',
+        quoteText: item.favoriteScene || '',
       });
     } else if (item.startDate) {
       pushCandidate({
         dateIso: item.startDate,
         work: item,
         subtitle: creator ? `Iniciado · ${creator}` : 'Sessão iniciada',
+        quoteText: item.favoriteScene || '',
       });
     } else if (item.createdAt) {
       pushCandidate({
         dateIso: item.createdAt,
         work: item,
         subtitle: 'Catalogado na sua estante',
+        quoteText: item.favoriteScene || '',
       });
     }
 

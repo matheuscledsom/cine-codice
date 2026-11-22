@@ -169,6 +169,8 @@ function normalizeItem(rawItem, spectatorDna = null) {
     releaseYear: rawItem.releaseYear ?? rawItem.publicationYear ?? null,
     language: String(rawItem.language || '').trim(),
     tags: normalizeTagsList(rawItem.tags),
+    favoriteScene: String(rawItem.favoriteScene || '').trim().slice(0, 200),
+    backdropCheckedAt: Number(rawItem.backdropCheckedAt) || null,
     recommended: rawItem.recommended !== undefined ? Boolean(rawItem.recommended) : false,
     synopsis: String(rawItem.synopsis || '').trim(),
     atmosphere: Array.isArray(rawItem.atmosphere) ? rawItem.atmosphere : [],
@@ -526,13 +528,18 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
             ? normalizeCinemaStatus(updates.status)
             : item.status;
           const statusChanged = Boolean(updates.status && nextStatus !== item.status);
+          const preserveUpdatedAt = Boolean(updates.preserveUpdatedAt);
+          const cleanUpdates = { ...updates };
+          delete cleanUpdates.preserveUpdatedAt;
 
           let merged = normalizeItem(
             {
               ...item,
-              ...updates,
+              ...cleanUpdates,
               status: nextStatus,
-              updatedAt: nowIso,
+              updatedAt: preserveUpdatedAt
+                ? item.updatedAt || nowIso
+                : cleanUpdates.updatedAt || nowIso,
             },
             spectatorDna
           );

@@ -1041,7 +1041,13 @@ export function App() {
   };
 
   const handleQuickReadingCheckIn = useCallback(
-    ({ workId = null, minutes = 0, episodes = 0, note = '' } = {}) => {
+    ({
+      workId = null,
+      minutes = 0,
+      episodes = 0,
+      note = '',
+      allowCompletion = true,
+    } = {}) => {
       const cleanMinutes = Math.max(0, Math.round(Number(minutes) || 0));
       const cleanEpisodes = Math.max(0, Math.round(Number(episodes) || 0));
       const cleanNote = String(note || '').trim();
@@ -1049,11 +1055,27 @@ export function App() {
 
       const targetWork = workId ? items.find((entry) => entry.id === workId) : null;
 
+      let prevSnapshot = null;
       if (targetWork) {
+        prevSnapshot = {
+          status: targetWork.status,
+          startDate: targetWork.startDate || null,
+          completedDate: targetWork.completedDate || null,
+          currentSeason: targetWork.currentSeason ?? 1,
+          currentEpisode: targetWork.currentEpisode ?? 0,
+          watchedEpisodes: targetWork.watchedEpisodes || {},
+          currentSeconds: targetWork.currentSeconds ?? 0,
+          totalSeconds: targetWork.totalSeconds ?? null,
+          progress: targetWork.progress ?? 0,
+          updatedAt: targetWork.updatedAt || targetWork.createdAt || null,
+        };
+
         const episodic = isEpisodicWork(targetWork);
         const updates = {
           updatedAt: new Date().toISOString(),
-          ...(targetWork.status === 'queued' ? { status: 'playing', startDate: getTodayLocalISO() } : {}),
+          ...(targetWork.status === 'queued'
+            ? { status: 'playing', startDate: targetWork.startDate || getTodayLocalISO() }
+            : {}),
         };
 
         if (cleanEpisodes > 0 && episodic) {
@@ -1062,7 +1084,7 @@ export function App() {
           updates.currentEpisode = next.currentEpisode;
           updates.watchedEpisodes = next.watchedEpisodes;
           updates.progress = next.progress;
-          if (targetWork.totalEpisodes > 0 && next.progress >= 100) {
+          if (allowCompletion && targetWork.totalEpisodes > 0 && next.progress >= 100) {
             updates.status = 'completed';
             updates.completedDate = getTodayLocalISO();
           }
@@ -1071,7 +1093,7 @@ export function App() {
           updates.currentSeconds = next.currentSeconds;
           if (next.totalSeconds) updates.totalSeconds = next.totalSeconds;
           updates.progress = next.progress;
-          if (next.totalSeconds && next.currentSeconds >= next.totalSeconds) {
+          if (allowCompletion && next.totalSeconds && next.currentSeconds >= next.totalSeconds) {
             updates.status = 'completed';
             updates.completedDate = getTodayLocalISO();
           }
@@ -1106,19 +1128,39 @@ export function App() {
               ? `+${cleanMinutes} min registrados hoje`
               : 'Impressão de sessão salva',
         type: 'success',
+        duration: 6000,
+        action:
+          targetWork && prevSnapshot
+            ? {
+                label: 'Desfazer',
+                onClick: () => {
+                  updateItem(targetWork.id, prevSnapshot);
+                },
+              }
+            : null,
       });
     },
     [items, updateItem, addReadingSession, registerToday, showToast]
   );
 
   const handleQuickAdvanceWork = useCallback(
-    (work) => {
+    (work, options = {}) => {
       if (!work?.id) return;
+      const { allowCompletion = true } = options || {};
       if (isEpisodicWork(work)) {
         const dur = Number(work.episodeDurationMinutes) || (work.workType === 'anime' ? 24 : 45);
-        handleQuickReadingCheckIn({ workId: work.id, episodes: 1, minutes: dur });
+        handleQuickReadingCheckIn({
+          workId: work.id,
+          episodes: 1,
+          minutes: dur,
+          allowCompletion,
+        });
       } else {
-        handleQuickReadingCheckIn({ workId: work.id, minutes: 15 });
+        handleQuickReadingCheckIn({
+          workId: work.id,
+          minutes: 20,
+          allowCompletion,
+        });
       }
     },
     [handleQuickReadingCheckIn]
@@ -1517,7 +1559,7 @@ export function App() {
             <button
               type="button"
               onClick={handleSaveBackupCopyNow}
-              className="min-h-[36px] rounded-[4px] border border-accent bg-accent/10 px-2.5 text-[11px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+              className="min-h-[44px] rounded-[4px] border border-accent bg-accent/10 px-3 text-[11px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
             >
               Salvar Cópia
             </button>
@@ -1526,25 +1568,26 @@ export function App() {
         <main
           id="main-content"
           tabIndex={-1}
-          className="px-4 sm:px-6 pt-4 pb-[env(safe-area-inset-bottom)] focus:outline-none"
+          className="px-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] sm:px-6 pt-[max(1rem,env(safe-area-inset-top))] pb-[calc(6rem+env(safe-area-inset-bottom))] focus:outline-none"
         >
           {(storageError?.warning || secondaryStorageWarning) && (
             <div
               role="alert"
-              className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-accent bg-card p-3 text-xs text-ink"
+              data-testid="storage-quota-alert"
+              className="mb-4 flex w-full flex-col gap-2.5 rounded-[4px] border border-accent bg-card p-3 text-xs text-ink sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="flex min-w-0 flex-1 items-start gap-2">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
-                <div className="min-w-0">
+                <div className="min-w-0 break-words">
                   <p className="font-semibold">
                     Atenção: Provisório (não salvo no localStorage)
                   </p>
-                  <p className="mt-0.5 text-[11px] text-muted">
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
                     {storageError?.warning || secondaryStorageWarning}
                   </p>
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={async () => {
@@ -1617,13 +1660,13 @@ export function App() {
                   readingSessions={readingSessions}
                   dailyLogs={dailyLogs}
                   resolvedBadgeName={resolvedTitleBadge}
-                  viewerId={activeViewerId}
+                  tmdbKey={aiConfig.tmdbKey}
                   geminiKey={geminiKey}
                   backupReminder={backupReminder}
                   onSaveBackupNow={handleSaveBackupCopyNow}
                   onDismissBackupReminder={() => setBackupReminderDismissed(true)}
-                  onQuickCheckIn={handleQuickReadingCheckIn}
                   onQuickAdvanceWork={handleQuickAdvanceWork}
+                  onUpdateItem={handleUpdateItem}
                   onStartPickedWork={handleStartPickedWork}
                   onSelectItem={handleSelectOrAddFromRecommendation}
                   onAddToWishlist={handleCopyWorkToWishlist}

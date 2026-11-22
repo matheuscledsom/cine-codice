@@ -115,7 +115,10 @@ export const CACHE_TTL_MS = Object.freeze({
   episodesOngoing: 12 * 60 * 60 * 1000,
   episodesFinished: 30 * 24 * 60 * 60 * 1000,
   relations: 7 * 24 * 60 * 60 * 1000,
+  discovery: 24 * 60 * 60 * 1000,
   search: 10 * 60 * 1000,
 });
+
+export const BACKDROP_RETRY_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 
 export const MAX_MEMORY_CACHE_ENTRIES_PER_STORE = 300;
