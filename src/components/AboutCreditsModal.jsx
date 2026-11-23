@@ -1,6 +1,7 @@
-import { Database, Film, ShieldCheck, Tv, X } from 'lucide-react';
+import { Database, ShieldCheck, Tv, X } from 'lucide-react';
 import { useEffect } from 'react';
 import { CODICE_RELEASE } from '../config/versioning';
+import { OmniLogo } from './OmniLogo';
 
 const DATA_SOURCES = [
   {
@@ -62,7 +63,7 @@ export function AboutCreditsModal({ isOpen, onClose }) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Sobre o Cine Códice, Créditos e Fontes de Dados"
+      aria-label="Sobre o OmniPrism, Créditos e Fontes de Dados"
     >
       <div
         className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-t-[6px] border border-line bg-card p-5 pb-8 sm:rounded-[6px]"
@@ -70,13 +71,13 @@ export function AboutCreditsModal({ isOpen, onClose }) {
       >
         <div className="mb-4 flex items-center justify-between border-b border-line pb-3">
           <div className="flex items-center gap-2">
-            <Film className="h-4 w-4 text-accent" strokeWidth={1.5} />
+            <OmniLogo size={22} className="text-ink" />
             <div>
               <h3 className="text-base font-serif font-semibold text-ink">
                 Sobre &amp; Créditos de Fontes
               </h3>
               <p className="text-[11px] tabular-nums text-muted">
-                Cine Códice {CODICE_RELEASE.label}
+                OmniPrism {CODICE_RELEASE.label}
               </p>
             </div>
           </div>

@@ -76,7 +76,7 @@ const VISIBILITY_OPTIONS = [
   {
     id: 'public',
     label: 'Público',
-    description: 'Qualquer espectador no Cine Códice pode ver seu perfil e catálogo.',
+    description: 'Qualquer espectador no OmniPrism pode ver seu perfil e catálogo.',
     icon: Globe,
   },
   {
@@ -142,9 +142,11 @@ export function ProfileSettingsDrawer({
   returnFocusRef,
   profile,
   backendSession = null,
+  cloudState = null,
   soundOn = false,
   onToggleSound,
   onOpenAuthModal,
+  onOpenCloudModal,
   onUpdateProfile,
   onOpenThemeStudio,
   themeProps = null,
@@ -504,7 +506,7 @@ export function ProfileSettingsDrawer({
               <InstallAppBanner variant="settings" />
 
               <p className="pt-2 text-center text-[10px] tabular-nums text-subtle">
-                Cine Códice {CODICE_RELEASE.label}
+                OmniPrism {CODICE_RELEASE.label}
               </p>
             </div>
           )}
@@ -1049,6 +1051,43 @@ export function ProfileSettingsDrawer({
               aria-labelledby="settings-tab-data"
               className="divide-y divide-line"
             >
+              {onOpenCloudModal && (
+                <section className="space-y-2.5 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink">
+                      <Cloud className="h-4 w-4 text-accent" strokeWidth={1.5} />
+                      <span>Nuvem &amp; Conta OmniPrism</span>
+                    </span>
+                    <span className="rounded-[4px] border border-line bg-app px-2 py-0.5 text-[10px] font-medium text-accent">
+                      {cloudState?.authenticated
+                        ? cloudState?.offline
+                          ? 'Offline (Conectado)'
+                          : 'Sincronizado Supabase'
+                        : 'Local Offline'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-muted">
+                    {cloudState?.authenticated
+                      ? `Conta conectada (${cloudState.user?.email || 'Supabase Auth'}) sincronizando automaticamente entre PC e celular.`
+                      : 'Modo local-first ativo no IndexedDB. Conecte sua conta Supabase para sincronizar entre PC e celular.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose?.();
+                      onOpenCloudModal();
+                    }}
+                    className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-[4px] border border-accent bg-accent/15 px-3 py-2 text-xs font-semibold text-accent hover:bg-accent/25"
+                  >
+                    <Cloud className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                    <span>
+                      {cloudState?.authenticated
+                        ? 'Gerenciar Nuvem & Conta OmniPrism'
+                        : 'Conectar Nuvem & Conta OmniPrism'}
+                    </span>
+                  </button>
+                </section>
+              )}
               <section className="space-y-2 p-4">
                 <div className="flex items-center gap-2">
                   <Database className="h-4 w-4 text-accent" strokeWidth={1.5} />

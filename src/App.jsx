@@ -1,8 +1,9 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Download, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Cloud, CloudOff, Download, RefreshCw, WifiOff } from 'lucide-react';
 import { getAllEpisodeEvaluations, importEpisodeEvaluations } from './api/cacheDb';
 import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { OmniLogo } from './components/OmniLogo';
 import { SkeletonScreen } from './components/SkeletonScreen';
 import { domainConfig } from './config/domainConfig';
 import { useToast } from './context/ToastContext';
@@ -43,6 +44,20 @@ import {
   createUuid,
   persistCodiceDatabase,
 } from './services/codiceDatabase';
+import {
+  cacheCoverImageToSupabaseStorage,
+  cancelPendingCloudDelete,
+  deleteWorksFromCloud,
+  getActiveSupabaseSession,
+  pushWorksToCloud,
+  readSyncMeta,
+  signInWithEmailPassword,
+  signOutFromCloud,
+  subscribeToAuthChanges,
+  subscribeToCatalogRealtime,
+  syncCatalogWithSupabase,
+} from './services/omniSyncService';
+import { getSupabaseConfig } from './services/supabaseClient';
 import { evaluateReaderTitles } from './services/readerTitlesEngine';
 import {
   advanceEpisodeProgress,
@@ -123,6 +138,11 @@ const OfflineBookPickerModal = lazy(() =>
 const AboutCreditsModal = lazy(() =>
   import('./components/AboutCreditsModal').then((m) => ({
     default: m.AboutCreditsModal,
+  }))
+);
+const OmniCloudModal = lazy(() =>
+  import('./components/OmniCloudModal').then((m) => ({
+    default: m.OmniCloudModal,
   }))
 );
 
@@ -212,6 +232,16 @@ export function App() {
   const [wrappedOpen, setWrappedOpen] = useState(false);
   const [globalRouletteOpen, setGlobalRouletteOpen] = useState(false);
   const [aboutCreditsOpen, setAboutCreditsOpen] = useState(false);
+  const [cloudModalOpen, setCloudModalOpen] = useState(false);
+  const [cloudSyncState, setCloudSyncState] = useState(() => ({
+    configured: getSupabaseConfig().isConfigured,
+    authenticated: false,
+    user: null,
+    syncing: false,
+    offline: typeof navigator !== 'undefined' ? navigator.onLine === false : false,
+    lastSyncAt: readSyncMeta().lastSyncAt,
+    error: null,
+  }));
   const [migrationState, setMigrationState] = useState(initBootMigrationState);
   const bootMigrationPromiseRef = useRef(null);
   const [requestedCollectionId, setRequestedCollectionId] = useState(null);
@@ -336,6 +366,335 @@ export function App() {
     streak: streakData,
     readingSessions,
   });
+
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const realtimeUnsubRef = useRef(null);
+  const cloudApplyingRemoteRef = useRef(false);
+  const lastPushedMapRef = useRef(new Map());
+  const initialSyncDoneForUserRef = useRef(null);
+
+  const attachRealtimeForUser = useCallback(
+    (userId) => {
+      if (realtimeUnsubRef.current) {
+        realtimeUnsubRef.current();
+        realtimeUnsubRef.current = null;
+      }
+      if (!userId) return;
+      realtimeUnsubRef.current = subscribeToCatalogRealtime({
+        userId,
+        getCurrentWorks: () => itemsRef.current,
+        onRemoteWorksMerged: (mergedWorks) => {
+          const nextMap = new Map();
+          mergedWorks.forEach((w) => {
+            if (w?.id) nextMap.set(String(w.id), w.updatedAt || '');
+          });
+          lastPushedMapRef.current = nextMap;
+          cloudApplyingRemoteRef.current = true;
+          replaceWorkspaceData({ items: mergedWorks });
+          setCloudSyncState((prev) => ({
+            ...prev,
+            lastSyncAt: new Date().toISOString(),
+            error: null,
+          }));
+        },
+      });
+    },
+    [replaceWorkspaceData]
+  );
+
+  const runCloudSyncNow = useCallback(
+    async ({ localWorksOverride = null, silent = true } = {}) => {
+      const cfg = getSupabaseConfig();
+      const offlineNow =
+        typeof navigator !== 'undefined' && navigator.onLine === false;
+
+      if (!cfg.isConfigured) {
+        setCloudSyncState((prev) => ({
+          ...prev,
+          configured: false,
+          syncing: false,
+          offline: offlineNow,
+        }));
+        return { ok: false, unconfigured: true };
+      }
+
+      if (offlineNow) {
+        setCloudSyncState((prev) => ({
+          ...prev,
+          configured: true,
+          syncing: false,
+          offline: true,
+        }));
+        return { ok: false, offline: true };
+      }
+
+      setCloudSyncState((prev) => ({
+        ...prev,
+        configured: true,
+        syncing: true,
+        offline: false,
+        error: null,
+      }));
+
+      const res = await syncCatalogWithSupabase({
+        localWorksOverride: localWorksOverride ?? itemsRef.current,
+      });
+
+      if (res.ok) {
+        const nextMap = new Map();
+        (res.works || []).forEach((w) => {
+          if (w?.id) nextMap.set(String(w.id), w.updatedAt || '');
+        });
+        lastPushedMapRef.current = nextMap;
+        cloudApplyingRemoteRef.current = true;
+        replaceWorkspaceData({ items: res.works || [] });
+        setCloudSyncState({
+          configured: true,
+          authenticated: true,
+          user: res.user || null,
+          syncing: false,
+          offline: false,
+          lastSyncAt: res.syncedAt,
+          error: null,
+        });
+        if (!silent) {
+          showToast({
+            message: `Catálogo sincronizado com Supabase (${(res.works || []).length} obras).`,
+            type: 'success',
+          });
+        }
+        return res;
+      }
+
+      setCloudSyncState((prev) => ({
+        ...prev,
+        configured: true,
+        syncing: false,
+        offline: Boolean(res.offline),
+        authenticated: res.unauthenticated ? false : prev.authenticated,
+        user: res.unauthenticated ? null : prev.user,
+        error:
+          res.offline || res.unauthenticated || res.unconfigured
+            ? null
+            : res.error || null,
+      }));
+      return res;
+    },
+    [replaceWorkspaceData, showToast]
+  );
+
+  useEffect(() => {
+    if (migrationState.locked) return undefined;
+    let active = true;
+
+    const bootstrapCloudAuth = async () => {
+      const cfg = getSupabaseConfig();
+      const offlineNow =
+        typeof navigator !== 'undefined' && navigator.onLine === false;
+
+      if (!cfg.isConfigured) {
+        if (active) {
+          setCloudSyncState((prev) => ({
+            ...prev,
+            configured: false,
+            authenticated: false,
+            user: null,
+            offline: offlineNow,
+          }));
+        }
+        return;
+      }
+
+      const sessionRes = await getActiveSupabaseSession();
+      if (!active) return;
+
+      const user = sessionRes.user || null;
+      setCloudSyncState((prev) => ({
+        ...prev,
+        configured: true,
+        authenticated: Boolean(user),
+        user,
+        offline: offlineNow,
+      }));
+
+      if (user?.id) {
+        attachRealtimeForUser(user.id);
+        if (initialSyncDoneForUserRef.current !== user.id) {
+          initialSyncDoneForUserRef.current = user.id;
+          runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch(
+            () => {}
+          );
+        }
+      }
+    };
+
+    bootstrapCloudAuth();
+
+    const unsubAuth = subscribeToAuthChanges((_event, session) => {
+      if (!active) return;
+      const user = session?.user || null;
+      setCloudSyncState((prev) => ({
+        ...prev,
+        authenticated: Boolean(user),
+        user,
+      }));
+      if (user?.id) {
+        attachRealtimeForUser(user.id);
+        if (initialSyncDoneForUserRef.current !== user.id) {
+          initialSyncDoneForUserRef.current = user.id;
+          runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch(
+            () => {}
+          );
+        }
+      } else {
+        initialSyncDoneForUserRef.current = null;
+        if (realtimeUnsubRef.current) {
+          realtimeUnsubRef.current();
+          realtimeUnsubRef.current = null;
+        }
+      }
+    });
+
+    const onOnline = () => {
+      setCloudSyncState((prev) => ({ ...prev, offline: false }));
+      if (initialSyncDoneForUserRef.current) {
+        runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch(
+          () => {}
+        );
+      }
+    };
+    const onOffline = () => {
+      setCloudSyncState((prev) => ({ ...prev, offline: true, syncing: false }));
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', onOnline);
+      window.addEventListener('offline', onOffline);
+    }
+
+    return () => {
+      active = false;
+      unsubAuth();
+      if (realtimeUnsubRef.current) {
+        realtimeUnsubRef.current();
+        realtimeUnsubRef.current = null;
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', onOnline);
+        window.removeEventListener('offline', onOffline);
+      }
+    };
+  }, [migrationState.locked, attachRealtimeForUser, runCloudSyncNow]);
+
+  useEffect(() => {
+    if (
+      migrationState.locked ||
+      !cloudSyncState.authenticated ||
+      cloudSyncState.offline
+    ) {
+      return undefined;
+    }
+
+    if (cloudApplyingRemoteRef.current) {
+      cloudApplyingRemoteRef.current = false;
+      return undefined;
+    }
+
+    const changedWorks = items.filter((w) => {
+      if (!w?.id) return false;
+      return lastPushedMapRef.current.get(String(w.id)) !== (w.updatedAt || '');
+    });
+
+    if (changedWorks.length === 0) return undefined;
+
+    const timer = setTimeout(() => {
+      pushWorksToCloud(changedWorks)
+        .then((res) => {
+          if (res?.ok) {
+            changedWorks.forEach((w) => {
+              lastPushedMapRef.current.set(String(w.id), w.updatedAt || '');
+            });
+            setCloudSyncState((prev) => ({
+              ...prev,
+              lastSyncAt: new Date().toISOString(),
+              error: null,
+            }));
+          }
+        })
+        .catch(() => {});
+    }, 650);
+
+    return () => clearTimeout(timer);
+  }, [
+    items,
+    migrationState.locked,
+    cloudSyncState.authenticated,
+    cloudSyncState.offline,
+  ]);
+
+  const handleCloudSignIn = useCallback(
+    async ({ email, password }) => {
+      const authRes = await signInWithEmailPassword({ email, password });
+      if (!authRes.ok) {
+        return authRes;
+      }
+      const user = authRes.user;
+      if (user?.id) {
+        initialSyncDoneForUserRef.current = user.id;
+        attachRealtimeForUser(user.id);
+      }
+      setCloudSyncState((prev) => ({
+        ...prev,
+        configured: true,
+        authenticated: Boolean(user),
+        user,
+        error: null,
+      }));
+      await runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: false });
+      return { ok: true, user };
+    },
+    [attachRealtimeForUser, runCloudSyncNow]
+  );
+
+  const handleCloudSignOut = useCallback(async () => {
+    initialSyncDoneForUserRef.current = null;
+    if (realtimeUnsubRef.current) {
+      realtimeUnsubRef.current();
+      realtimeUnsubRef.current = null;
+    }
+    await signOutFromCloud();
+    lastPushedMapRef.current.clear();
+    setCloudSyncState((prev) => ({
+      ...prev,
+      authenticated: false,
+      user: null,
+      syncing: false,
+      error: null,
+    }));
+    showToast({
+      message: 'Conta desconectada. Seus dados continuam salvos localmente.',
+      type: 'info',
+    });
+  }, [showToast]);
+
+  const handleCloudConfigChanged = useCallback(async () => {
+    const cfg = getSupabaseConfig();
+    setCloudSyncState((prev) => ({
+      ...prev,
+      configured: cfg.isConfigured,
+    }));
+    if (cfg.isConfigured) {
+      const sessionRes = await getActiveSupabaseSession();
+      if (sessionRes.user?.id) {
+        initialSyncDoneForUserRef.current = sessionRes.user.id;
+        attachRealtimeForUser(sessionRes.user.id);
+        runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch(
+          () => {}
+        );
+      }
+    }
+  }, [attachRealtimeForUser, runCloudSyncNow]);
 
   useEffect(() => {
     let active = true;
@@ -667,7 +1026,9 @@ export function App() {
   }, [paletteOpen, importCatalogOpen, themeModalOpen, backupModalOpen, shortcutsOpen]);
 
   const handleAddItem = (newItem) => {
-    addItem(newItem);
+    const itemId = String(newItem?.id || createUuid());
+    const itemWithId = { ...newItem, id: itemId };
+    addItem(itemWithId);
     showToast({
       message:
         newItem?.status === 'completed'
@@ -675,6 +1036,29 @@ export function App() {
           : 'Obra salva no catálogo',
       type: 'success',
     });
+
+    if (itemWithId.coverUrl) {
+      cacheCoverImageToSupabaseStorage(itemWithId)
+        .then((cacheRes) => {
+          if (cacheRes?.ok && cacheRes.url) {
+            updateItem(itemId, {
+              coverUrl: cacheRes.url,
+              coverSources: Array.from(
+                new Set(
+                  [
+                    cacheRes.url,
+                    ...(Array.isArray(itemWithId.coverSources)
+                      ? itemWithId.coverSources
+                      : []),
+                    itemWithId.coverUrl,
+                  ].filter(Boolean)
+                )
+              ),
+            });
+          }
+        })
+        .catch(() => {});
+    }
   };
 
   const handleUpdateItem = (id, updates) => {
@@ -688,8 +1072,33 @@ export function App() {
     }
   };
 
+  const handleBatchRemoveWithCloud = useCallback(
+    (ids = []) => {
+      const snap = batchRemoveItems(ids);
+      if (Array.isArray(ids) && ids.length > 0) {
+        deleteWorksFromCloud(ids).catch(() => {});
+      }
+      return snap;
+    },
+    [batchRemoveItems]
+  );
+
+  const handleRestoreRemovedWithCloud = useCallback(
+    (snap) => {
+      restoreRemovedItems(snap);
+      const restoredWorks = snap?.removedItems || [];
+      restoredWorks.forEach((w) => {
+        if (w?.id) cancelPendingCloudDelete(w.id);
+      });
+      if (restoredWorks.length > 0) {
+        pushWorksToCloud(restoredWorks).catch(() => {});
+      }
+    },
+    [restoreRemovedItems]
+  );
+
   const handleRemoveItem = (id) => {
-    const snap = batchRemoveItems([id]);
+    const snap = handleBatchRemoveWithCloud([id]);
     showToast({
       message: 'Obra removida do catálogo',
       type: 'info',
@@ -699,7 +1108,7 @@ export function App() {
           ? {
               label: 'Desfazer',
               onClick: () => {
-                restoreRemovedItems(snap);
+                handleRestoreRemovedWithCloud(snap);
                 showToast({ message: 'Obra restaurada no catálogo', type: 'success' });
               },
             }
@@ -1325,6 +1734,61 @@ export function App() {
             }[activeTab] || activeTab
           }
         </div>
+        <header
+          aria-label="Barra superior OmniPrism"
+          className="sticky top-0 z-30 flex items-center justify-between gap-2 border-b border-line/70 bg-app/90 px-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(0.5rem,env(safe-area-inset-top))] pb-2 backdrop-blur-md sm:px-6"
+        >
+          <button
+            type="button"
+            onClick={() => setActiveTab('home')}
+            className="inline-flex min-h-[44px] items-center gap-2 text-left text-ink transition-opacity hover:opacity-85"
+          >
+            <OmniLogo size={22} className="text-ink" />
+            <span className="text-sm font-semibold tracking-tight text-ink">
+              {domainConfig.appName}
+            </span>
+            <span className="hidden sm:inline rounded-full border border-line bg-card px-2 py-0.5 text-[10px] font-medium text-muted">
+              Cinema &amp; Séries
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setCloudModalOpen(true)}
+            aria-label="Status de sincronização na nuvem OmniPrism"
+            className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors ${
+              cloudSyncState.authenticated
+                ? cloudSyncState.offline
+                  ? 'border-line bg-card text-muted hover:border-accent'
+                  : 'border-accent/45 bg-accent/10 text-ink hover:border-accent'
+                : 'border-line bg-card text-muted hover:border-accent hover:text-ink'
+            }`}
+          >
+            {cloudSyncState.syncing ? (
+              <>
+                <RefreshCw className="h-3.5 w-3.5 animate-spin text-accent" strokeWidth={1.5} />
+                <span>Sincronizando...</span>
+              </>
+            ) : cloudSyncState.authenticated ? (
+              cloudSyncState.offline ? (
+                <>
+                  <WifiOff className="h-3.5 w-3.5 text-muted" strokeWidth={1.5} />
+                  <span>Offline (Salvo local)</span>
+                </>
+              ) : (
+                <>
+                  <Cloud className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                  <span>Sincronizado Supabase</span>
+                </>
+              )
+            ) : (
+              <>
+                <CloudOff className="h-3.5 w-3.5 text-subtle" strokeWidth={1.5} />
+                <span>Local Offline</span>
+              </>
+            )}
+          </button>
+        </header>
         {migrationState.warning && (
           <div
             role="alert"
@@ -1455,6 +1919,7 @@ export function App() {
                   readingSessions={readingSessions}
                   dailyLogs={dailyLogs}
                   resolvedBadgeName={resolvedTitleBadge}
+                  themeMode={mode}
                   tmdbKey={aiConfig.tmdbKey}
                   geminiKey={geminiKey}
                   backupReminder={backupReminder}
@@ -1504,8 +1969,8 @@ export function App() {
                   onMoveCollection={moveCollection}
                   onMoveCollectionWork={moveCollectionWork}
                   onBatchUpdateItems={batchUpdateItems}
-                  onBatchRemoveItems={batchRemoveItems}
-                  onRestoreRemovedItems={restoreRemovedItems}
+                  onBatchRemoveItems={handleBatchRemoveWithCloud}
+                  onRestoreRemovedItems={handleRestoreRemovedWithCloud}
                   onStartPickedWork={handleStartPickedWork}
                   onSelectItem={(item) => setSelectedItemId(item.id)}
                   onOpenCommandPalette={() => setPaletteOpen(true)}
@@ -1582,6 +2047,8 @@ export function App() {
                   onImportBackup={handleImportBackup}
                   onOpenBackupModal={() => setBackupModalOpen(true)}
                   onOpenAboutCredits={() => setAboutCreditsOpen(true)}
+                  cloudState={cloudSyncState}
+                  onOpenCloudModal={() => setCloudModalOpen(true)}
                 />
               )}
             </Suspense>
@@ -1790,6 +2257,21 @@ export function App() {
             <AboutCreditsModal
               isOpen={aboutCreditsOpen}
               onClose={() => setAboutCreditsOpen(false)}
+            />
+          )}
+
+          {cloudModalOpen && (
+            <OmniCloudModal
+              isOpen={cloudModalOpen}
+              onClose={() => setCloudModalOpen(false)}
+              cloudState={cloudSyncState}
+              worksCount={items.length}
+              onSignIn={handleCloudSignIn}
+              onSignOut={handleCloudSignOut}
+              onSyncNow={() =>
+                runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: false })
+              }
+              onConfigChanged={handleCloudConfigChanged}
             />
           )}
 

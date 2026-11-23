@@ -100,6 +100,8 @@ export function ProfileScreen({
   onOpenImportCatalog,
   onOpenShortcuts,
   onOpenAboutCredits,
+  cloudState = null,
+  onOpenCloudModal,
 }) {
   const { showToast } = useToast();
   const { ui, cardFields } = domainConfig;
@@ -1157,6 +1159,7 @@ export function ProfileScreen({
         onClose={() => setSettingsOpen(false)}
         returnFocusRef={settingsBtnRef}
         profile={profile}
+        cloudState={cloudState}
         soundOn={soundOn}
         onToggleSound={() => {
           const next = !soundOn;
@@ -1164,6 +1167,7 @@ export function ProfileScreen({
           setSoundOn(next);
           if (next) playTactileSound('tap');
         }}
+        onOpenCloudModal={onOpenCloudModal}
         onUpdateProfile={onUpdateProfile}
         onOpenThemeStudio={() => {
           if (onOpenThemeStudio) {
@@ -1245,7 +1249,7 @@ export function ProfileScreen({
           className="min-h-[44px] px-2 text-[11px] tabular-nums underline-offset-2 hover:underline"
           style={{ color: 'var(--text-secondary)' }}
         >
-          Cine Códice {CODICE_RELEASE.label}
+          OmniPrism {CODICE_RELEASE.label}
         </button>
         {onOpenAboutCredits && (
           <button

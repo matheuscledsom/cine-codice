@@ -1,10 +1,13 @@
 import {
   ArrowRight,
+  BookOpen,
   CalendarClock,
   CheckCircle2,
   Film,
   Flame,
+  Gamepad2,
   GitBranch,
+  Music,
   Palette,
   PauseCircle,
   Play,
@@ -18,12 +21,14 @@ import { CoverArt } from '../components/CoverArt';
 import { HomeRail } from '../components/HomeRail';
 import { InstallAppBanner } from '../components/InstallAppBanner';
 import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
+import { OmniLogo } from '../components/OmniLogo';
 import { RecommendationsSection } from '../components/RecommendationsSection';
 import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
 import { VectorIcon } from '../components/VectorIcon';
-import { domainConfig, getWorkTypeConfig } from '../config/domainConfig';
+import { OMNIPRISM_DOMAINS, domainConfig, getWorkTypeConfig } from '../config/domainConfig';
 import { CODICE_RELEASE } from '../config/versioning';
 import { useToast } from '../context/ToastContext';
+import { buildDomainPortalPalette } from '../utils/themeTokens';
 import {
   buildCompactStreakChip,
   buildHomeLiveSummary,
@@ -117,6 +122,13 @@ function SessionCircularPill({
   );
 }
 
+const DOMAIN_PORTAL_ICONS = {
+  Film,
+  BookOpen,
+  Gamepad2,
+  Music,
+};
+
 export function HomeScreen({
   items = [],
   profile = null,
@@ -125,6 +137,7 @@ export function HomeScreen({
   dailyLogs = {},
   resolvedBadgeName = '',
   loading = false,
+  themeMode = 'dark',
   tmdbKey = '',
   geminiKey = '',
   backupReminder = null,
@@ -295,8 +308,17 @@ export function HomeScreen({
     [hero.work]
   );
 
+  const domainPortals = useMemo(
+    () =>
+      OMNIPRISM_DOMAINS.map((domain) => ({
+        ...domain,
+        palette: buildDomainPortalPalette(domain.tintHex, themeMode),
+      })),
+    [themeMode]
+  );
+
   return (
-    <div className="space-y-6 pb-8">
+    <div className="space-y-5 pb-8">
       {/* Cabeçalho + Chip compacto de constância */}
       <header className="flex flex-wrap items-start justify-between gap-3 pt-1">
         <div className="min-w-0 flex-1">
@@ -318,13 +340,16 @@ export function HomeScreen({
                 ) : null;
               })()}
           </p>
-          <div className="mt-0.5 flex flex-wrap items-baseline gap-2">
-            <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-ink">
-              {domainConfig.appName}
-            </h1>
-            <span className="text-xs font-medium text-muted">
-              {domainConfig.appSubtitle}
-            </span>
+          <div className="mt-1 flex flex-wrap items-center gap-2.5">
+            <OmniLogo size={28} className="text-ink" />
+            <div className="flex flex-wrap items-baseline gap-2">
+              <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-ink">
+                {domainConfig.appName}
+              </h1>
+              <span className="text-xs font-medium text-muted">
+                {domainConfig.appSubtitle}
+              </span>
+            </div>
           </div>
           <p className="mt-1 text-xs font-medium tabular-nums text-muted">
             {liveSummary}
@@ -387,6 +412,74 @@ export function HomeScreen({
         )}
       </header>
 
+      {/* Barra compacta: Portal de 4 Domínios OmniPrism com cores semânticas OKLCH */}
+      <section
+        aria-label="Portais de Domínio OmniPrism"
+        className="grid grid-cols-2 gap-2 sm:grid-cols-4"
+      >
+        {domainPortals.map((portal) => {
+          const PortalIcon = DOMAIN_PORTAL_ICONS[portal.icon] || Film;
+          const isActive = portal.status === 'active';
+          return (
+            <button
+              key={portal.id}
+              type="button"
+              aria-current={isActive ? 'true' : undefined}
+              onClick={() => {
+                if (isActive) {
+                  onNavigateList?.();
+                } else {
+                  showToast({
+                    message: `${portal.label}: núcleo pronto no banco multi-domínio OmniPrism (em breve).`,
+                    type: 'info',
+                  });
+                }
+              }}
+              style={{
+                backgroundColor: isActive ? portal.palette.surface : undefined,
+                borderColor: isActive ? portal.palette.accent : portal.palette.border,
+              }}
+              className={`group flex min-h-[56px] flex-col justify-between gap-1.5 rounded-[6px] border px-3 py-2 text-left transition-colors ${
+                isActive ? 'shadow-sm' : 'bg-card hover:bg-elevated/60'
+              }`}
+            >
+              <div className="flex w-full items-center justify-between gap-1.5">
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  <span
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px]"
+                    style={{
+                      backgroundColor: portal.palette.elevated,
+                      color: portal.palette.accent,
+                    }}
+                  >
+                    <PortalIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
+                  </span>
+                  <span className="truncate text-xs font-semibold text-ink">
+                    {portal.label}
+                  </span>
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between gap-1">
+                <span
+                  className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+                  style={{
+                    backgroundColor: isActive
+                      ? portal.palette.accent
+                      : portal.palette.elevated,
+                    color: isActive
+                      ? portal.palette.accentContrast
+                      : portal.palette.accent,
+                  }}
+                >
+                  {portal.badge}
+                </span>
+              </div>
+            </button>
+          );
+        })}
+      </section>
+
       <InstallAppBanner variant="home" />
 
       {backupReminder?.shouldRemind && (
@@ -409,8 +502,8 @@ export function HomeScreen({
           aria-label="Boas-vindas ao catálogo"
           className="rounded-[6px] border border-line bg-card px-5 py-9 text-center"
         >
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-[4px] border border-line bg-app text-accent">
-            <Film className="h-5 w-5" strokeWidth={1.5} />
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-[4px] border border-line bg-app text-ink">
+            <OmniLogo size={28} className="text-ink" />
           </div>
           <h2 className="mt-4 text-base font-semibold tracking-tight text-ink">
             {ui.home.emptyBacklogTitle}

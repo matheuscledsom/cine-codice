@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { domainConfig } from '../config/domainConfig';
+import { OmniLogo } from './OmniLogo';
 import {
   CRITERION_OPTIONS,
   getOrderedGenreGroups,
@@ -241,7 +242,7 @@ export function OnboardingFlow({
         <header className="px-4 pt-4 pb-3 border-b border-line">
           <div className="flex items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2 min-w-0">
-              <Film className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+              <OmniLogo size={20} className="text-ink" />
               <span className="text-xs font-semibold tracking-tight text-ink">
                 {domainConfig.appName}
               </span>
@@ -631,7 +632,7 @@ export function OnboardingFlow({
                   Inteligência Google Gemini Gratuita (Opcional)
                 </h2>
                 <p className="mt-1 text-xs leading-relaxed text-muted">
-                  O Cine Códice já funciona 100% offline. Se desejar, adicione sua chave gratuita do Gemini para curadoria por humor, recapitulação sem spoilers e críticas estruturadas.
+                  O OmniPrism já funciona 100% offline. Se desejar, adicione sua chave gratuita do Gemini para curadoria por humor, recapitulação sem spoilers e críticas estruturadas.
                 </p>
               </div>
 

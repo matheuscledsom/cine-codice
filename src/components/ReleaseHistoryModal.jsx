@@ -24,7 +24,7 @@ export function ReleaseHistoryModal({ isOpen, onClose }) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Histórico de versões do Cine Códice"
+      aria-label="Histórico de versões do OmniPrism"
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -37,7 +37,7 @@ export function ReleaseHistoryModal({ isOpen, onClose }) {
               <span>Versionamento Oficial</span>
             </p>
             <h2 className="text-base font-semibold tracking-tight text-ink tabular-nums">
-              Cine Códice {CODICE_RELEASE.label}
+              OmniPrism {CODICE_RELEASE.label}
             </h2>
           </div>
           <button

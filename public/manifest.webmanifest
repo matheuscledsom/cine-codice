@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Cine Códice — Catálogo Pessoal Curado",
-  "short_name": "Cine Códice",
-  "description": "Cine Códice — Catálogo pessoal e privado para filmes, séries e animes com controle de minutagem, episódios, franquias e backup criptografado",
+  "name": "OmniPrism",
+  "short_name": "OmniPrism",
+  "description": "OmniPrism — Catálogo pessoal multi-domínio para cinema, séries e animes com sincronização Supabase, controle de minutagem e backup criptografado",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -27,6 +27,12 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
     },
     {
       "src": "/icons/icon.svg",
