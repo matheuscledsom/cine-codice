@@ -20,6 +20,9 @@ export default defineConfig({
           if (id.includes('node_modules/dompurify')) {
             return 'vendor-sanitize';
           }
+          if (id.includes('node_modules/@supabase')) {
+            return 'vendor-supabase';
+          }
         },
       },
     },

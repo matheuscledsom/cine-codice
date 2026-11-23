@@ -104,7 +104,7 @@ export function InstallAppBanner({ variant = 'home' }) {
           <Download className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
           <div className="min-w-0">
             <p className="text-xs font-semibold text-ink">
-              Instalar Cine Códice no Dispositivo
+              Instalar OmniPrism no Dispositivo
             </p>
             <p className="text-[11px] text-muted">
               Acesso instantâneo na área de trabalho ou Android com cache inteligente (teto 80 MB LRU).
@@ -146,7 +146,7 @@ export function InstallAppBanner({ variant = 'home' }) {
             <p className="text-xs font-semibold text-ink">
               {isInstalled
                 ? 'Aplicativo Instalado no Dispositivo'
-                : 'Instalar Cine Códice no Dispositivo'}
+                : 'Instalar OmniPrism no Dispositivo'}
             </p>
             <p className="text-[11px] text-muted">
               PWA nativo para PC (Windows/Linux) e Android · Cache de pôsteres LRU (máx. 80 MB).

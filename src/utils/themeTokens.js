@@ -451,3 +451,16 @@ export const TEXTURE_OPTIONS = [
   { id: 'grid', label: 'Grade de Fichamento' },
   { id: 'glow', label: 'Brilho Sutil' },
 ];
+
+export function buildDomainPortalPalette(tintHex, modeId = 'dark') {
+  const built = buildHarmonizedThemeVars(modeId, tintHex);
+  return {
+    accent: built.vars['--accent-primary'],
+    accentContrast: built.vars['--accent-contrast'],
+    surface: built.vars['--bg-surface'],
+    elevated: built.vars['--bg-elevated'],
+    border: built.vars['--border-hairline'],
+    textPrimary: built.vars['--text-primary'],
+    textMuted: built.vars['--text-muted'],
+  };
+}
