@@ -1,4 +1,37 @@
-# Progresso — Cine Códice v1.3.0 · Lumière
+# Progresso — OMNIPRISM v2.4.0 ("Refino & Profundidade")
+
+**Branch ativa:** `feat/v2.4.0-refino` (a partir de `main` em `a201f06`)
+**Versão base:** `2.3.3` -> **Versão alvo:** `2.4.0`
+
+## Linha de Base (Baseline — `main` @ `a201f06`)
+- **Testes (`npm test`):** `152/152` aprovados em `39` suítes (`duration_ms: 3064 ms`, wall `3.47s`).
+- **Contraste (`npm run validate:contrast`):** aprovado (3 modos base + 8 ambientes + 6 amostras livres).
+- **Design (`npm run validate:design`):** aprovado em `145` arquivos de `src/`.
+- **Build (`npm run build`, 3.69s):** precache PWA `43` entradas (`1688.91 KiB`). Principais chunks:
+  - `index-*.js`: `456.02 kB` (gzip `137.48 kB`)
+  - `vendor-react-*.js`: `223.08 kB` (gzip `69.17 kB`)
+  - `vendor-supabase-*.js`: `214.35 kB` (gzip `55.47 kB`)
+  - `WorkDetailPage-*.js`: `189.58 kB` (gzip `43.48 kB`)
+  - `ProfileScreen-*.js`: `101.73 kB` (gzip `24.68 kB`)
+  - `index-*.css`: `85.31 kB` (gzip `15.40 kB`)
+  - `AddScreen-*.js`: `52.95 kB` (gzip `11.87 kB`)
+  - `ListScreen-*.js`: `44.05 kB` (gzip `11.63 kB`)
+- **Maiores arquivos de `src/` (total `61.408` linhas):**
+  1. `src/services/cinemaApi.js` (`4.105` linhas)
+  2. `src/components/WorkDetailPage.jsx` (`3.228` linhas)
+  3. `src/screens/AddScreen.jsx` (`2.567` linhas)
+  4. `src/App.jsx` (`2.406` linhas)
+  5. `src/services/multiDomainSearchService.js` (`1.920` linhas)
+  6. `src/components/EpisodeListTab.jsx` (`1.793` linhas)
+  7. `src/screens/ListScreen.jsx` (`1.701` linhas)
+  8. `src/screens/ProfileScreen.jsx` (`1.477` linhas)
+
+## Linha do Tempo das Fases — Ciclo v2.4.0 ("Refino & Profundidade")
+- [x] **Fase 0 (v2.4.0) — Baseline e Documentacao** — criada branch `feat/v2.4.0-refino` a partir de `main` (`a201f06`), linha de base medida (`152/152` testes em `3.06s`, bundle principal `456.02 kB`), criados [`docs/PLANO_v2.4.0.md`](./PLANO_v2.4.0.md) e [`docs/DESIGN.md`](./DESIGN.md).
+
+---
+
+# Progresso Anterior — Cine Códice v1.3.0 · Lumière
 
 **Branch ativa:** `feat/v1.3.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.2.0 · Lumière` (merge na `main` `bbf099c` + tag `v1.2.0` + `git push origin main --tags`)
