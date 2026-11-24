@@ -19,6 +19,11 @@ const OfflineBookPickerModal = lazy(() =>
     default: m.OfflineBookPickerModal,
   }))
 );
+const OracleWidget = lazy(() =>
+  import('../components/OracleWidget').then((m) => ({
+    default: m.OracleWidget,
+  }))
+);
 const ReleaseHistoryModal = lazy(() =>
   import('../components/ReleaseHistoryModal').then((m) => ({
     default: m.ReleaseHistoryModal,
@@ -48,6 +53,7 @@ export function HomeScreen({
   profile = null,
   loading = false,
   themeMode = 'dark',
+  geminiKey = '',
   backupReminder = null,
   onSaveBackupNow,
   onDismissBackupReminder,
@@ -56,6 +62,7 @@ export function HomeScreen({
   onSelectItem,
   onNavigateList,
   onNavigateAdd,
+  onOpenGeminiSettings,
 }) {
   const { showToast } = useToast();
 
@@ -603,6 +610,17 @@ export function HomeScreen({
               </div>
             </section>
           )}
+          {/* Curador (OracleWidget) adaptado ao domínio ativo — v2.4.0 Fase 5 */}
+          <Suspense fallback={null}>
+            <OracleWidget
+              items={items}
+              activeDomain={homeFilterDomain === 'all' ? activeDomain : homeFilterDomain}
+              profile={profile}
+              geminiKey={geminiKey}
+              onSelectItem={onSelectItem}
+              onOpenGeminiSettings={onOpenGeminiSettings}
+            />
+          </Suspense>
         </>
       )}
 

@@ -1,10 +1,13 @@
 import {
+  Activity,
   Award,
   BarChart2,
   BookOpen,
   Camera,
+  Database,
   Film,
   Gamepad2,
+  GitBranch,
   Layers,
   Music,
   Palette,
@@ -149,6 +152,7 @@ export function ProfileScreen({
   }, [activeDomain]);
   const [shelfLimit, setShelfLimit] = useState(PAGE_SIZE);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState(null);
   const [themeModalOpen, setThemeModalOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [titlesModalOpen, setTitlesModalOpen] = useState(false);
@@ -560,7 +564,10 @@ export function ProfileScreen({
               <button
                 ref={settingsBtnRef}
                 type="button"
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => {
+                  setSettingsInitialTab(null);
+                  setSettingsOpen(true);
+                }}
                 aria-label="Configurações"
                 aria-expanded={settingsOpen}
                 title="Configurações"
@@ -876,6 +883,59 @@ export function ProfileScreen({
               })}
             </div>
           </section>
+
+          {/* Central de Backup, Novidades da Versão e Diagnóstico — v2.4.0 Fase 5 */}
+          <div
+            aria-label="Ferramentas do perfil"
+            className="grid grid-cols-1 gap-2 sm:grid-cols-3"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenBackupModal) onOpenBackupModal();
+                else onExportBackup?.();
+              }}
+              data-testid="profile-backup-center-btn"
+              className="flex min-h-[44px] items-center justify-between gap-2 rounded-[6px] border border-line bg-card px-3.5 py-2.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent"
+            >
+              <span className="inline-flex items-center gap-2">
+                <Database className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                <span>Central de Backup</span>
+              </span>
+              <span className="text-[11px] text-subtle">.ccodex / .json</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setReleaseModalOpen(true)}
+              data-testid="profile-release-notes-btn"
+              className="flex min-h-[44px] items-center justify-between gap-2 rounded-[6px] border border-line bg-card px-3.5 py-2.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent"
+            >
+              <span className="inline-flex items-center gap-2">
+                <GitBranch className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                <span>Novidades da versão</span>
+              </span>
+              <span className="text-[11px] tabular-nums text-subtle">
+                {CODICE_RELEASE.label}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setSettingsInitialTab('diagnostics');
+                setSettingsOpen(true);
+              }}
+              data-testid="profile-diagnostics-btn"
+              className="flex min-h-[44px] items-center justify-between gap-2 rounded-[6px] border border-line bg-card px-3.5 py-2.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent"
+            >
+              <span className="inline-flex items-center gap-2">
+                <Activity className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                <span>Diagnóstico</span>
+              </span>
+              <span className="text-[11px] text-subtle">Local</span>
+            </button>
+          </div>
 
           {/* ATIVIDADE RECENTE */}
           {recentActivityWorks.length > 0 && (
@@ -1367,10 +1427,16 @@ export function ProfileScreen({
         {settingsOpen && (
           <ProfileSettingsDrawer
             isOpen={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
+            onClose={() => {
+              setSettingsOpen(false);
+              setSettingsInitialTab(null);
+            }}
             returnFocusRef={settingsBtnRef}
+            items={items}
+            initialTab={settingsInitialTab}
             profile={profile}
             cloudState={cloudState}
+            onOpenReleaseNotes={() => setReleaseModalOpen(true)}
             soundOn={soundOn}
             onToggleSound={() => {
               const next = !soundOn;

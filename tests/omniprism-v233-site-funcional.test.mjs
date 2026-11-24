@@ -1017,19 +1017,21 @@ describe('OmniPrism v2.3.3 — 4. Segurança dos dados (sync não destrutivo e b
 });
 
 describe('OmniPrism v2.3.3 — 5. Versão oficial', () => {
-  it('atualiza package.json, src/config/versioning.js (sem Lumière) e CHANGELOG.md para 2.3.3', () => {
+  it('mantém versão atual (2.4.0) sem Lumière e preserva histórico 2.3.3 em package.json, versioning.js e CHANGELOG.md', () => {
     const pkg = JSON.parse(readText('package.json'));
     assert.equal(pkg.name, 'omniprism');
-    assert.equal(pkg.version, '2.3.3');
+    assert.equal(pkg.version, '2.4.0');
 
-    assert.equal(CODICE_RELEASE.version, '2.3.3');
-    assert.equal(CODICE_RELEASE.label, 'v2.3.3');
+    assert.equal(CODICE_RELEASE.version, '2.4.0');
+    assert.equal(CODICE_RELEASE.label, 'v2.4.0');
     assert.equal(CODICE_RELEASE.label.includes('Lumière'), false);
     assert.equal(CODICE_RELEASE.codename, '');
-    assert.equal(RELEASE_HISTORY[0].version, '2.3.3');
-    assert.equal(RELEASE_HISTORY[0].label, 'v2.3.3');
+    assert.equal(RELEASE_HISTORY[0].version, '2.4.0');
+    assert.equal(RELEASE_HISTORY[0].label, 'v2.4.0');
+    assert.ok(RELEASE_HISTORY.some((r) => r.version === '2.3.3' && r.label === 'v2.3.3'));
 
     const changelog = readText('CHANGELOG.md');
+    assert.match(changelog, /## \[v2\.4\.0\]/);
     assert.match(changelog, /## \[v2\.3\.3\]/);
   });
 });

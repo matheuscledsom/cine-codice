@@ -1,4 +1,5 @@
 import {
+  Activity,
   Check,
   Cloud,
   Cpu,
@@ -28,7 +29,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { domainConfig } from '../config/domainConfig';
 import { SOCIAL_ENABLED } from '../config/flags';
 import { CODICE_RELEASE } from '../config/versioning';
@@ -40,6 +41,10 @@ import {
 } from '../services/googleDriveBackup';
 import { ApiStatusPanel } from './ApiStatusPanel';
 import { InstallAppBanner } from './InstallAppBanner';
+
+const DiagnosticsPanel = lazy(() =>
+  import('./DiagnosticsPanel').then((m) => ({ default: m.DiagnosticsPanel }))
+);
 import {
   DNA_DENSITY_OPTIONS,
   DNA_DIMENSIONS,
@@ -71,6 +76,7 @@ export const SETTINGS_TABS = [
     icon: Shield,
   },
   { id: 'data', hash: '#settings-data', label: 'Dados & APIs', icon: Database },
+  { id: 'diagnostics', hash: '#settings-diagnostics', label: 'Diagnóstico', icon: Activity },
 ];
 
 const VISIBILITY_OPTIONS = [
@@ -141,6 +147,8 @@ export function ProfileSettingsDrawer({
   isOpen,
   onClose,
   returnFocusRef,
+  items = [],
+  initialTab = null,
   profile,
   backendSession = null,
   cloudState = null,
@@ -162,14 +170,18 @@ export function ProfileSettingsDrawer({
   onOpenImportCatalog,
   onOpenShortcuts,
   onOpenAboutCredits,
+  onOpenReleaseNotes,
   aiPanelSlot = null,
 }) {
   const drawerRef = useRef(null);
   const closeBtnRef = useRef(null);
   const tabRefs = useRef([]);
-  const [activeTab, setActiveTab] = useState(() =>
-    typeof window !== 'undefined' ? resolveTabFromHash(window.location.hash) : 'appearance'
-  );
+  const [activeTab, setActiveTab] = useState(() => {
+    if (initialTab && SETTINGS_TABS.some((t) => t.id === initialTab)) {
+      return initialTab;
+    }
+    return typeof window !== 'undefined' ? resolveTabFromHash(window.location.hash) : 'appearance';
+  });
   const [exclusionInput, setExclusionInput] = useState('');
   const [googleClientIdInput, setGoogleClientIdInput] = useState(() =>
     getConfiguredGoogleClientId()
@@ -275,10 +287,13 @@ export function ProfileSettingsDrawer({
   };
 
   useEffect(() => {
-    if (!isOpen || typeof window === 'undefined') return undefined;
-    if (window.location.hash) {
+    if (!isOpen) return undefined;
+    if (initialTab && SETTINGS_TABS.some((t) => t.id === initialTab)) {
+      setActiveTab(initialTab);
+    } else if (typeof window !== 'undefined' && window.location.hash) {
       setActiveTab(resolveTabFromHash(window.location.hash));
     }
+    if (typeof window === 'undefined') return undefined;
     const onHashChange = () => {
       if (window.location.hash.startsWith('#settings-')) {
         setActiveTab(resolveTabFromHash(window.location.hash));
@@ -286,7 +301,7 @@ export function ProfileSettingsDrawer({
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
-  }, [isOpen]);
+  }, [isOpen, initialTab]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -359,11 +374,11 @@ export function ProfileSettingsDrawer({
           </button>
         </div>
 
-        {/* 4 Abas Fixas no Topo sincronizadas com hash */}
+        {/* 5 Abas no Topo sincronizadas com hash (Aparência, DNA, Modo Calmo, Dados & APIs, Diagnóstico) */}
         <div
           role="tablist"
           aria-label="Seções de configurações"
-          className="grid shrink-0 grid-cols-4 border-b border-line bg-app"
+          className="flex shrink-0 overflow-x-auto border-b border-line bg-app no-scrollbar"
         >
           {SETTINGS_TABS.map((tab, idx) => {
             const Icon = tab.icon;
@@ -382,7 +397,7 @@ export function ProfileSettingsDrawer({
                 tabIndex={active ? 0 : -1}
                 onClick={() => selectTab(tab.id)}
                 onKeyDown={(e) => handleTabKeyDown(e, idx)}
-                className={`flex min-h-[46px] flex-col items-center justify-center gap-0.5 border-b-2 px-1 py-1.5 text-[10px] font-medium transition-colors ${
+                className={`flex min-h-[46px] min-w-[78px] flex-1 shrink-0 flex-col items-center justify-center gap-0.5 border-b-2 px-2 py-1.5 text-[10px] font-medium transition-colors ${
                   active
                     ? 'border-accent bg-card text-ink'
                     : 'border-transparent text-muted hover:text-ink'
@@ -1247,6 +1262,36 @@ export function ProfileSettingsDrawer({
                 </div>
                 {aiPanelSlot}
               </section>
+            </div>
+          )}
+
+          {/* ABA 5: DIAGNÓSTICO LOCAL (v2.4.0 Fase 5) */}
+          {activeTab === 'diagnostics' && (
+            <div
+              role="tabpanel"
+              id="settings-panel-diagnostics"
+              aria-labelledby="settings-tab-diagnostics"
+            >
+              <Suspense
+                fallback={
+                  <div className="p-4">
+                    <div className="h-32 animate-pulse rounded-[6px] border border-line bg-app" />
+                  </div>
+                }
+              >
+                <DiagnosticsPanel
+                  items={items}
+                  authenticated={Boolean(cloudState?.authenticated)}
+                  onOpenReleaseNotes={
+                    onOpenReleaseNotes
+                      ? () => {
+                          onClose?.();
+                          onOpenReleaseNotes();
+                        }
+                      : undefined
+                  }
+                />
+              </Suspense>
             </div>
           )}
         </div>

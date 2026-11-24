@@ -16,23 +16,40 @@ export const VERSIONING_RULES = {
 };
 
 export const CODICE_RELEASE = {
-  version: '2.3.3',
+  version: '2.4.0',
   codename: '',
-  label: 'v2.3.3',
-  releaseType: 'patch',
+  label: 'v2.4.0',
+  releaseType: 'minor',
   date: '2026-11',
   summary:
-    'OmniPrism v2.3.3: CSP completa para os 4 domínios (Cinema, Leitura, Games e Música), proxy autenticado Cloudflare Pages Functions (/api/tmdb/*, /api/omdb e /api/status) com cache de borda e fallback transparente para chave local, painel Status das APIs em Configurações e suíte de testes de segurança dos dados.',
+    'OmniPrism v2.4.0 ("Refino & Profundidade"): modelo único de avaliação 5 estrelas (0.5 a 5.0) + marca Obra da vida + 5 critérios opcionais por domínio, migrações aditivas com snapshot automático no IndexedDB, busca progressiva 250 ms com streaming por fonte, direção de arte limpa (capas protagonistas, 2 raios, alvos >= 44 px), catalogação enxuta com alerta de duplicatas, escopos de franquia (Linha Principal vs Universo Completo), hierarquia musical SOUND (Banda -> Discografia -> Álbuns/EPs/Singles -> Faixas), Página de Entidade clicável, Curador por domínio e Diagnóstico local.',
 };
 
 export const RELEASE_HISTORY = [
+  {
+    version: '2.4.0',
+    codename: '',
+    label: 'v2.4.0',
+    releaseType: 'minor',
+    date: '2026-11',
+    summary: CODICE_RELEASE.summary,
+    highlights: [
+      'Avaliação unificada 5 estrelas com meia estrela (0.5 a 5.0, escala interna 0–100), marca opcional "Obra da vida" (compatível com o antigo 11 de Games) e avaliação inteligente opcional por 5 critérios específicos por domínio (20% / 1 estrela cada) com sobrescrita manual livre.',
+      'IndexedDB com migrações aditivas versionadas e snapshot automático antes de migrar e antes de restaurar backup no modo Mesclar, Error Boundary global com exportação de backup de emergência, auditoria de segurança (docs/SEGURANCA.md) e rascunhos SQL locais de RLS para revisão.',
+      'Busca progressiva (debounce 250 ms, AbortController, catálogo local primeiro, streaming por fonte sem travar em MusicBrainz/Wikidata e histórico local), imagens lazy/async em proporção fixa (2:3 e 1:1), paginação incremental >200 itens com IntersectionObserver, code-splitting e banner discreto de atualização PWA.',
+      'Direção de arte editorial (docs/DESIGN.md): capas limpas sem pílulas poluentes, 2 valores de raio, alvos de toque >= 44 px, serifa apenas em títulos de obra/tela, números tabulares e fim de caixas vazias pesadas e card dentro de card.',
+      'Catalogação search-first com folha rápida enxuta e alerta de duplicatas; escopos de franquia (Linha Principal vs Universo Completo) para Cinema, Livros e Games; hierarquia musical SOUND (Banda -> Discografia -> Lançamentos -> Faixas); Página de Entidade clicável (Autor, Diretor, Elenco, Estúdio, Banda); Acervo com folha única "Filtrar" e Desfazer em lote.',
+      'Home com faixa "Em andamento" cross-domain + Curador (OracleWidget) adaptado ao domínio ativo, e Perfil com acesso rápido à Central de Backup, Novidades da versão e Configurações > Diagnóstico (versão, catálogo, storage, status das fontes e log local copiável dos últimos 50 erros sem envio externo).',
+    ],
+  },
   {
     version: '2.3.3',
     codename: '',
     label: 'v2.3.3',
     releaseType: 'patch',
     date: '2026-11',
-    summary: CODICE_RELEASE.summary,
+    summary:
+      'OmniPrism v2.3.3: CSP completa para os 4 domínios (Cinema, Leitura, Games e Música), proxy autenticado Cloudflare Pages Functions (/api/tmdb/*, /api/omdb e /api/status) com cache de borda e fallback transparente para chave local, painel Status das APIs em Configurações e suíte de testes de segurança dos dados.',
     highlights: [
       'CSP (public/_headers) atualizada apenas com os hosts ausentes de Leitura, Games, Música e Google Drive (itunes.apple.com, musicbrainz.org, openlibrary.org, www.googleapis.com, www.cheapshark.com, www.freetogame.com e coverartarchive.org), protegida por teste automatizado contra regressões.',
       'Proxy autenticado em Cloudflare Pages Functions (functions/api/) para TMDB (/api/tmdb/* com allowlist estrita), OMDb (/api/omdb) e diagnóstico (/api/status), validando Bearer token do Supabase, injetando chaves apenas no servidor e aplicando cache em caches.default (10 min busca / 24h detalhes).',
