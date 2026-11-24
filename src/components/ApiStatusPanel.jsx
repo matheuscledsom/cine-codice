@@ -78,6 +78,7 @@ export function ApiStatusPanel({ authenticated = false }) {
       tmdb: { configured: false },
       omdb: { configured: false },
       lastfm: { configured: false },
+      rawg: { configured: false },
     },
   });
   const [resultsById, setResultsById] = useState({});
@@ -96,6 +97,7 @@ export function ApiStatusPanel({ authenticated = false }) {
         tmdb: { configured: Boolean(res.providers?.tmdb?.configured) },
         omdb: { configured: Boolean(res.providers?.omdb?.configured) },
         lastfm: { configured: Boolean(res.providers?.lastfm?.configured) },
+        rawg: { configured: Boolean(res.providers?.rawg?.configured) },
       },
     });
   }, []);

@@ -12,6 +12,7 @@ import {
   fetchLastfmViaProxy,
   fetchOmdbViaProxyOrDirect,
   fetchProxyStatus,
+  fetchRawgViaProxy,
   fetchTmdbViaProxyOrDirect,
 } from './apiProxyClient.js';
 import { loadOmdbApiKey, loadTmdbApiKey } from './cinemaApi.js';
@@ -152,6 +153,15 @@ export const API_STATUS_SOURCES = Object.freeze([
     serverOnlySecret: true,
     probeType: 'lastfm',
   },
+  {
+    id: 'rawg',
+    label: 'RAWG',
+    domainLabel: 'Games',
+    host: 'api.rawg.io',
+    supportsServerProxy: true,
+    serverOnlySecret: true,
+    probeType: 'rawg',
+  },
 ]);
 
 export async function loadServerApiStatus(options = {}) {
@@ -166,6 +176,7 @@ export async function loadServerApiStatus(options = {}) {
       tmdb: { configured: Boolean(res.providers?.tmdb?.configured) },
       omdb: { configured: Boolean(res.providers?.omdb?.configured) },
       lastfm: { configured: Boolean(res.providers?.lastfm?.configured) },
+      rawg: { configured: Boolean(res.providers?.rawg?.configured) },
     },
   };
 }
@@ -401,6 +412,74 @@ export async function probeApiSource(
           message: outcome.status
             ? `Indisponível (HTTP ${outcome.status}).`
             : 'Falha ao consultar Last.fm via servidor.',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: true,
+        state: 'online',
+        status: outcome.status || 200,
+        latencyMs,
+        via: 'proxy',
+        message: 'Online via servidor',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
+  if (meta.probeType === 'rawg') {
+    try {
+      const outcome = await fetchRawgViaProxy(
+        'games',
+        { search: 'portal', page_size: '1' },
+        {
+          dedup: false,
+          timeoutMs,
+          fetchImpl,
+          nowFn,
+          accessToken,
+          supabaseClient,
+          storage,
+          forceProxy,
+          ...(isDev !== undefined ? { isDev } : {}),
+        }
+      );
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (outcome.notConfigured || outcome.status === 503) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'not_configured',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: 'Não configurado no servidor.',
+          checkedAt: nowFn(),
+        };
+      }
+      if (!outcome.ok) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'error',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.status
+            ? `Indisponível (HTTP ${outcome.status}).`
+            : 'Falha ao consultar RAWG via servidor.',
           checkedAt: nowFn(),
         };
       }

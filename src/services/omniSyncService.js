@@ -330,6 +330,21 @@ export function mapLocalWorkToCatalogRow(
       excludeFromDiscography: Boolean(
         work.excludeFromDiscography ?? work.progress_data?.excludeFromDiscography
       ),
+      rawgId: Number(work.rawgId || work.ids?.rawg) > 0 ? Math.floor(Number(work.rawgId || work.ids?.rawg)) : null,
+      rawgPlaytimeHours:
+        Number(work.rawgPlaytimeHours) > 0
+          ? Math.round(Number(work.rawgPlaytimeHours) * 10) / 10
+          : null,
+      rawgPlaytimeSource: String(work.rawgPlaytimeSource || '').trim() || null,
+      manualCampaignHours:
+        Number(work.manualCampaignHours) > 0
+          ? Math.round(Number(work.manualCampaignHours) * 10) / 10
+          : null,
+      completion100Hours:
+        Number(work.completion100Hours) > 0
+          ? Math.round(Number(work.completion100Hours) * 10) / 10
+          : null,
+      completion100Source: String(work.completion100Source || '').trim() || null,
       franchiseName: String(work.franchiseName || '').trim(),
       belongsToCollection: work.belongsToCollection || null,
       franchiseRelations: Array.isArray(work.franchiseRelations)
@@ -525,6 +540,21 @@ export function mapCatalogRowToLocalWork(row = {}) {
     releasedEpisodesSource: String(pd.releasedEpisodesSource || '').trim() || null,
     releasedEpisodesFetchedAt: pd.releasedEpisodesFetchedAt || null,
     excludeFromDiscography: Boolean(pd.excludeFromDiscography),
+    rawgId: Number(pd.rawgId || extIds.rawg) > 0 ? Math.floor(Number(pd.rawgId || extIds.rawg)) : null,
+    rawgPlaytimeHours:
+      Number(pd.rawgPlaytimeHours) > 0
+        ? Math.round(Number(pd.rawgPlaytimeHours) * 10) / 10
+        : null,
+    rawgPlaytimeSource: String(pd.rawgPlaytimeSource || '').trim() || null,
+    manualCampaignHours:
+      Number(pd.manualCampaignHours) > 0
+        ? Math.round(Number(pd.manualCampaignHours) * 10) / 10
+        : null,
+    completion100Hours:
+      Number(pd.completion100Hours) > 0
+        ? Math.round(Number(pd.completion100Hours) * 10) / 10
+        : null,
+    completion100Source: String(pd.completion100Source || '').trim() || null,
     verdict: pd.verdict ?? null,
     externalRatings,
     ids: {

@@ -323,6 +323,28 @@ function normalizeItem(rawItem, spectatorDna = null) {
     excludeFromDiscography: Boolean(
       rawItem.excludeFromDiscography ?? rawItem.progress_data?.excludeFromDiscography
     ),
+    rawgId:
+      Number(rawItem.rawgId ?? rawItem.progress_data?.rawgId) > 0
+        ? Math.floor(Number(rawItem.rawgId ?? rawItem.progress_data?.rawgId))
+        : null,
+    rawgPlaytimeHours:
+      Number(rawItem.rawgPlaytimeHours ?? rawItem.progress_data?.rawgPlaytimeHours) > 0
+        ? Math.round(Number(rawItem.rawgPlaytimeHours ?? rawItem.progress_data?.rawgPlaytimeHours) * 10) / 10
+        : null,
+    rawgPlaytimeSource:
+      String(rawItem.rawgPlaytimeSource ?? rawItem.progress_data?.rawgPlaytimeSource ?? '').trim() ||
+      null,
+    manualCampaignHours:
+      Number(rawItem.manualCampaignHours ?? rawItem.progress_data?.manualCampaignHours) > 0
+        ? Math.round(Number(rawItem.manualCampaignHours ?? rawItem.progress_data?.manualCampaignHours) * 10) / 10
+        : null,
+    completion100Hours:
+      Number(rawItem.completion100Hours ?? rawItem.progress_data?.completion100Hours) > 0
+        ? Math.round(Number(rawItem.completion100Hours ?? rawItem.progress_data?.completion100Hours) * 10) / 10
+        : null,
+    completion100Source:
+      String(rawItem.completion100Source ?? rawItem.progress_data?.completion100Source ?? '').trim() ||
+      null,
     externalRatings,
     reviewCriteria,
     verdict: rating !== null ? (rawItem.verdict || getVerdictForScore(rating)) : (rawItem.verdict || null),

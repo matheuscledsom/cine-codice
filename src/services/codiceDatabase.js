@@ -324,6 +324,21 @@ export function buildCodiceDatabase({
       completionType: String(rawItem.completionType || '').trim(),
       storeOrLauncher: String(rawItem.storeOrLauncher || '').trim(),
       buildOrCharacter: String(rawItem.buildOrCharacter || '').trim(),
+      rawgId: Number(rawItem.rawgId) > 0 ? Math.floor(Number(rawItem.rawgId)) : null,
+      rawgPlaytimeHours:
+        Number(rawItem.rawgPlaytimeHours) > 0
+          ? Math.round(Number(rawItem.rawgPlaytimeHours) * 10) / 10
+          : null,
+      rawgPlaytimeSource: String(rawItem.rawgPlaytimeSource || '').trim() || null,
+      manualCampaignHours:
+        Number(rawItem.manualCampaignHours) > 0
+          ? Math.round(Number(rawItem.manualCampaignHours) * 10) / 10
+          : null,
+      completion100Hours:
+        Number(rawItem.completion100Hours) > 0
+          ? Math.round(Number(rawItem.completion100Hours) * 10) / 10
+          : null,
+      completion100Source: String(rawItem.completion100Source || '').trim() || null,
       // Música
       albumName: String(rawItem.albumName || '').trim(),
       excludeFromDiscography: Boolean(

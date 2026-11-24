@@ -116,6 +116,16 @@ export const PROVIDER_LIMITS = Object.freeze({
     dailyLimit: null,
     autoStopRatio: null,
   }),
+  rawg: Object.freeze({
+    id: 'rawg',
+    label: 'RAWG',
+    maxRequests: 15,
+    windowMs: 10_000,
+    minIntervalMs: 250,
+    respectRateLimitHeaders: false,
+    dailyLimit: null,
+    autoStopRatio: null,
+  }),
 });
 
 export const CACHE_DB_NAME = 'cine_codice_api_cache_v1';

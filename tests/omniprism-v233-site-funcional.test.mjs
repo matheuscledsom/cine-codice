@@ -209,7 +209,7 @@ describe('OmniPrism v2.3.3 — 1. CSP (public/_headers) e cobertura de hosts fet
       `Hosts chamados por fetch em src/ ausentes no connect-src de public/_headers: ${missing.join('; ')}`
     );
 
-    // Confirma os 7 hosts adicionados na v2.3.3
+    // Confirma os hosts de catalogo (v2.3.3 + v2.5.0 Last.fm e RAWG)
     const expectedAdded = [
       'itunes.apple.com',
       'musicbrainz.org',
@@ -218,6 +218,8 @@ describe('OmniPrism v2.3.3 — 1. CSP (public/_headers) e cobertura de hosts fet
       'www.cheapshark.com',
       'www.freetogame.com',
       'coverartarchive.org',
+      'ws.audioscrobbler.com',
+      'api.rawg.io',
     ];
     for (const host of expectedAdded) {
       assert.equal(
@@ -338,6 +340,7 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
         tmdb: { configured: true },
         omdb: { configured: true },
         lastfm: { configured: false },
+        rawg: { configured: false },
       },
     });
 
@@ -356,6 +359,7 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
         tmdb: { configured: true },
         omdb: { configured: false },
         lastfm: { configured: false },
+        rawg: { configured: false },
       },
     });
   });

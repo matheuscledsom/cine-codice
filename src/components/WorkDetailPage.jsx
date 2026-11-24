@@ -57,6 +57,11 @@ import {
 import { formatNextAiringBadge } from '../lib/episodeStats';
 import { extractWorkEntities } from '../lib/entityHelpers';
 import { ALL_FRANCHISE_TIER_OPTIONS } from '../lib/franchiseTier';
+import {
+  formatGameCampaignTime,
+  formatGameCompletion100Time,
+  suggestGameFranchiseLink,
+} from '../lib/gameDepth';
 import { computeDerivedAverage, updateEditableSubgenres } from '../lib/musicDepth';
 import { computeWorkCritiqueBadge } from '../lib/ratingBadges';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
@@ -65,6 +70,7 @@ import {
   enrichWorkWithExternalRatings,
 } from '../services/cinemaApi';
 import { findFranchiseForItem } from '../services/franchiseEngine';
+import { fetchRawgGameDepth } from '../services/gameDepthService';
 import { fetchLastfmSubgenres } from '../services/musicDepthService';
 import {
   getDisplayGenres,
@@ -184,6 +190,7 @@ export function WorkDetailPage({
   const [tagInput, setTagInput] = useState('');
   const [subgenreInput, setSubgenreInput] = useState('');
   const [subgenresLoading, setSubgenresLoading] = useState(false);
+  const [rawgLoading, setRawgLoading] = useState(false);
   const [ratingsLoading, setRatingsLoading] = useState(false);
   const [ratingsMeta, setRatingsMeta] = useState({
     failedSources: [],
@@ -1734,6 +1741,115 @@ export function WorkDetailPage({
                             {item.completedDate || item.completedAt || '—'}
                           </dd>
                         </div>
+                        {(() => {
+                          const campaignInfo = formatGameCampaignTime(item);
+                          const comp100Info = formatGameCompletion100Time(item);
+                          const franchiseSug = suggestGameFranchiseLink(item, allItems);
+                          return (
+                            <div
+                              data-testid="games-more-details-depth"
+                              className="sm:col-span-2 grid grid-cols-1 gap-2 sm:grid-cols-2 border-t border-line pt-2"
+                            >
+                              <div className="rounded-lg border border-line bg-app p-2.5 space-y-1">
+                                <dt className="text-[10px] text-subtle">Tempo médio de campanha</dt>
+                                <dd className="font-semibold tabular-nums text-ink">
+                                  {campaignInfo ? campaignInfo.label : 'Não informado'}
+                                </dd>
+                                <p className="text-[10px] text-subtle">
+                                  {campaignInfo
+                                    ? `Fonte: ${campaignInfo.sourceLabel}`
+                                    : 'Consulte o RAWG ou informe manualmente em Editar'}
+                                </p>
+                                <button
+                                  type="button"
+                                  disabled={rawgLoading}
+                                  data-testid="games-fetch-rawg-btn"
+                                  onClick={async () => {
+                                    setRawgLoading(true);
+                                    try {
+                                      const res = await fetchRawgGameDepth(item);
+                                      if (res.notConfigured) {
+                                        showToast({
+                                          message:
+                                            'RAWG não configurado no servidor. Você pode editar o tempo manualmente em Mais detalhes.',
+                                          type: 'info',
+                                        });
+                                      } else if (res.ok && res.data) {
+                                        onUpdateItem(item.id, {
+                                          rawgId: res.data.rawgId,
+                                          rawgPlaytimeHours: res.data.rawgPlaytimeHours,
+                                          rawgPlaytimeSource: res.data.rawgPlaytimeSource,
+                                        });
+                                        showToast({
+                                          message:
+                                            res.data.rawgPlaytimeHours !== null
+                                              ? `Tempo médio atualizado (${res.data.rawgPlaytimeHours}h · ${res.data.rawgPlaytimeSource}).`
+                                              : 'Jogo encontrado no RAWG, sem tempo médio informado.',
+                                          type: 'success',
+                                        });
+                                      } else {
+                                        showToast({
+                                          message: 'Não foi possível consultar dados do RAWG agora.',
+                                          type: 'info',
+                                        });
+                                      }
+                                    } finally {
+                                      setRawgLoading(false);
+                                    }
+                                  }}
+                                  className="mt-1 inline-flex min-h-[44px] items-center rounded-[6px] border border-line bg-card px-2.5 text-[11px] font-medium text-ink hover:border-accent disabled:opacity-55"
+                                >
+                                  {rawgLoading ? 'Consultando RAWG...' : 'Consultar RAWG'}
+                                </button>
+                              </div>
+
+                              <div className="rounded-lg border border-line bg-app p-2.5 space-y-1">
+                                <dt className="text-[10px] text-subtle">Tempo 100%</dt>
+                                <dd className="font-semibold tabular-nums text-ink">
+                                  {comp100Info.label}
+                                </dd>
+                                <p className="text-[10px] text-subtle">
+                                  {comp100Info.sourceLabel}
+                                </p>
+                              </div>
+
+                              {franchiseSug.suggestedFranchiseName &&
+                                franchiseSug.suggestedFranchiseName !== (item.franchiseName || '') && (
+                                  <div
+                                    data-testid="games-franchise-suggestion"
+                                    className="sm:col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-app p-2.5"
+                                  >
+                                    <div className="min-w-0">
+                                      <p className="text-[10px] text-subtle">
+                                        Sugestão de vínculo de franquia (confirmação manual)
+                                      </p>
+                                      <p className="truncate text-xs font-semibold text-ink">
+                                        {franchiseSug.suggestedFranchiseName}
+                                        {franchiseSug.relatedGames.length > 0
+                                          ? ` (${franchiseSug.relatedGames.length} relacionado(s) no catálogo)`
+                                          : ''}
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        onUpdateItem(item.id, {
+                                          franchiseName: franchiseSug.suggestedFranchiseName,
+                                        });
+                                        showToast({
+                                          message: `Franquia vinculada manualmente: ${franchiseSug.suggestedFranchiseName}`,
+                                          type: 'success',
+                                        });
+                                      }}
+                                      className="inline-flex min-h-[44px] shrink-0 items-center rounded-[6px] border border-accent bg-accent/15 px-3 text-xs font-semibold text-ink hover:bg-accent hover:text-accent-ink"
+                                    >
+                                      Confirmar franquia
+                                    </button>
+                                  </div>
+                                )}
+                            </div>
+                          );
+                        })()}
                       </>
                     )}
                     {workDomain === 'music' && (
@@ -2993,6 +3109,43 @@ export function WorkDetailPage({
                           }
                           placeholder="Build, campeão ou time"
                           className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Tempo médio de campanha (h · manual se sem RAWG)
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={item.manualCampaignHours ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0);
+                            onUpdateItem(item.id, { manualCampaignHours: v });
+                          }}
+                          placeholder="Ex.: 25"
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Tempo 100% (h · editável)
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={item.completion100Hours ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0);
+                            onUpdateItem(item.id, {
+                              completion100Hours: v,
+                              completion100Source: v !== null ? 'manual' : null,
+                            });
+                          }}
+                          placeholder="Sem fonte automática — editável"
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
                         />
                       </label>
                       <label className="block sm:col-span-2">

@@ -313,6 +313,26 @@ export function normalizeRelationalWorkRecord(work = {}) {
     excludeFromDiscography: Boolean(
       work.excludeFromDiscography ?? work.progress_data?.excludeFromDiscography
     ),
+    rawgId:
+      Number(work.rawgId ?? work.progress_data?.rawgId) > 0
+        ? Math.floor(Number(work.rawgId ?? work.progress_data?.rawgId))
+        : null,
+    rawgPlaytimeHours:
+      Number(work.rawgPlaytimeHours ?? work.progress_data?.rawgPlaytimeHours) > 0
+        ? Math.round(Number(work.rawgPlaytimeHours ?? work.progress_data?.rawgPlaytimeHours) * 10) / 10
+        : null,
+    rawgPlaytimeSource:
+      String(work.rawgPlaytimeSource ?? work.progress_data?.rawgPlaytimeSource ?? '').trim() || null,
+    manualCampaignHours:
+      Number(work.manualCampaignHours ?? work.progress_data?.manualCampaignHours) > 0
+        ? Math.round(Number(work.manualCampaignHours ?? work.progress_data?.manualCampaignHours) * 10) / 10
+        : null,
+    completion100Hours:
+      Number(work.completion100Hours ?? work.progress_data?.completion100Hours) > 0
+        ? Math.round(Number(work.completion100Hours ?? work.progress_data?.completion100Hours) * 10) / 10
+        : null,
+    completion100Source:
+      String(work.completion100Source ?? work.progress_data?.completion100Source ?? '').trim() || null,
     franchiseName: String(work.franchiseName || '').trim(),
     overview,
     synopsis: overview,
