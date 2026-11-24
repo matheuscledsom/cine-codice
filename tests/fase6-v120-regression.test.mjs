@@ -323,7 +323,7 @@ describe('FASE 6 (v1.2.0) — Regressão Completa End-to-End · Cine Códice v1.
       assert.equal(fs.existsSync(path.resolve(rel)), false);
     }
 
-    assert.ok(['1.2.0', '1.3.0'].includes(CODICE_RELEASE.version));
+    assert.ok(['1.2.0', '1.3.0', '2.3.3'].includes(CODICE_RELEASE.version));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.2.0'));
   });
 });

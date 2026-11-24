@@ -16,23 +16,39 @@ export const VERSIONING_RULES = {
 };
 
 export const CODICE_RELEASE = {
-  version: '1.3.0',
-  codename: 'Lumière',
-  label: 'v1.3.0 · Lumière',
-  releaseType: 'minor',
+  version: '2.3.3',
+  codename: '',
+  label: 'v2.3.3',
+  releaseType: 'patch',
   date: '2026-11',
   summary:
-    'Cine Códice v1.3.0 Lumière: Cinema Moderno, Motor Visual OKLCH (Dark, White, Sepia + Harmonização de Cor de Fundo sem presets antigos), PWA Instalável com Cache LRU de 80 MB, Criptografia AES-GCM (.ccodex), Backup Google Drive, Paleta Adaptativa por Obra, Episódios Paginados de Anime Longo (One Piece), Radar de Franquias vs. Universos com Progresso Determinístico, Streaming no Brasil, Métricas Zero-Scroll e Perfil Editorial Letterboxd/Serializd com Histograma de Notas.',
+    'OmniPrism v2.3.3: CSP completa para os 4 domínios (Cinema, Leitura, Games e Música), proxy autenticado Cloudflare Pages Functions (/api/tmdb/*, /api/omdb e /api/status) com cache de borda e fallback transparente para chave local, painel Status das APIs em Configurações e suíte de testes de segurança dos dados.',
 };
 
 export const RELEASE_HISTORY = [
+  {
+    version: '2.3.3',
+    codename: '',
+    label: 'v2.3.3',
+    releaseType: 'patch',
+    date: '2026-11',
+    summary: CODICE_RELEASE.summary,
+    highlights: [
+      'CSP (public/_headers) atualizada apenas com os hosts ausentes de Leitura, Games, Música e Google Drive (itunes.apple.com, musicbrainz.org, openlibrary.org, www.googleapis.com, www.cheapshark.com, www.freetogame.com e coverartarchive.org), protegida por teste automatizado contra regressões.',
+      'Proxy autenticado em Cloudflare Pages Functions (functions/api/) para TMDB (/api/tmdb/* com allowlist estrita), OMDb (/api/omdb) e diagnóstico (/api/status), validando Bearer token do Supabase, injetando chaves apenas no servidor e aplicando cache em caches.default (10 min busca / 24h detalhes).',
+      'Fallback resiliente no cliente: com sessão Supabase ativa usa /api/... automaticamente; em 401/404/5xx, sem sessão ou em desenvolvimento, mantém chave local/VITE_ sem quebrar o app.',
+      'Novo painel "Status das APIs" em Configurações (Dados & APIs) com indicador por fonte, latência em ms, botão Testar e estado "Configurado no servidor" para TMDB e OMDb, sem exibir chaves nem emojis.',
+      'Testes dedicados de segurança dos dados garantindo que sync com nuvem vazia ou erro de rede nunca apaga obras locais e que backup/restauração preserva os 4 domínios, progress_data e track_ratings.',
+    ],
+  },
   {
     version: '1.3.0',
     codename: 'Lumière',
     label: 'v1.3.0 · Lumière',
     releaseType: 'minor',
     date: '2026-11',
-    summary: CODICE_RELEASE.summary,
+    summary:
+      'Cine Códice v1.3.0 Lumière: Cinema Moderno, Motor Visual OKLCH (Dark, White, Sepia + Harmonização de Cor de Fundo sem presets antigos), PWA Instalável com Cache LRU de 80 MB, Criptografia AES-GCM (.ccodex), Backup Google Drive, Paleta Adaptativa por Obra, Episódios Paginados de Anime Longo (One Piece), Radar de Franquias vs. Universos com Progresso Determinístico, Streaming no Brasil, Métricas Zero-Scroll e Perfil Editorial Letterboxd/Serializd com Histograma de Notas.',
     highlights: [
       'Motor de Temas OKLCH ("Cinema Moderno") com 3 modos base (Dark, White, Sepia) e harmonização matemática da cor de fundo (bgTintColor) gerando 5 variáveis derivadas (--bg-canvas 10%, --bg-surface 14%, --bg-elevated 18%, --border-hairline 14% e acento com contraste WCAG 2.2 AA >= 4.5:1), eliminando os 21 presets antigos e padronizando o vocabulário para "Catálogo".',
       'PWA Nativo Instalável para PC e Android (manifest standalone, atalhos rápidos e ícones maskable) com cache de pôsteres limitado a 80 MB (LRU com descarte automático de excessos) e banner não-intrusivo de instalação.',
@@ -95,5 +111,8 @@ export const RELEASE_HISTORY = [
 ];
 
 export function formatReleaseBadge(release = CODICE_RELEASE) {
-  return `Cine Códice ${release.label || `v${release.version} · ${release.codename}`}`;
+  const baseLabel =
+    release.label ||
+    (release.codename ? `v${release.version} · ${release.codename}` : `v${release.version}`);
+  return `OmniPrism ${baseLabel}`;
 }
