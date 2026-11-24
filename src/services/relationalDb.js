@@ -278,13 +278,34 @@ export function normalizeRelationalWorkRecord(work = {}) {
     chaptersRead: Math.max(0, Math.round(Number(work.chaptersRead) || 0)),
     isbnOrDoi: String(work.isbnOrDoi || work.isbn || work.doi || '').trim(),
     bookFormat: String(work.bookFormat || '').trim(),
-    // Games
+    // Games (preserva plataformas reais e edição sem inventar PC)
     platform: String(work.platform || '').trim(),
+    platforms: Array.isArray(work.platforms)
+      ? Array.from(new Set(work.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
+      : [],
+    editionType: String(work.editionType || (domain === 'games' ? 'Original' : '')).trim(),
+    gameRating11:
+      work.gameRating11 !== null &&
+      work.gameRating11 !== undefined &&
+      work.gameRating11 !== '' &&
+      Number.isFinite(Number(work.gameRating11))
+        ? Math.max(0, Math.min(11, Math.round(Number(work.gameRating11) * 10) / 10))
+        : null,
+    masterpieceJustification: String(work.masterpieceJustification || '').trim().slice(0, 400),
     hoursPlayed: Math.max(0, Number(work.hoursPlayed) || 0),
     completionType: String(work.completionType || '').trim(),
     storeOrLauncher: String(work.storeOrLauncher || '').trim(),
     buildOrCharacter: String(work.buildOrCharacter || '').trim(),
     // Música
+    albumName: String(work.albumName || '').trim(),
+    durationMs: Number(work.durationMs) > 0 ? Math.round(Number(work.durationMs)) : null,
+    trackRating10:
+      work.trackRating10 !== null &&
+      work.trackRating10 !== undefined &&
+      work.trackRating10 !== '' &&
+      Number.isFinite(Number(work.trackRating10))
+        ? Math.max(0, Math.min(10, Math.round(Number(work.trackRating10) * 10) / 10))
+        : null,
     favoriteTrack: String(work.favoriteTrack || '').trim(),
     subgenre: String(work.subgenre || '').trim(),
     releaseFormat: String(work.releaseFormat || '').trim(),

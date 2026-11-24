@@ -77,6 +77,22 @@ function normalizeNullablePositiveInt(value) {
   return Math.round(parsed);
 }
 
+function normalizeGameRating11(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  const clamped = Math.max(0, Math.min(11, parsed));
+  return Math.round(clamped * 10) / 10;
+}
+
+function normalizeTrackRating10(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  const clamped = Math.max(0, Math.min(10, parsed));
+  return Math.round(clamped * 10) / 10;
+}
+
 function normalizeItem(rawItem, spectatorDna = null) {
   const status = normalizeCinemaStatus(rawItem.status || domainConfig.ui.add.defaultNewStatus);
   const isCompleted = status === 'completed';
@@ -93,14 +109,24 @@ function normalizeItem(rawItem, spectatorDna = null) {
         ? rawItem.startDate || completedDate
         : rawItem.startDate || null;
 
+  const gameRating11 = domain === 'games' ? normalizeGameRating11(rawItem.gameRating11) : null;
+  const trackRating10 = domain === 'music' ? normalizeTrackRating10(rawItem.trackRating10) : null;
+
   const reviewCriteria = rawItem.reviewCriteria || null;
+  const derivedFromDomainScale =
+    gameRating11 !== null
+      ? Math.min(100, Math.round(gameRating11 * 10))
+      : trackRating10 !== null
+        ? Math.min(100, Math.round(trackRating10 * 10))
+        : null;
+
   const computedRating = reviewCriteria
     ? calculateSmartRating(reviewCriteria, spectatorDna)
-    : normalizeRating(rawItem.rating);
+    : normalizeRating(rawItem.rating) ?? derivedFromDomainScale;
 
   const rating = isCompleted
-    ? computedRating ?? normalizeRating(rawItem.rating)
-    : normalizeRating(rawItem.rating);
+    ? computedRating ?? normalizeRating(rawItem.rating) ?? derivedFromDomainScale
+    : normalizeRating(rawItem.rating) ?? derivedFromDomainScale;
 
   const durationMinutes = normalizeNullablePositiveInt(rawItem.durationMinutes);
   const totalSeconds =
@@ -143,16 +169,32 @@ function normalizeItem(rawItem, spectatorDna = null) {
     chaptersRead: normalizeNonNegativeInt(rawItem.chaptersRead),
     isbnOrDoi: String(rawItem.isbnOrDoi || rawItem.isbn || rawItem.doi || '').trim(),
     bookFormat: String(rawItem.bookFormat || (domain === 'reading' ? 'Físico' : '')).trim(),
-    // Games
-    platform: String(rawItem.platform || (domain === 'games' ? 'PC' : '')).trim(),
+    // Games (nunca assume PC por padrão se não informado)
+    platform: String(rawItem.platform || '').trim(),
+    platforms: Array.isArray(rawItem.platforms)
+      ? Array.from(new Set(rawItem.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
+      : [],
+    editionType: String(rawItem.editionType || (domain === 'games' ? 'Original' : '')).trim(),
+    gameRating11,
+    masterpieceJustification: String(rawItem.masterpieceJustification || '').trim().slice(0, 400),
     hoursPlayed: Math.max(0, Number(rawItem.hoursPlayed) || 0),
     completionType: String(rawItem.completionType || '').trim(),
     storeOrLauncher: String(rawItem.storeOrLauncher || '').trim(),
     buildOrCharacter: String(rawItem.buildOrCharacter || '').trim(),
     // Música
+    albumName: String(rawItem.albumName || '').trim(),
+    durationMs: normalizeNullablePositiveInt(rawItem.durationMs),
+    trackRating10,
     favoriteTrack: String(rawItem.favoriteTrack || '').trim(),
     subgenre: String(rawItem.subgenre || '').trim(),
-    releaseFormat: String(rawItem.releaseFormat || (domain === 'music' ? 'Álbum de Estúdio' : '')).trim(),
+    releaseFormat: String(
+      rawItem.releaseFormat ||
+        (domain === 'music'
+          ? workType === 'track'
+            ? 'Faixa Individual'
+            : 'Álbum de Estúdio'
+          : '')
+    ).trim(),
     listenCount: normalizeNonNegativeInt(rawItem.listenCount),
     tracks: Array.isArray(rawItem.tracks) ? rawItem.tracks : [],
     trackCount: normalizeNullablePositiveInt(rawItem.trackCount),

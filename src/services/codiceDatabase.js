@@ -287,11 +287,32 @@ export function buildCodiceDatabase({
       bookFormat: String(rawItem.bookFormat || '').trim(),
       // Games
       platform: String(rawItem.platform || '').trim(),
+      platforms: Array.isArray(rawItem.platforms)
+        ? Array.from(new Set(rawItem.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
+        : [],
+      editionType: String(rawItem.editionType || (domain === 'games' ? 'Original' : '')).trim(),
+      gameRating11:
+        rawItem.gameRating11 !== null &&
+        rawItem.gameRating11 !== undefined &&
+        rawItem.gameRating11 !== '' &&
+        Number.isFinite(Number(rawItem.gameRating11))
+          ? Math.max(0, Math.min(11, Math.round(Number(rawItem.gameRating11) * 10) / 10))
+          : null,
+      masterpieceJustification: String(rawItem.masterpieceJustification || '').trim().slice(0, 400),
       hoursPlayed: Math.max(0, Number(rawItem.hoursPlayed) || 0),
       completionType: String(rawItem.completionType || '').trim(),
       storeOrLauncher: String(rawItem.storeOrLauncher || '').trim(),
       buildOrCharacter: String(rawItem.buildOrCharacter || '').trim(),
       // Música
+      albumName: String(rawItem.albumName || '').trim(),
+      durationMs: Number(rawItem.durationMs) > 0 ? Math.round(Number(rawItem.durationMs)) : null,
+      trackRating10:
+        rawItem.trackRating10 !== null &&
+        rawItem.trackRating10 !== undefined &&
+        rawItem.trackRating10 !== '' &&
+        Number.isFinite(Number(rawItem.trackRating10))
+          ? Math.max(0, Math.min(10, Math.round(Number(rawItem.trackRating10) * 10) / 10))
+          : null,
       favoriteTrack: String(rawItem.favoriteTrack || '').trim(),
       subgenre: String(rawItem.subgenre || '').trim(),
       releaseFormat: String(rawItem.releaseFormat || '').trim(),

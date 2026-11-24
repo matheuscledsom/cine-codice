@@ -51,8 +51,8 @@ export const OMNIPRISM_DOMAINS = [
     tintHex: '#BE123C',
     beamHex: '#F43F5E',
     status: 'active',
-    badge: 'Álbuns · EPs · Discografias',
-    description: 'Álbuns, faixas, shows e discografias',
+    badge: 'Faixas · Álbuns · Discografias',
+    description: 'Faixas, álbuns, shows e discografias',
     creatorLabel: 'Artista / Banda',
     queueLabel: 'Quero Ouvir',
     playingLabel: 'Ouvindo',
@@ -77,26 +77,40 @@ export const DOMAIN_MEDIA_TYPES = {
     { id: 'modpack', label: 'Modpack / Hack', shortLabel: 'Modpack', pluralLabel: 'Modpacks', icon: 'Layers' },
   ],
   music: [
+    { id: 'track', label: 'Faixa', shortLabel: 'Faixa', pluralLabel: 'Faixas', icon: 'Music' },
     { id: 'album', label: 'Álbum', shortLabel: 'Álbum', pluralLabel: 'Álbuns', icon: 'Music' },
     { id: 'ep_single', label: 'EP / Single', shortLabel: 'EP / Single', pluralLabel: 'EPs / Singles', icon: 'Music' },
-    { id: 'discography', label: 'Discografia / Banda', shortLabel: 'Discografia', pluralLabel: 'Discografias', icon: 'Award' },
+    { id: 'discography', label: 'Artista / Banda', shortLabel: 'Artista / Banda', pluralLabel: 'Artistas / Bandas', icon: 'Award' },
     { id: 'live_show', label: 'Show / Ao Vivo', shortLabel: 'Ao Vivo', pluralLabel: 'Shows Ao Vivo', icon: 'Sparkles' },
   ],
 };
 
 export const BOOK_FORMATS = ['Físico', 'EPUB', 'PDF'];
 
+export const GAME_PLATFORM_UNSET_LABEL = 'Plataforma a definir';
+
 export const GAME_PLATFORMS = [
-  'PC',
   'PS1',
   'PS2',
+  'PS3',
+  'PS4',
+  'PS5',
   'PSP',
   'SNES',
   'GBA',
   'DS',
   '3DS',
   'Switch',
+  'PC',
   'Mobile',
+];
+
+export const GAME_EDITION_TYPES = [
+  'Original',
+  'Remake',
+  'Remaster',
+  'Port',
+  'DLC/Expansão',
 ];
 
 export const GAME_COMPLETION_TYPES = [
@@ -107,17 +121,21 @@ export const GAME_COMPLETION_TYPES = [
 ];
 
 export const GAME_STORES_LAUNCHERS = [
+  'Mídia Física / Console',
+  'PlayStation Store',
+  'Nintendo eShop',
   'Steam',
   'Nuuvem',
+  'Epic / GOG',
   'Prism Launcher',
   'PCSX2',
   'mGBA',
-  'Epic / GOG',
-  'Console / Cartucho',
+  'RetroArch / Emulador',
 ];
 
 export const MUSIC_RELEASE_FORMATS = [
   'Álbum de Estúdio',
+  'Faixa Individual',
   'Ao Vivo',
   'Coletânea',
 ];
@@ -150,7 +168,21 @@ export function inferDomainFromWork(work = {}) {
   if (['game', 'dlc', 'modpack', 'romhack'].includes(type)) {
     return 'games';
   }
-  if (['album', 'ep_single', 'ep', 'single', 'discography', 'live_show'].includes(type)) {
+  if (
+    [
+      'track',
+      'song',
+      'faixa',
+      'album',
+      'ep_single',
+      'ep',
+      'single',
+      'discography',
+      'artist',
+      'band',
+      'live_show',
+    ].includes(type)
+  ) {
     return 'music';
   }
   return 'cinema';
@@ -172,8 +204,11 @@ export function normalizeWorkTypeForDomain(rawType, domain = 'cinema') {
     return 'game';
   }
   if (cleanDomain === 'music') {
+    if (clean === 'track' || clean === 'song' || clean === 'faixa') return 'track';
     if (clean === 'ep_single' || clean === 'ep' || clean === 'single') return 'ep_single';
-    if (clean === 'discography' || clean === 'band') return 'discography';
+    if (clean === 'discography' || clean === 'band' || clean === 'artist' || clean === 'artista') {
+      return 'discography';
+    }
     if (clean === 'live_show' || clean === 'live' || clean === 'show') return 'live_show';
     return 'album';
   }

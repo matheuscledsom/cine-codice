@@ -141,7 +141,7 @@ describe('OmniPrism v2.1.0 — 4 Portais de Domínio (Cinema, Leitura, Games e M
     );
     assert.deepEqual(
       getMediaTypesForDomain('music').map((m) => m.id),
-      ['album', 'ep_single', 'discography', 'live_show']
+      ['track', 'album', 'ep_single', 'discography', 'live_show']
     );
 
     for (const file of [

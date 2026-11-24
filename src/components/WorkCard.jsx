@@ -33,12 +33,35 @@ export const WorkCard = memo(function WorkCard({
     item.creator || item.director || item.studio || item.author || getWorkTypeLabel(item, domain);
   const subMeta =
     domain === 'games'
-      ? item.storeOrLauncher || item.buildOrCharacter || ''
+      ? [
+          item.editionType && item.editionType !== 'Original' ? item.editionType : '',
+          item.storeOrLauncher || item.buildOrCharacter || '',
+        ]
+          .filter(Boolean)
+          .join(' · ')
       : domain === 'music'
-        ? item.favoriteTrack || item.subgenre || ''
+        ? item.workType === 'track'
+          ? item.albumName || item.subgenre || ''
+          : item.favoriteTrack || item.subgenre || ''
         : domain === 'reading'
           ? item.bookFormat || ''
           : '';
+
+  const displayRatingBadge =
+    domain === 'games' &&
+    item.gameRating11 !== null &&
+    item.gameRating11 !== undefined &&
+    Number.isFinite(Number(item.gameRating11))
+      ? `${item.gameRating11}/11`
+      : domain === 'music' &&
+          item.workType === 'track' &&
+          item.trackRating10 !== null &&
+          item.trackRating10 !== undefined &&
+          Number.isFinite(Number(item.trackRating10))
+        ? `${item.trackRating10}/10`
+        : typeof item.rating === 'number'
+          ? String(item.rating)
+          : null;
 
   const clearPress = () => {
     if (pressTimerRef.current) {
@@ -104,9 +127,9 @@ export const WorkCard = memo(function WorkCard({
             </span>
           )}
 
-          {typeof item.rating === 'number' && (
+          {displayRatingBadge !== null && (
             <span className="absolute right-1.5 top-1.5 rounded-[3px] border border-line bg-app/90 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink">
-              {item.rating}
+              {displayRatingBadge}
             </span>
           )}
 
@@ -127,6 +150,9 @@ export const WorkCard = memo(function WorkCard({
           <p className="line-clamp-2 text-[11px] font-semibold leading-snug text-ink transition-colors group-hover:text-accent">
             {titles.primary}
           </p>
+          {titles.secondary && (
+            <p className="truncate text-[9px] italic text-subtle">{titles.secondary}</p>
+          )}
           <p className="truncate text-[10px] text-muted">{creatorLabel}</p>
           {subMeta && (
             <p className="truncate text-[9px] font-medium text-subtle">{subMeta}</p>

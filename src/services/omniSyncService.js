@@ -139,7 +139,11 @@ function buildExternalIdsPayload(work = {}) {
     'freetogame',
     'wikidata',
     'itunes',
+    'itunesTrack',
+    'itunesArtist',
     'musicbrainz',
+    'musicbrainzRecording',
+    'musicbrainzArtist',
   ]) {
     const val = rawIds[key] ?? work[key] ?? null;
     if (val !== null && val !== undefined && val !== '') {
@@ -184,11 +188,32 @@ export function mapLocalWorkToCatalogRow(
   const bookFormat = String(work.bookFormat || '').trim();
 
   const platform = String(work.platform || '').trim();
+  const platforms = Array.isArray(work.platforms)
+    ? Array.from(new Set(work.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
+    : [];
+  const editionType = String(work.editionType || (domain === 'games' ? 'Original' : '')).trim();
+  const gameRating11 =
+    work.gameRating11 !== null &&
+    work.gameRating11 !== undefined &&
+    work.gameRating11 !== '' &&
+    Number.isFinite(Number(work.gameRating11))
+      ? Math.max(0, Math.min(11, Math.round(Number(work.gameRating11) * 10) / 10))
+      : null;
+  const masterpieceJustification = String(work.masterpieceJustification || '').trim().slice(0, 400);
   const hoursPlayed = Math.max(0, Number(work.hoursPlayed) || 0);
   const completionType = String(work.completionType || '').trim();
   const storeOrLauncher = String(work.storeOrLauncher || '').trim();
   const buildOrCharacter = String(work.buildOrCharacter || '').trim();
 
+  const albumName = String(work.albumName || '').trim();
+  const durationMs = Number(work.durationMs) > 0 ? Math.round(Number(work.durationMs)) : null;
+  const trackRating10 =
+    work.trackRating10 !== null &&
+    work.trackRating10 !== undefined &&
+    work.trackRating10 !== '' &&
+    Number.isFinite(Number(work.trackRating10))
+      ? Math.max(0, Math.min(10, Math.round(Number(work.trackRating10) * 10) / 10))
+      : null;
   const favoriteTrack = String(work.favoriteTrack || '').trim();
   const subgenre = String(work.subgenre || '').trim();
   const releaseFormat = String(work.releaseFormat || '').trim();
@@ -252,11 +277,18 @@ export function mapLocalWorkToCatalogRow(
       book_format: bookFormat,
       // Games
       platform,
+      platforms,
+      edition_type: editionType,
+      game_rating_11: gameRating11,
+      masterpiece_justification: masterpieceJustification,
       hours_played: hoursPlayed,
       completion_type: completionType,
       store_or_launcher: storeOrLauncher,
       build_or_character: buildOrCharacter,
       // Music
+      album_name: albumName,
+      duration_ms: durationMs,
+      track_rating_10: trackRating10,
       favorite_track: favoriteTrack,
       subgenre,
       release_format: releaseFormat,
@@ -355,17 +387,51 @@ export function mapCatalogRowToLocalWork(row = {}) {
     chaptersRead: Math.max(0, Math.round(Number(pd.chapters_read ?? pd.chaptersRead) || 0)),
     isbnOrDoi: String(pd.isbn_or_doi ?? pd.isbnOrDoi ?? extIds.isbn ?? extIds.doi ?? '').trim(),
     bookFormat: String(pd.book_format ?? pd.bookFormat ?? (domain === 'reading' ? 'Físico' : '')).trim(),
-    // Games
-    platform: String(pd.platform ?? (domain === 'games' ? 'PC' : '')).trim(),
+    // Games (preserva plataformas reais e edição sem inventar PC)
+    platform: String(pd.platform ?? '').trim(),
+    platforms: Array.isArray(pd.platforms)
+      ? Array.from(new Set(pd.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
+      : [],
+    editionType: String(pd.edition_type ?? pd.editionType ?? (domain === 'games' ? 'Original' : '')).trim(),
+    gameRating11:
+      (pd.game_rating_11 ?? pd.gameRating11) !== null &&
+      (pd.game_rating_11 ?? pd.gameRating11) !== undefined &&
+      (pd.game_rating_11 ?? pd.gameRating11) !== '' &&
+      Number.isFinite(Number(pd.game_rating_11 ?? pd.gameRating11))
+        ? Math.max(0, Math.min(11, Math.round(Number(pd.game_rating_11 ?? pd.gameRating11) * 10) / 10))
+        : null,
+    masterpieceJustification: String(
+      pd.masterpiece_justification ?? pd.masterpieceJustification ?? ''
+    )
+      .trim()
+      .slice(0, 400),
     hoursPlayed: Math.max(0, Number(pd.hours_played ?? pd.hoursPlayed) || 0),
     completionType: String(pd.completion_type ?? pd.completionType ?? '').trim(),
     storeOrLauncher: String(pd.store_or_launcher ?? pd.storeOrLauncher ?? '').trim(),
     buildOrCharacter: String(pd.build_or_character ?? pd.buildOrCharacter ?? '').trim(),
     // Music
+    albumName: String(pd.album_name ?? pd.albumName ?? '').trim(),
+    durationMs:
+      Number(pd.duration_ms ?? pd.durationMs) > 0
+        ? Math.round(Number(pd.duration_ms ?? pd.durationMs))
+        : null,
+    trackRating10:
+      (pd.track_rating_10 ?? pd.trackRating10) !== null &&
+      (pd.track_rating_10 ?? pd.trackRating10) !== undefined &&
+      (pd.track_rating_10 ?? pd.trackRating10) !== '' &&
+      Number.isFinite(Number(pd.track_rating_10 ?? pd.trackRating10))
+        ? Math.max(0, Math.min(10, Math.round(Number(pd.track_rating_10 ?? pd.trackRating10) * 10) / 10))
+        : null,
     favoriteTrack: String(pd.favorite_track ?? pd.favoriteTrack ?? '').trim(),
     subgenre: String(pd.subgenre ?? '').trim(),
     releaseFormat: String(
-      pd.release_format ?? pd.releaseFormat ?? (domain === 'music' ? 'Álbum de Estúdio' : '')
+      pd.release_format ??
+        pd.releaseFormat ??
+        (domain === 'music'
+          ? workType === 'track'
+            ? 'Faixa Individual'
+            : 'Álbum de Estúdio'
+          : '')
     ).trim(),
     listenCount: Math.max(0, Math.round(Number(pd.listen_count ?? pd.listenCount) || 0)),
     tracks: Array.isArray(pd.tracks) ? pd.tracks : [],
@@ -424,7 +490,11 @@ export function mapCatalogRowToLocalWork(row = {}) {
       ...(extIds.freetogame ? { freetogame: extIds.freetogame } : {}),
       ...(extIds.wikidata ? { wikidata: extIds.wikidata } : {}),
       ...(extIds.itunes ? { itunes: extIds.itunes } : {}),
+      ...(extIds.itunesTrack ? { itunesTrack: extIds.itunesTrack } : {}),
+      ...(extIds.itunesArtist ? { itunesArtist: extIds.itunesArtist } : {}),
       ...(extIds.musicbrainz ? { musicbrainz: extIds.musicbrainz } : {}),
+      ...(extIds.musicbrainzRecording ? { musicbrainzRecording: extIds.musicbrainzRecording } : {}),
+      ...(extIds.musicbrainzArtist ? { musicbrainzArtist: extIds.musicbrainzArtist } : {}),
     },
     tmdbId: extIds.tmdb ?? null,
     imdbId: extIds.imdb ? String(extIds.imdb) : '',
@@ -474,7 +544,13 @@ function getWorkIdentityKeys(work = {}) {
   const domain = inferDomainFromWork(work);
   const type = normalizeWorkTypeForDomain(work.workType || work.mediaType, domain);
   if (cleanTitle) {
-    keys.push(`title:${domain}:${type}::${cleanTitle}`);
+    if (domain === 'games') {
+      const edition = String(work.editionType || 'Original').trim().toLowerCase();
+      const yr = Number(work.releaseYear) > 1970 ? `:${Math.round(Number(work.releaseYear))}` : '';
+      keys.push(`title:${domain}:${type}:${edition}::${cleanTitle}${yr}`);
+    } else {
+      keys.push(`title:${domain}:${type}::${cleanTitle}`);
+    }
   }
   return keys;
 }

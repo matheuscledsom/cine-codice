@@ -39,9 +39,9 @@ describe('FASE 5 (v1.3.0) — Métricas Zero-Scroll, Início Refinada & Perfil E
     assert.match(statsSrc, /Estúdios/);
     assert.match(statsSrc, /Gêneros/);
 
-    // Linha 3: Mapa de Sessões e Cine Wrapped
+    // Linha 3: Mapa de Sessões e Omni Wrapped
     assert.match(statsSrc, /Mapa de Sessões/);
-    assert.match(statsSrc, /Cine Wrapped/);
+    assert.match(statsSrc, /Omni Wrapped|Cine Wrapped/);
     assert.match(statsSrc, /tabular-nums/);
   });
 
