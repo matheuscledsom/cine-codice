@@ -1,4 +1,42 @@
-# Progresso — Cine Códice v1.3.0 · Lumière
+# Progresso — OMNIPRISM v2.4.0 ("Refino & Profundidade")
+
+**Branch ativa:** `feat/v2.4.0-refino` (a partir de `main` em `a201f06`)
+**Versão base:** `2.3.3` -> **Versão alvo:** `2.4.0`
+
+## Linha de Base (Baseline — `main` @ `a201f06`)
+- **Testes (`npm test`):** `152/152` aprovados em `39` suítes (`duration_ms: 3064 ms`, wall `3.47s`).
+- **Contraste (`npm run validate:contrast`):** aprovado (3 modos base + 8 ambientes + 6 amostras livres).
+- **Design (`npm run validate:design`):** aprovado em `145` arquivos de `src/`.
+- **Build (`npm run build`, 3.69s):** precache PWA `43` entradas (`1688.91 KiB`). Principais chunks:
+  - `index-*.js`: `456.02 kB` (gzip `137.48 kB`)
+  - `vendor-react-*.js`: `223.08 kB` (gzip `69.17 kB`)
+  - `vendor-supabase-*.js`: `214.35 kB` (gzip `55.47 kB`)
+  - `WorkDetailPage-*.js`: `189.58 kB` (gzip `43.48 kB`)
+  - `ProfileScreen-*.js`: `101.73 kB` (gzip `24.68 kB`)
+  - `index-*.css`: `85.31 kB` (gzip `15.40 kB`)
+  - `AddScreen-*.js`: `52.95 kB` (gzip `11.87 kB`)
+  - `ListScreen-*.js`: `44.05 kB` (gzip `11.63 kB`)
+- **Maiores arquivos de `src/` (total `61.408` linhas):**
+  1. `src/services/cinemaApi.js` (`4.105` linhas)
+  2. `src/components/WorkDetailPage.jsx` (`3.228` linhas)
+  3. `src/screens/AddScreen.jsx` (`2.567` linhas)
+  4. `src/App.jsx` (`2.406` linhas)
+  5. `src/services/multiDomainSearchService.js` (`1.920` linhas)
+  6. `src/components/EpisodeListTab.jsx` (`1.793` linhas)
+  7. `src/screens/ListScreen.jsx` (`1.701` linhas)
+  8. `src/screens/ProfileScreen.jsx` (`1.477` linhas)
+
+## Linha do Tempo das Fases — Ciclo v2.4.0 ("Refino & Profundidade")
+- [x] **Fase 0 (v2.4.0) — Baseline e Documentacao** — criada branch `feat/v2.4.0-refino` a partir de `main` (`a201f06`), linha de base medida (`152/152` testes em `3.06s`, bundle principal `456.02 kB`), criados [`docs/PLANO_v2.4.0.md`](./PLANO_v2.4.0.md) e [`docs/DESIGN.md`](./DESIGN.md).
+- [x] **Fase 1 (v2.4.0) — Fundacao, Seguranca e Modelo de Notas (5 Estrelas + 5 Criterios)** — migracoes aditivas versionadas no IndexedDB (`v1 -> v2`) com snapshot automatico pre-migracao e pre-mesclagem (`runRelationalSchemaMigrations`, `restoreSnapshotWithSafety`), modelo unico de nota em [`src/lib/ratingModel.js`](../src/lib/ratingModel.js) + [`src/components/StarRatingPicker.jsx`](../src/components/StarRatingPicker.jsx) (`0..100` interno, `0.5..5.0` estrelas, `lifeWork` retrocompativel com nota `11` de Games, 5 criterios por dominio sem tratar ausente como zero e sobrescrita manual livre), auditoria [`docs/SEGURANCA.md`](./SEGURANCA.md), Error Boundary global com exportacao de backup de emergencia + log local de 50 erros ([`src/lib/errorLogger.js`](../src/lib/errorLogger.js)), links `rel="noopener noreferrer"`, headers endurecidos em `public/_headers` e rascunhos locais RLS (`supabase/migrations/20261124_rls_catalog_works.sql`, `supabase/verify_rls.sql`).
+- [x] **Fase 2 (v2.4.0) — Velocidade, Cache e Busca Progressiva** — debounce de `250 ms` + `AbortController` + busca local instantanea primeiro + historico recente por dominio ([`src/lib/searchHelpers.js`](../src/lib/searchHelpers.js), [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx)), streaming progressivo `onPartialResults` em Cinema, Leitura, Games e Musica sem bloquear em MusicBrainz/Wikidata, imagens `loading="lazy"` + `decoding="async"` + `aspect-ratio` fixo (`2:3` Cinema/Livros/Games, `1:1` Musica), paginacao incremental acima de 200 itens com `IntersectionObserver` + memoizacao ([`src/lib/catalogPagination.js`](../src/lib/catalogPagination.js), [`src/screens/ListScreen.jsx`](../src/screens/ListScreen.jsx)), code-splitting de `EpisodeListTab`/`FranchiseRadarPanel`/`ProfileSettingsDrawer`/`OfflineBookPickerModal` e aviso discreto do PWA ([`src/components/PwaUpdateBanner.jsx`](../src/components/PwaUpdateBanner.jsx)).
+- [x] **Fase 3 (v2.4.0) — Direcao de Arte (docs/DESIGN.md) e UI Limpa** — aplicados 2 valores oficiais de raio (`6px`/`14px`) em [`src/design/tokens.css`](../src/design/tokens.css), capa como protagonista sem pilulas poluentes em [`src/components/WorkCard.jsx`](../src/components/WorkCard.jsx) (indicador fino de status, barra de progresso apenas quando em andamento e estrelas fora da arte), cor do dominio restrita a aba ativa/acao principal/barra de progresso em [`src/components/DomainSwitcherBar.jsx`](../src/components/DomainSwitcherBar.jsx) e [`src/components/BottomNav.jsx`](../src/components/BottomNav.jsx), eliminacao de caixas vazias `border-dashed`, excesso de chips com borda tingida, card dentro de card em Favoritos e elevacao dos alvos de toque para `>= 44 px` com serifa editorial apenas em titulos de obra/tela.
+- [x] **Fase 4 (v2.4.0) — Catalogar, Franquias/Escopos, Hierarquia Musical, Entidades e Acervo** — [`src/screens/AddScreen.jsx`](../src/screens/AddScreen.jsx) search-first com foco automatico, grade de capas, cadastro manual discreto, alerta de duplicatas (`findCatalogDuplicate`) e folha rapida enxuta (`getQuickSheetLeanFields`, sem status pre-selecionado, Fila sem perguntas, Games com plataformas da API + outra, Leitura com pagina atual e Concluido com `StarRatingPicker` 5 estrelas + 5 criterios); escopos de franquia `mainline`/`spinoff`/`companion` ([`src/lib/franchiseTier.js`](../src/lib/franchiseTier.js), [`src/services/franchiseService.js`](../src/services/franchiseService.js), [`src/components/FranchiseRadarPanel.jsx`](../src/components/FranchiseRadarPanel.jsx)) com dois indicadores transparentes (Linha Principal vs Universo Completo) para Cinema, Livros e Games; hierarquia musical SOUND Banda -> Discografia -> Albuns/EPs/Singles -> Faixas com escopos e nota por faixa ([`src/lib/musicHierarchy.js`](../src/lib/musicHierarchy.js), [`src/components/MusicDiscographyView.jsx`](../src/components/MusicDiscographyView.jsx)); pagina/folha de Entidade clicavel para Autor/Diretor/Elenco/Estudio/Banda ([`src/lib/entityHelpers.js`](../src/lib/entityHelpers.js), [`src/components/EntitySheetModal.jsx`](../src/components/EntitySheetModal.jsx), [`src/components/WorkDetailPage.jsx`](../src/components/WorkDetailPage.jsx)); Acervo ([`src/screens/ListScreen.jsx`](../src/screens/ListScreen.jsx)) com folha unica `"Filtrar"`, estrelas na lista e `Desfazer` em todas as acoes em lote (`179/179` testes aprovados, design OK em 156 arquivos).
+- [x] **Fase 5 (v2.4.0) — Home, Perfil, Diagnostico e Fechamento v2.4.0** — Home ([`src/screens/HomeScreen.jsx`](../src/screens/HomeScreen.jsx)) com faixa `"Em andamento"` cross-domain + acoes rapidas com `Desfazer` e Curador ([`src/components/OracleWidget.jsx`](../src/components/OracleWidget.jsx), [`src/lib/oracleDomainConfig.js`](../src/lib/oracleDomainConfig.js)) adaptado ao dominio ativo; Perfil ([`src/screens/ProfileScreen.jsx`](../src/screens/ProfileScreen.jsx)) com atalhos diretos para Central de Backup, `"Novidades da versao"` ([`src/components/ReleaseHistoryModal.jsx`](../src/components/ReleaseHistoryModal.jsx)) e **Configuracoes > Diagnostico** ([`src/components/ProfileSettingsDrawer.jsx`](../src/components/ProfileSettingsDrawer.jsx), [`src/components/DiagnosticsPanel.jsx`](../src/components/DiagnosticsPanel.jsx), [`src/lib/diagnosticsHelpers.js`](../src/lib/diagnosticsHelpers.js)) exibindo versao, tamanho do catalogo, uso de storage, status das fontes e log local copiavel dos ultimos 50 erros sem envio externo; versao atualizada para **`2.4.0`** em [`package.json`](../package.json), [`package-lock.json`](../package-lock.json), [`src/config/versioning.js`](../src/config/versioning.js) e [`CHANGELOG.md`](../CHANGELOG.md) (`184/184` testes em `52` suites / `3.19s`, contraste AA OK, build OK `WorkDetailPage 121.02 kB`, `ProfileScreen 48.96 kB`, design OK em `159` arquivos).
+
+---
+
+# Progresso Anterior — Cine Códice v1.3.0 · Lumière
 
 **Branch ativa:** `feat/v1.3.0-lumiere`
 **Ciclo anterior concluído e publicado:** `v1.2.0 · Lumière` (merge na `main` `bbf099c` + tag `v1.2.0` + `git push origin main --tags`)

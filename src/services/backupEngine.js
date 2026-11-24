@@ -1,3 +1,5 @@
+import { domainConfig } from '../config/domainConfig.js';
+import { migrateProfileData, migrateWorkItem } from '../lib/migrations.js';
 import { getTodayLocalISO } from '../utils/backlogHelpers.js';
 import { normalizeCollectionList } from '../utils/collections.js';
 import {
@@ -739,6 +741,10 @@ const MIRROR_ITEM_ALLOWED_KEYS = [
   'rating',
   'verdict',
   'reviewCriteria',
+  'reviewCriteria5',
+  'ratingManualOverride',
+  'lifeWork',
+  'franchiseTier',
   'recommended',
   'isFavorite',
   'isWishlist',
@@ -1050,4 +1056,136 @@ export async function shareOrDownloadSignedBackup(db) {
   triggerFileDownload(jsonText, filename, 'application/json;charset=utf-8');
   recordBackupExportTimestamp();
   return { method: 'download', filename, digest: signed.checksum.digest };
+}
+
+/**
+ * Restaura um snapshot (modo 'merge' ou 'replace') criando SEMPRE um auto-snapshot
+ * de segurança prévio antes de alterar o estado atual do usuário (v2.4.0 Fase 1.1).
+ */
+export async function restoreSnapshotWithSafety({
+  currentWorkspace = {},
+  incomingSnapshot = null,
+  mode = 'merge',
+  saveSnapshotFn = saveAutoSnapshot,
+} = {}) {
+  if (!incomingSnapshot || typeof incomingSnapshot !== 'object') {
+    return { ok: false, error: 'Snapshot de restauração ausente ou inválido.' };
+  }
+
+  const cleanMode = mode === 'replace' ? 'replace' : 'merge';
+  const snapshotReason = cleanMode === 'replace' ? 'pre-restore-replace' : 'pre-restore-merge';
+  const snapshotLabel =
+    cleanMode === 'replace'
+      ? 'Pré-restauração automática (Substituir)'
+      : 'Pré-restauração automática (Mesclar)';
+
+  let snapshotSaved = false;
+  let snapshotId = null;
+  if (typeof saveSnapshotFn === 'function') {
+    try {
+      const snapRes = await saveSnapshotFn(currentWorkspace, {
+        reason: snapshotReason,
+        label: snapshotLabel,
+        force: true,
+      });
+      snapshotId = snapRes?.snapshot?.id || null;
+      snapshotSaved = Boolean(snapshotId || snapRes?.saved);
+    } catch {
+      snapshotSaved = false;
+    }
+  }
+
+  const baseResult =
+    cleanMode === 'replace'
+      ? {
+          items: Array.isArray(incomingSnapshot.items) ? incomingSnapshot.items : [],
+          posts: Array.isArray(incomingSnapshot.posts) ? incomingSnapshot.posts : [],
+          readingSessions: Array.isArray(incomingSnapshot.readingSessions)
+            ? incomingSnapshot.readingSessions
+            : [],
+          collections: Array.isArray(incomingSnapshot.collections)
+            ? incomingSnapshot.collections
+            : [],
+          episodeEvaluations: Array.isArray(incomingSnapshot.episodeEvaluations)
+            ? incomingSnapshot.episodeEvaluations
+            : [],
+          profile: incomingSnapshot.profile,
+          streak: incomingSnapshot.streak || { count: 0, lastDate: null, history: [] },
+        }
+      : mergeSnapshots(currentWorkspace, incomingSnapshot);
+
+  const migratedItems = (baseResult.items || []).map((entry) => migrateWorkItem(entry));
+  const migratedProfile = baseResult.profile
+    ? migrateProfileData(baseResult.profile)
+    : baseResult.profile;
+
+  return {
+    ok: true,
+    mode: cleanMode,
+    snapshotSaved,
+    snapshotId,
+    snapshotReason,
+    workspace: {
+      ...baseResult,
+      items: migratedItems,
+      profile: migratedProfile,
+    },
+  };
+}
+
+/**
+ * Monta um backup JSON diretamente do localStorage para o Error Boundary global,
+ * funcionando mesmo se o estado React ou IndexedDB estiverem indisponíveis.
+ */
+export function buildEmergencyBackupFromStorage(
+  storage = typeof localStorage !== 'undefined' ? localStorage : null
+) {
+  const safeReadJson = (key, fallback) => {
+    if (!storage || typeof storage.getItem !== 'function') return fallback;
+    try {
+      const raw = storage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const relationalDb = safeReadJson('cine_codice_relational_db_v1', null);
+  const rawItems = safeReadJson(domainConfig.storageKey, []);
+  const items = Array.isArray(rawItems)
+    ? rawItems
+    : Array.isArray(relationalDb?.tables?.works)
+      ? hydrateAppSnapshotFromDatabase(relationalDb).items
+      : [];
+  const profile = safeReadJson(domainConfig.profileStorageKey, null);
+  const posts = safeReadJson(domainConfig.postsStorageKey, []);
+  const streak = safeReadJson(domainConfig.streakStorageKey, null);
+  const readingSessions = safeReadJson('cine_codice_reading_sessions_v1', []);
+  const collections = safeReadJson('cine_codice_collections_v1', []);
+
+  return buildCodiceDatabase({
+    items,
+    profile,
+    posts: Array.isArray(posts) ? posts : [],
+    streak,
+    readingSessions: Array.isArray(readingSessions) ? readingSessions : [],
+    collections: Array.isArray(collections) ? collections : [],
+  });
+}
+
+export async function downloadEmergencyBackupFromStorage(
+  storage = typeof localStorage !== 'undefined' ? localStorage : null
+) {
+  const db = buildEmergencyBackupFromStorage(storage);
+  const signed = await exportSignedBackupPayload(db);
+  const jsonText = JSON.stringify(signed, null, 2);
+  const stamp = getTodayLocalISO();
+  const filename = `omniprism-emergency-backup-${stamp}.json`;
+  triggerFileDownload(jsonText, filename, 'application/json;charset=utf-8');
+  return {
+    ok: true,
+    filename,
+    worksCount: Array.isArray(db?.tables?.works) ? db.tables.works.length : 0,
+    digest: signed?.checksum?.digest || '',
+  };
 }

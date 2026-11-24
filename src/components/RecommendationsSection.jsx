@@ -365,6 +365,7 @@ export function RecommendationsSection({
       {oracleOpen && (
         <OracleWidget
           items={items}
+          activeDomain="cinema"
           profile={profile}
           geminiKey={geminiKey}
           onSelectItem={onSelectItem}

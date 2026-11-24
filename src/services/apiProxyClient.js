@@ -19,8 +19,11 @@ import { getSupabaseClient } from './supabaseClient.js';
 export const TMDB_DIRECT_API_BASE = 'https://api.themoviedb.org/3';
 export const OMDB_DIRECT_API_BASE = 'https://www.omdbapi.com';
 
-const ALLOWED_PROXY_TMDB_RE = /^(?:search\/(?:movie|tv|multi)|(?:movie|tv|find)\/[a-zA-Z0-9_/-]+)$/;
-const SECRET_QUERY_KEY_RE = /^(api_?key|apikey|access_token|token)$/i;
+const ALLOWED_PROXY_TMDB_RE =
+  /^(?:search\/(?:movie|tv|multi|collection)|(?:collection|keyword)\/\d+|(?:movie|tv|find)\/[a-zA-Z0-9_/-]+)$/;
+const ALLOWED_PROXY_TMDB_DISCOVER_RE = /^discover\/(?:movie|tv)$/;
+const TMDB_KEYWORDS_RE = /^\d+(?:[,|]\d+)*$/;
+const SECRET_QUERY_KEY_RE = /^(api_?key|apikey|access_token|token|key)$/i;
 
 export function isDevRuntime() {
   try {
@@ -37,10 +40,18 @@ export function shouldUseApiProxy({ forceProxy = null, isDev = isDevRuntime() } 
   return true;
 }
 
-export function isProxySupportedTmdbPath(rawPath = '') {
+export function isProxySupportedTmdbPath(rawPath = '', params = null) {
   const clean = String(rawPath || '').trim().replace(/^\/+/, '');
   if (!clean || clean.includes('..') || clean.includes('//')) return false;
-  return ALLOWED_PROXY_TMDB_RE.test(clean);
+  if (ALLOWED_PROXY_TMDB_RE.test(clean)) return true;
+  if (ALLOWED_PROXY_TMDB_DISCOVER_RE.test(clean)) {
+    const rawKw =
+      params instanceof URLSearchParams
+        ? String(params.get('with_keywords') || '').trim()
+        : String(params?.with_keywords || '').trim();
+    return Boolean(rawKw && TMDB_KEYWORDS_RE.test(rawKw));
+  }
+  return false;
 }
 
 export async function getSupabaseAccessToken({
@@ -119,7 +130,7 @@ export async function fetchTmdbViaProxyOrDirect(
   let proxyStatus = null;
 
   if (
-    isProxySupportedTmdbPath(cleanPath) &&
+    isProxySupportedTmdbPath(cleanPath, cleanParams) &&
     shouldUseApiProxy({ forceProxy, isDev })
   ) {
     const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });
@@ -315,6 +326,249 @@ export async function fetchOmdbViaProxyOrDirect(
   };
 }
 
+const ALLOWED_LASTFM_PROXY_METHODS = new Set(['artist.getTopTags', 'album.getTopTags']);
+
+/**
+ * Executa chamada Last.fm EXCLUSIVAMENTE via `/api/lastfm` (secret LASTFM_API_KEY no Cloudflare).
+ * Nunca usa chaves VITE_ no cliente; degrada sem quebrar quando não configurado ou sem sessão.
+ */
+export async function fetchLastfmViaProxy(
+  method,
+  params = {},
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = true,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+  } = {}
+) {
+  const cleanMethod = String(method || '').trim();
+  if (!ALLOWED_LASTFM_PROXY_METHODS.has(cleanMethod)) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 403,
+      notConfigured: false,
+      data: null,
+    };
+  }
+
+  if (!shouldUseApiProxy({ forceProxy, isDev })) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: null,
+      notConfigured: true,
+      data: null,
+    };
+  }
+
+  const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });
+  if (!token) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 401,
+      notConfigured: true,
+      data: null,
+    };
+  }
+
+  const cleanParams = buildQueryParams(params, { stripSecrets: true });
+  cleanParams.set('method', cleanMethod);
+  const proxyUrl = `/api/lastfm?${cleanParams.toString()}`;
+
+  try {
+    const res = await apiRequest(proxyUrl, {
+      provider: 'lastfm',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+    if (status === 503 || status === 404 || contentType.includes('text/html')) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: true,
+        data: null,
+      };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: false,
+        data: null,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    return {
+      ok: Boolean(data && typeof data === 'object' && !data.error),
+      res,
+      via: 'proxy',
+      status,
+      notConfigured: false,
+      data,
+    };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: err?.status ?? null,
+      notConfigured: err?.status === 503,
+      data: null,
+    };
+  }
+}
+
+const ALLOWED_RAWG_PROXY_RE = /^games(?:\/[a-zA-Z0-9-]+)?$/;
+
+/**
+ * Executa chamada RAWG EXCLUSIVAMENTE via `/api/rawg/games` ou `/api/rawg/games/{id}`
+ * (secret RAWG_API_KEY apenas no Cloudflare). Nunca usa chaves VITE_ no cliente.
+ * Degrada sem quebrar quando não configurado ou sem sessão.
+ */
+export async function fetchRawgViaProxy(
+  rawPath = 'games',
+  params = {},
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = true,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+  } = {}
+) {
+  const cleanPath = String(rawPath || '').trim().replace(/^\/+/, '');
+  if (!cleanPath || cleanPath.includes('..') || !ALLOWED_RAWG_PROXY_RE.test(cleanPath)) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 403,
+      notConfigured: false,
+      data: null,
+    };
+  }
+
+  if (!shouldUseApiProxy({ forceProxy, isDev })) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: null,
+      notConfigured: true,
+      data: null,
+    };
+  }
+
+  const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });
+  if (!token) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 401,
+      notConfigured: true,
+      data: null,
+    };
+  }
+
+  const cleanParams = buildQueryParams(params, { stripSecrets: true });
+  const qs = cleanParams.toString();
+  const proxyUrl = `/api/rawg/${cleanPath}${qs ? `?${qs}` : ''}`;
+
+  try {
+    const res = await apiRequest(proxyUrl, {
+      provider: 'rawg',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+    if (status === 503 || status === 404 || contentType.includes('text/html')) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: true,
+        data: null,
+      };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: false,
+        data: null,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    return {
+      ok: Boolean(data && typeof data === 'object'),
+      res,
+      via: 'proxy',
+      status,
+      notConfigured: false,
+      data,
+    };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: err?.status ?? null,
+      notConfigured: err?.status === 503,
+      data: null,
+    };
+  }
+}
+
 /**
  * Consulta `GET /api/status` (autenticado) para saber quais provedores
  * possuem chaves configuradas no servidor Cloudflare (apenas booleanos).
@@ -331,6 +585,8 @@ export async function fetchProxyStatus({
   const emptyProviders = {
     tmdb: { configured: false },
     omdb: { configured: false },
+    lastfm: { configured: false },
+    rawg: { configured: false },
   };
 
   if (!shouldUseApiProxy({ forceProxy, isDev })) {
@@ -408,6 +664,8 @@ export async function fetchProxyStatus({
       providers: {
         tmdb: { configured: Boolean(json.providers?.tmdb?.configured) },
         omdb: { configured: Boolean(json.providers?.omdb?.configured) },
+        lastfm: { configured: Boolean(json.providers?.lastfm?.configured) },
+        rawg: { configured: Boolean(json.providers?.rawg?.configured) },
       },
     };
   } catch {

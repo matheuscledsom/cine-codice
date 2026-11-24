@@ -28,7 +28,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BOOK_FORMATS,
   GAME_COMPLETION_TYPES,
@@ -47,7 +47,22 @@ import {
 } from '../config/domainConfig';
 import { SOCIAL_ENABLED } from '../config/flags';
 import { useToast } from '../context/ToastContext';
+import { formatAnimeEpisodeCountLabel } from '../lib/animeEpisodes';
+import {
+  buildEditionLinkPatch,
+  findEditionsOfWork,
+  getEditionBaseWorkId,
+  resolveBaseWorkForEdition,
+} from '../lib/bookEditions';
 import { formatNextAiringBadge } from '../lib/episodeStats';
+import { extractWorkEntities } from '../lib/entityHelpers';
+import { ALL_FRANCHISE_TIER_OPTIONS } from '../lib/franchiseTier';
+import {
+  formatGameCampaignTime,
+  formatGameCompletion100Time,
+  suggestGameFranchiseLink,
+} from '../lib/gameDepth';
+import { computeDerivedAverage, updateEditableSubgenres } from '../lib/musicDepth';
 import { computeWorkCritiqueBadge } from '../lib/ratingBadges';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
 import {
@@ -55,6 +70,8 @@ import {
   enrichWorkWithExternalRatings,
 } from '../services/cinemaApi';
 import { findFranchiseForItem } from '../services/franchiseEngine';
+import { fetchRawgGameDepth } from '../services/gameDepthService';
+import { fetchLastfmSubgenres } from '../services/musicDepthService';
 import {
   getDisplayGenres,
   getDisplaySynopsis,
@@ -86,14 +103,27 @@ import { downloadWorkMarkdown } from '../utils/markdownExport';
 import { playTactileSound } from '../utils/soundEffects';
 import { CollectionCreatorBar } from './CollectionCreatorBar';
 import { CoverArt } from './CoverArt';
-import { EpisodeListTab } from './EpisodeListTab';
-import { ExternalRatingsPanel } from './ExternalRatingsPanel';
-import { FranchiseRadarPanel } from './FranchiseRadarPanel';
-import { QuotesVaultTab } from './QuotesVaultTab';
 import { SmartCatalogButton } from './SmartCatalogButton';
+import { StarRatingPicker } from './StarRatingPicker';
 import { StatusBadge } from './StatusBadge';
 import { TechnicalAtmosphereSection } from './TechnicalAtmosphereSection';
 import { WorkTypeSelector } from './WorkTypeSelector';
+
+const EntitySheetModal = lazy(() =>
+  import('./EntitySheetModal').then((m) => ({ default: m.EntitySheetModal }))
+);
+const EpisodeListTab = lazy(() =>
+  import('./EpisodeListTab').then((m) => ({ default: m.EpisodeListTab }))
+);
+const ExternalRatingsPanel = lazy(() =>
+  import('./ExternalRatingsPanel').then((m) => ({ default: m.ExternalRatingsPanel }))
+);
+const FranchiseRadarPanel = lazy(() =>
+  import('./FranchiseRadarPanel').then((m) => ({ default: m.FranchiseRadarPanel }))
+);
+const QuotesVaultTab = lazy(() =>
+  import('./QuotesVaultTab').then((m) => ({ default: m.QuotesVaultTab }))
+);
 
 const QUICK_PERSONAL_SCORES = [60, 70, 75, 80, 85, 90, 95, 100];
 
@@ -153,10 +183,14 @@ export function WorkDetailPage({
   const [moreDetailsOpen, setMoreDetailsOpen] = useState(false);
   const [isEditDrawerOpen, setIsEditDrawerOpen] = useState(false);
   const [editMoreDetailsOpen, setEditMoreDetailsOpen] = useState(false);
+  const [activeEntity, setActiveEntity] = useState(null);
   const [activeTrackRatingKey, setActiveTrackRatingKey] = useState(null);
   const [pendingPagesFillPrompt, setPendingPagesFillPrompt] = useState(false);
   const [top4PickerOpen, setTop4PickerOpen] = useState(false);
   const [tagInput, setTagInput] = useState('');
+  const [subgenreInput, setSubgenreInput] = useState('');
+  const [subgenresLoading, setSubgenresLoading] = useState(false);
+  const [rawgLoading, setRawgLoading] = useState(false);
   const [ratingsLoading, setRatingsLoading] = useState(false);
   const [ratingsMeta, setRatingsMeta] = useState({
     failedSources: [],
@@ -407,7 +441,9 @@ export function WorkDetailPage({
     if (!item) return undefined;
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
-        if (isEditDrawerOpen) {
+        if (activeEntity) {
+          setActiveEntity(null);
+        } else if (isEditDrawerOpen) {
           setIsEditDrawerOpen(false);
         } else {
           onClose?.();
@@ -416,7 +452,7 @@ export function WorkDetailPage({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [item, isEditDrawerOpen, onClose]);
+  }, [item, activeEntity, isEditDrawerOpen, onClose]);
 
   const franchise = useMemo(
     () => (item ? findFranchiseForItem(item, allItems.length > 0 ? allItems : [item]) : null),
@@ -677,12 +713,24 @@ export function WorkDetailPage({
     playTactileSound('page');
   };
 
+  const animeReleasedInfo =
+    workDomain === 'cinema' && item.workType === 'anime'
+      ? formatAnimeEpisodeCountLabel(item)
+      : null;
+
+  const editionBaseWork =
+    workDomain === 'reading' ? resolveBaseWorkForEdition(item, allItems) : null;
+  const linkedBookEditions =
+    workDomain === 'reading' ? findEditionsOfWork(item.id, allItems) : [];
+
   const metadataParts = [
     domainMeta.shortLabel,
     item.releaseYear ? String(item.releaseYear) : null,
     creatorLabel || null,
     workDomain === 'cinema'
-      ? durationBadge || (episodic ? `${Math.max(1, Number(item.totalSeasons) || 1)} temp.` : null)
+      ? animeReleasedInfo?.kind === 'released-so-far' && animeReleasedInfo.label
+        ? animeReleasedInfo.label
+        : durationBadge || (episodic ? `${Math.max(1, Number(item.totalSeasons) || 1)} temp.` : null)
       : domainQuickMetric,
     workFormatLabel,
   ].filter(Boolean);
@@ -909,22 +957,32 @@ export function WorkDetailPage({
                 {metadataParts.join(' · ')}
               </p>
 
-              {/* Diretor / Estúdio clicável para filtrar catálogo */}
-              {clickableCreators.length > 0 && onFilterByCreator && (
-                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  {clickableCreators.map((creatorName) => (
-                    <button
-                      key={creatorName}
-                      type="button"
-                      onClick={() => onFilterByCreator(creatorName)}
-                      aria-label={`Filtrar catálogo e buscar mais títulos de ${creatorName}`}
-                      className="inline-flex min-h-[44px] items-center rounded-lg border border-line bg-app px-3 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
-                    >
-                      {creatorName}
-                    </button>
-                  ))}
-                </div>
-              )}
+              {/* Entidades clicáveis: Autor, Diretor, Estúdio, Elenco, Banda (v2.4.0 Fase 4.4) */}
+              {(() => {
+                const entities = extractWorkEntities(item);
+                if (entities.length === 0) return null;
+                return (
+                  <div
+                    className="flex flex-wrap items-center gap-1.5 pt-1"
+                    data-testid="work-clickable-entities"
+                  >
+                    {entities.map((ent) => (
+                      <button
+                        key={`${ent.role}:${ent.name}`}
+                        type="button"
+                        onClick={() => setActiveEntity(ent)}
+                        aria-label={`Abrir página de ${ent.roleLabel} ${ent.name}`}
+                        className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-app px-3 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+                      >
+                        <span className="text-[10px] uppercase tracking-wider text-subtle">
+                          {ent.roleLabel}
+                        </span>
+                        <span>{ent.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
@@ -1269,23 +1327,25 @@ export function WorkDetailPage({
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <div className="rounded-2xl border border-line bg-card p-4">
                 {workDomain === 'cinema' ? (
-                  <ExternalRatingsPanel
-                    item={item}
-                    loading={ratingsLoading}
-                    failedSources={ratingsMeta.failedSources}
-                    omdbMissingKey={ratingsMeta.omdbMissingKey}
-                    isOfflineCache={ratingsMeta.isOfflineCache}
-                    cacheDateLabel={ratingsMeta.cacheDateLabel}
-                    hasAttempted={ratingsMeta.hasAttempted}
-                    onRetryRefresh={() => {
-                      autoEnrichedIdsRef.current.add(item.id);
-                      runEnrichmentForWork(item, { forceRefresh: true });
-                    }}
-                    onOpenApiSettings={() => {
-                      onClose?.();
-                      onOpenGeminiSettings?.();
-                    }}
-                  />
+                  <Suspense fallback={<div className="h-24 animate-pulse rounded-[6px] bg-app" />}>
+                    <ExternalRatingsPanel
+                      item={item}
+                      loading={ratingsLoading}
+                      failedSources={ratingsMeta.failedSources}
+                      omdbMissingKey={ratingsMeta.omdbMissingKey}
+                      isOfflineCache={ratingsMeta.isOfflineCache}
+                      cacheDateLabel={ratingsMeta.cacheDateLabel}
+                      hasAttempted={ratingsMeta.hasAttempted}
+                      onRetryRefresh={() => {
+                        autoEnrichedIdsRef.current.add(item.id);
+                        runEnrichmentForWork(item, { forceRefresh: true });
+                      }}
+                      onOpenApiSettings={() => {
+                        onClose?.();
+                        onOpenGeminiSettings?.();
+                      }}
+                    />
+                  </Suspense>
                 ) : (
                   <div className="space-y-3 p-1">
                     <div className="flex items-center justify-between">
@@ -1395,7 +1455,7 @@ export function WorkDetailPage({
 
               <section
                 aria-label="Sua avaliação pessoal"
-                className="rounded-2xl border border-line bg-card p-5 space-y-4"
+                className="rounded-[6px] border border-line bg-card p-5 space-y-4"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -1403,134 +1463,33 @@ export function WorkDetailPage({
                       Sua Avaliação Pessoal
                     </h2>
                     <p className="mt-0.5 text-xs text-subtle">
-                      {workDomain === 'games'
-                        ? 'Escala 0–11 (11 = obra-prima excepcional da vida)'
-                        : workDomain === 'music' && item.workType === 'track'
-                          ? 'Toque para avaliar a faixa na escala 0–10'
-                          : 'Toque para avaliar na escala 0–100'}
+                      5 estrelas com meia estrela · avaliação opcional por 5 critérios
                     </p>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xl font-bold tabular-nums text-accent">
-                      {workDomain === 'games'
-                        ? item.gameRating11 !== null && item.gameRating11 !== undefined
-                          ? `${item.gameRating11}/11`
-                          : typeof item.rating === 'number'
-                            ? `${Math.round((item.rating / 10) * 10) / 10}/11`
-                            : '—'
-                        : workDomain === 'music' && item.workType === 'track'
-                          ? item.trackRating10 !== null && item.trackRating10 !== undefined
-                            ? `${item.trackRating10}/10`
-                            : typeof item.rating === 'number'
-                              ? `${Math.round((item.rating / 10) * 10) / 10}/10`
-                              : '—'
-                          : typeof item.rating === 'number'
-                            ? `${item.rating}/100`
-                            : '—'}
-                    </span>
                   </div>
                 </div>
 
-                {workDomain === 'games' ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((score11) => {
-                      const active = item.gameRating11 === score11;
-                      return (
-                        <button
-                          key={score11}
-                          type="button"
-                          onClick={() => {
-                            const mapped100 = Math.min(100, Math.round(score11 * 10));
-                            onUpdateItem(item.id, {
-                              gameRating11: score11,
-                              rating: mapped100,
-                              ratingSource: 'manual',
-                              verdict: score11 === 11 ? 'Obra-Prima' : getVerdictForScore(mapped100),
-                            });
-                            playTactileSound('page');
-                          }}
-                          className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
-                            active
-                              ? 'border-accent bg-accent text-accent-ink'
-                              : score11 === 11
-                                ? 'border-accent/55 bg-accent/10 text-accent hover:bg-accent/20'
-                                : 'border-line bg-app text-ink hover:border-accent'
-                          }`}
-                        >
-                          {score11 === 11 ? '11 · Vida' : score11}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : workDomain === 'music' && item.workType === 'track' ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((score10) => {
-                      const active = item.trackRating10 === score10;
-                      return (
-                        <button
-                          key={score10}
-                          type="button"
-                          onClick={() => {
-                            const mapped100 = score10 * 10;
-                            onUpdateItem(item.id, {
-                              trackRating10: score10,
-                              rating: mapped100,
-                              ratingSource: 'manual',
-                              verdict: getVerdictForScore(mapped100),
-                            });
-                            playTactileSound('page');
-                          }}
-                          className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
-                            active
-                              ? 'border-accent bg-accent text-accent-ink'
-                              : 'border-line bg-app text-ink hover:border-accent'
-                          }`}
-                        >
-                          {score10}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap gap-1.5">
-                    {QUICK_PERSONAL_SCORES.map((score) => {
-                      const active = item.rating === score && item.ratingSource !== 'legacy-default';
-                      return (
-                        <button
-                          key={score}
-                          type="button"
-                          onClick={() => handleSetPersonalScore(score)}
-                          className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
-                            active
-                              ? 'border-accent bg-accent text-accent-ink'
-                              : 'border-line bg-app text-ink hover:border-accent'
-                          }`}
-                        >
-                          {score}
-                        </button>
-                      );
-                    })}
-                    {typeof item.rating === 'number' && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleSetPersonalScore(item.rating - 1)}
-                          className="min-h-[44px] rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-muted hover:border-accent hover:text-ink"
-                        >
-                          -1
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleSetPersonalScore(item.rating + 1)}
-                          className="min-h-[44px] rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-muted hover:border-accent hover:text-ink"
-                        >
-                          +1
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
+                <StarRatingPicker
+                  domain={workDomain}
+                  rating={item.rating}
+                  ratingSource={item.ratingSource}
+                  reviewCriteria={item.reviewCriteria}
+                  reviewCriteria5={item.reviewCriteria5}
+                  ratingManualOverride={item.ratingManualOverride}
+                  lifeWork={item.lifeWork}
+                  gameRating11={item.gameRating11}
+                  onChange={(patch) => {
+                    onUpdateItem(item.id, {
+                      ...patch,
+                      verdict:
+                        patch.lifeWork
+                          ? 'Obra-Prima'
+                          : patch.rating !== null && patch.rating !== undefined
+                            ? getVerdictForScore(patch.rating)
+                            : null,
+                    });
+                    playTactileSound('page');
+                  }}
+                />
 
                 <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
                   <button
@@ -1715,7 +1674,23 @@ export function WorkDetailPage({
                         {workDomain === 'cinema' ? 'Estúdio / Rede' : 'Selo / Editora / Publicadora'}
                       </dt>
                       <dd className="mt-0.5 font-semibold text-ink">
-                        {item.studio || '—'}
+                        {item.studio ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setActiveEntity({
+                                name: item.studio,
+                                role: 'studio',
+                                domain: workDomain,
+                              })
+                            }
+                            className="text-left underline-offset-2 hover:text-accent hover:underline"
+                          >
+                            {item.studio}
+                          </button>
+                        ) : (
+                          '—'
+                        )}
                       </dd>
                     </div>
                     {workDomain === 'reading' && (
@@ -1766,6 +1741,115 @@ export function WorkDetailPage({
                             {item.completedDate || item.completedAt || '—'}
                           </dd>
                         </div>
+                        {(() => {
+                          const campaignInfo = formatGameCampaignTime(item);
+                          const comp100Info = formatGameCompletion100Time(item);
+                          const franchiseSug = suggestGameFranchiseLink(item, allItems);
+                          return (
+                            <div
+                              data-testid="games-more-details-depth"
+                              className="sm:col-span-2 grid grid-cols-1 gap-2 sm:grid-cols-2 border-t border-line pt-2"
+                            >
+                              <div className="rounded-lg border border-line bg-app p-2.5 space-y-1">
+                                <dt className="text-[10px] text-subtle">Tempo médio de campanha</dt>
+                                <dd className="font-semibold tabular-nums text-ink">
+                                  {campaignInfo ? campaignInfo.label : 'Não informado'}
+                                </dd>
+                                <p className="text-[10px] text-subtle">
+                                  {campaignInfo
+                                    ? `Fonte: ${campaignInfo.sourceLabel}`
+                                    : 'Consulte o RAWG ou informe manualmente em Editar'}
+                                </p>
+                                <button
+                                  type="button"
+                                  disabled={rawgLoading}
+                                  data-testid="games-fetch-rawg-btn"
+                                  onClick={async () => {
+                                    setRawgLoading(true);
+                                    try {
+                                      const res = await fetchRawgGameDepth(item);
+                                      if (res.notConfigured) {
+                                        showToast({
+                                          message:
+                                            'RAWG não configurado no servidor. Você pode editar o tempo manualmente em Mais detalhes.',
+                                          type: 'info',
+                                        });
+                                      } else if (res.ok && res.data) {
+                                        onUpdateItem(item.id, {
+                                          rawgId: res.data.rawgId,
+                                          rawgPlaytimeHours: res.data.rawgPlaytimeHours,
+                                          rawgPlaytimeSource: res.data.rawgPlaytimeSource,
+                                        });
+                                        showToast({
+                                          message:
+                                            res.data.rawgPlaytimeHours !== null
+                                              ? `Tempo médio atualizado (${res.data.rawgPlaytimeHours}h · ${res.data.rawgPlaytimeSource}).`
+                                              : 'Jogo encontrado no RAWG, sem tempo médio informado.',
+                                          type: 'success',
+                                        });
+                                      } else {
+                                        showToast({
+                                          message: 'Não foi possível consultar dados do RAWG agora.',
+                                          type: 'info',
+                                        });
+                                      }
+                                    } finally {
+                                      setRawgLoading(false);
+                                    }
+                                  }}
+                                  className="mt-1 inline-flex min-h-[44px] items-center rounded-[6px] border border-line bg-card px-2.5 text-[11px] font-medium text-ink hover:border-accent disabled:opacity-55"
+                                >
+                                  {rawgLoading ? 'Consultando RAWG...' : 'Consultar RAWG'}
+                                </button>
+                              </div>
+
+                              <div className="rounded-lg border border-line bg-app p-2.5 space-y-1">
+                                <dt className="text-[10px] text-subtle">Tempo 100%</dt>
+                                <dd className="font-semibold tabular-nums text-ink">
+                                  {comp100Info.label}
+                                </dd>
+                                <p className="text-[10px] text-subtle">
+                                  {comp100Info.sourceLabel}
+                                </p>
+                              </div>
+
+                              {franchiseSug.suggestedFranchiseName &&
+                                franchiseSug.suggestedFranchiseName !== (item.franchiseName || '') && (
+                                  <div
+                                    data-testid="games-franchise-suggestion"
+                                    className="sm:col-span-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-app p-2.5"
+                                  >
+                                    <div className="min-w-0">
+                                      <p className="text-[10px] text-subtle">
+                                        Sugestão de vínculo de franquia (confirmação manual)
+                                      </p>
+                                      <p className="truncate text-xs font-semibold text-ink">
+                                        {franchiseSug.suggestedFranchiseName}
+                                        {franchiseSug.relatedGames.length > 0
+                                          ? ` (${franchiseSug.relatedGames.length} relacionado(s) no catálogo)`
+                                          : ''}
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        onUpdateItem(item.id, {
+                                          franchiseName: franchiseSug.suggestedFranchiseName,
+                                        });
+                                        showToast({
+                                          message: `Franquia vinculada manualmente: ${franchiseSug.suggestedFranchiseName}`,
+                                          type: 'success',
+                                        });
+                                      }}
+                                      className="inline-flex min-h-[44px] shrink-0 items-center rounded-[6px] border border-accent bg-accent/15 px-3 text-xs font-semibold text-ink hover:bg-accent hover:text-accent-ink"
+                                    >
+                                      Confirmar franquia
+                                    </button>
+                                  </div>
+                                )}
+                            </div>
+                          );
+                        })()}
                       </>
                     )}
                     {workDomain === 'music' && (
@@ -1818,17 +1902,74 @@ export function WorkDetailPage({
               )}
             </section>
 
-            {/* Radar de Franquia, Sagas & Universo (Cinema) */}
-            {workDomain === 'cinema' && (
-              <FranchiseRadarPanel
-                item={item}
-                allItems={allItems}
-                franchise={franchise}
-                onSelectItem={onSelectItem}
-                onQuickCatalogItem={onQuickCatalogItem}
-                onUpdateItem={onUpdateItem}
-                onShowToast={showToast}
-              />
+            {/* Relação separada editionOf para Livros (v2.5.0 Fase A) */}
+            {workDomain === 'reading' && (editionBaseWork || linkedBookEditions.length > 0) && (
+              <section
+                aria-label="Edições desta obra"
+                data-testid="book-editions-relation"
+                className="rounded-[6px] border border-line bg-card p-4 space-y-2.5"
+              >
+                {editionBaseWork && (
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                        Edição vinculada
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => onSelectItem?.(editionBaseWork)}
+                        className="mt-0.5 inline-flex min-h-[44px] items-center text-left font-editorial text-sm font-semibold text-ink hover:text-accent"
+                      >
+                        Edição de: {editionBaseWork.title}
+                      </button>
+                      <p className="text-[11px] text-subtle">
+                        Conta nas estatísticas do autor sem alterar o progresso da obra base.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {linkedBookEditions.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                      Outras edições catalogadas ({linkedBookEditions.length})
+                    </p>
+                    <div className="divide-y divide-line rounded-[6px] border border-line bg-app">
+                      {linkedBookEditions.map((ed) => (
+                        <button
+                          key={ed.id}
+                          type="button"
+                          onClick={() => onSelectItem?.(ed)}
+                          className="flex min-h-[44px] w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-card"
+                        >
+                          <span className="truncate font-editorial font-medium text-ink">
+                            {ed.title}
+                          </span>
+                          <span className="shrink-0 text-[11px] tabular-nums text-subtle">
+                            {[ed.bookFormat, ed.releaseYear].filter(Boolean).join(' · ') || 'Edição'}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* Radar de Franquia, Sagas & Universo (Cinema, Livros e Games) */}
+            {(workDomain === 'cinema' || workDomain === 'reading' || workDomain === 'games') && (
+              <Suspense fallback={null}>
+                <FranchiseRadarPanel
+                  item={item}
+                  allItems={allItems}
+                  franchise={franchise}
+                  tmdbKey={tmdbKey}
+                  onSelectItem={onSelectItem}
+                  onQuickCatalogItem={onQuickCatalogItem}
+                  onUpdateItem={onUpdateItem}
+                  onShowToast={showToast}
+                />
+              </Suspense>
             )}
           </div>
         )}
@@ -2121,32 +2262,90 @@ export function WorkDetailPage({
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => runDomainQuickAction('music_listen')}
-                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold tabular-nums text-accent-ink hover:opacity-90"
-                  >
-                    <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                    <span>+1 audição</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={subgenresLoading}
+                      onClick={async () => {
+                        setSubgenresLoading(true);
+                        try {
+                          const res = await fetchLastfmSubgenres({
+                            artist: item.creator || item.director || '',
+                            album: item.workType === 'album' ? item.title : item.albumName || '',
+                          });
+                          if (res.notConfigured) {
+                            showToast({
+                              message:
+                                'Last.fm não configurado no servidor. Você pode editar subgêneros manualmente em Editar.',
+                              type: 'info',
+                            });
+                          } else if (res.ok && res.tags.length > 0) {
+                            const merged = updateEditableSubgenres(
+                              Array.isArray(item.subgenres) ? item.subgenres : [],
+                              { replaceWith: res.tags }
+                            );
+                            onUpdateItem(item.id, {
+                              subgenres: merged,
+                              subgenre: merged.join(', '),
+                            });
+                            showToast({
+                              message: `Subgêneros sugeridos (Last.fm): ${merged.join(', ')}`,
+                              type: 'success',
+                            });
+                          } else {
+                            showToast({
+                              message: 'Nenhuma tag acima do limite mínimo encontrada no Last.fm.',
+                              type: 'info',
+                            });
+                          }
+                        } finally {
+                          setSubgenresLoading(false);
+                        }
+                      }}
+                      data-testid="music-suggest-subgenres-btn"
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-app px-3 text-xs font-medium text-ink hover:border-accent disabled:opacity-55"
+                    >
+                      <span>{subgenresLoading ? 'Buscando...' : 'Sugerir subgêneros (Last.fm)'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => runDomainQuickAction('music_listen')}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold tabular-nums text-accent-ink hover:opacity-90"
+                    >
+                      <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      <span>+1 audição</span>
+                    </button>
+                  </div>
                 </div>
 
                 {Array.isArray(item.tracks) && item.tracks.length > 0 ? (
                   <div className="space-y-1.5 border-t border-line pt-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-[11px] font-medium text-muted">
-                        Tracklist ({item.tracks.length} faixas — avalie cada faixa de 0 a 10 ou marque a favorita)
+                        Tracklist ({item.tracks.length} faixas — avalie cada faixa de 0 a 10 sem alterar sua estrela manual)
                       </p>
-                      {Object.keys(albumTrackRatings).length > 0 && (
-                        <span className="rounded-md border border-accent/35 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
-                          Média das faixas:{' '}
-                          {(
-                            Object.values(albumTrackRatings).reduce((acc, v) => acc + v, 0) /
-                            Object.values(albumTrackRatings).length
-                          ).toFixed(1)}
-                          /10
-                        </span>
-                      )}
+                      {(() => {
+                        const derived = computeDerivedAverage({
+                          ratings: Object.values(albumTrackRatings),
+                          totalItems: item.tracks.length,
+                          unit: 'track',
+                        });
+                        if (derived.average === null) return null;
+                        return (
+                          <span
+                            data-testid="album-derived-track-average"
+                            className="inline-flex flex-wrap items-center gap-1.5 rounded-[6px] border border-line bg-app px-2.5 py-1 text-[11px] font-medium tabular-nums text-ink"
+                          >
+                            <span>Média derivada: {derived.average.toFixed(1)}/10</span>
+                            <span className="text-muted">({derived.coverageLabel})</span>
+                            {derived.provisional && (
+                              <span className="rounded-[4px] border border-line bg-card px-1.5 py-0.5 text-[10px] font-semibold text-muted">
+                                provisória
+                              </span>
+                            )}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div className="max-h-96 overflow-y-auto divide-y divide-line rounded-xl border border-line bg-app no-scrollbar">
                       {item.tracks.map((tr, idx) => {
@@ -2344,12 +2543,14 @@ export function WorkDetailPage({
                   </div>
                 </section>
 
-                <EpisodeListTab
-                  item={item}
-                  tmdbKey={tmdbKey}
-                  omdbKey={omdbKey}
-                  onUpdateItem={onUpdateItem}
-                />
+                <Suspense fallback={<div className="h-32 animate-pulse rounded-[6px] bg-card" />}>
+                  <EpisodeListTab
+                    item={item}
+                    tmdbKey={tmdbKey}
+                    omdbKey={omdbKey}
+                    onUpdateItem={onUpdateItem}
+                  />
+                </Suspense>
               </>
             ) : (
               <section className="rounded-2xl border border-line bg-card p-5 space-y-4">
@@ -2404,10 +2605,12 @@ export function WorkDetailPage({
 
         {/* ABA 3 — CENAS & DIÁRIO DA OBRA */}
         {activeTab === 'diary' && (
-          <QuotesVaultTab
-            item={item}
-            onUpdate={(updates) => onUpdateItem(item.id, updates)}
-          />
+          <Suspense fallback={<div className="h-32 animate-pulse rounded-[6px] bg-card" />}>
+            <QuotesVaultTab
+              item={item}
+              onUpdate={(updates) => onUpdateItem(item.id, updates)}
+            />
+          </Suspense>
         )}
 
         {/* Compatibilidade SOCIAL_ENABLED legado (desativado por padrão) */}
@@ -2908,6 +3111,43 @@ export function WorkDetailPage({
                           className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
                         />
                       </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Tempo médio de campanha (h · manual se sem RAWG)
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={item.manualCampaignHours ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0);
+                            onUpdateItem(item.id, { manualCampaignHours: v });
+                          }}
+                          placeholder="Ex.: 25"
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Tempo 100% (h · editável)
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={item.completion100Hours ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0);
+                            onUpdateItem(item.id, {
+                              completion100Hours: v,
+                              completion100Source: v !== null ? 'manual' : null,
+                            });
+                          }}
+                          placeholder="Sem fonte automática — editável"
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
                       <label className="block sm:col-span-2">
                         <span className="mb-1 block text-[11px] font-medium text-muted">
                           Justificativa da Nota 11 (Obra-Prima · opcional)
@@ -2929,17 +3169,88 @@ export function WorkDetailPage({
 
                   {workDomain === 'music' && (
                     <>
-                      <label className="block">
-                        <span className="mb-1 block text-[11px] font-medium text-muted">
-                          Subgênero Musical
+                      <div className="space-y-2">
+                        <span className="block text-[11px] font-medium text-muted">
+                          Subgêneros (editáveis)
                         </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(Array.isArray(item.subgenres) && item.subgenres.length > 0
+                            ? item.subgenres
+                            : item.subgenre
+                              ? String(item.subgenre)
+                                  .split(',')
+                                  .map((s) => s.trim())
+                                  .filter(Boolean)
+                              : []
+                          ).map((sg) => (
+                            <button
+                              key={sg}
+                              type="button"
+                              onClick={() => {
+                                const cur =
+                                  Array.isArray(item.subgenres) && item.subgenres.length > 0
+                                    ? item.subgenres
+                                    : String(item.subgenre || '')
+                                        .split(',')
+                                        .map((s) => s.trim())
+                                        .filter(Boolean);
+                                const next = updateEditableSubgenres(cur, { remove: sg });
+                                onUpdateItem(item.id, {
+                                  subgenres: next,
+                                  subgenre: next.join(', '),
+                                });
+                              }}
+                              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-card px-2.5 text-xs text-ink hover:border-accent"
+                            >
+                              <span>{sg}</span>
+                              <X className="h-3 w-3 text-subtle" strokeWidth={1.5} />
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={subgenreInput}
+                            onChange={(e) => setSubgenreInput(e.target.value)}
+                            placeholder="Adicionar subgênero (ex: Shoegaze, Post-Punk)..."
+                            className="min-h-[44px] flex-1 rounded-[6px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!subgenreInput.trim()) return;
+                              const cur =
+                                Array.isArray(item.subgenres) && item.subgenres.length > 0
+                                  ? item.subgenres
+                                  : String(item.subgenre || '')
+                                      .split(',')
+                                      .map((s) => s.trim())
+                                      .filter(Boolean);
+                              const next = updateEditableSubgenres(cur, { add: subgenreInput });
+                              onUpdateItem(item.id, {
+                                subgenres: next,
+                                subgenre: next.join(', '),
+                              });
+                              setSubgenreInput('');
+                            }}
+                            className="min-h-[44px] rounded-[6px] border border-line bg-app px-3 text-xs font-medium text-ink hover:border-accent"
+                          >
+                            Adicionar
+                          </button>
+                        </div>
+                      </div>
+                      <label className="flex min-h-[44px] cursor-pointer items-center gap-2 rounded-[6px] border border-line bg-card px-3 text-xs text-ink">
                         <input
-                          type="text"
-                          value={item.subgenre || ''}
-                          onChange={(e) => onUpdateItem(item.id, { subgenre: e.target.value })}
-                          placeholder="Power Metal, Hard Rock..."
-                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                          type="checkbox"
+                          checked={Boolean(item.excludeFromDiscography)}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, {
+                              excludeFromDiscography: Boolean(e.target.checked),
+                            })
+                          }
+                          className="h-4 w-4 accent-accent"
                         />
+                        <span>Não conta na completude da discografia</span>
                       </label>
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-medium text-muted">
@@ -2954,6 +3265,79 @@ export function WorkDetailPage({
                         />
                       </label>
                     </>
+                  )}
+
+                  {(workDomain === 'cinema' || workDomain === 'reading' || workDomain === 'games') && (
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Franquia / Série
+                        </span>
+                        <input
+                          type="text"
+                          value={item.franchiseName || ''}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, { franchiseName: e.target.value })
+                          }
+                          placeholder="Ex.: Duna, Zelda, Senhor dos Anéis..."
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Escopo na Franquia
+                        </span>
+                        <select
+                          value={item.franchiseTier || 'mainline'}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, { franchiseTier: e.target.value })
+                          }
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        >
+                          {ALL_FRANCHISE_TIER_OPTIONS.map((opt) => (
+                            <option key={opt.id} value={opt.id}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  )}
+
+                  {workDomain === 'reading' && (
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium text-muted">
+                        Edição de outra obra (editionOf)
+                      </span>
+                      <select
+                        value={getEditionBaseWorkId(item)}
+                        onChange={(e) => {
+                          const patch = buildEditionLinkPatch(item, e.target.value, allItems);
+                          if (patch) onUpdateItem(item.id, patch);
+                        }}
+                        className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      >
+                        <option value="">Obra base (não é edição de outra obra)</option>
+                        {allItems
+                          .filter(
+                            (cand) =>
+                              cand &&
+                              cand.inBacklog !== false &&
+                              cand.id !== item.id &&
+                              inferDomainFromWork(cand) === 'reading' &&
+                              getEditionBaseWorkId(cand) !== String(item.id)
+                          )
+                          .map((cand) => (
+                            <option key={cand.id} value={cand.id}>
+                              {cand.title}
+                              {cand.releaseYear ? ` (${cand.releaseYear})` : ''}
+                            </option>
+                          ))}
+                      </select>
+                      <span className="mt-1 block text-[11px] text-subtle">
+                        Conta nas estatísticas do autor e nunca altera o progresso da obra base.
+                      </span>
+                    </label>
                   )}
 
                   <label className="block">
@@ -3221,6 +3605,26 @@ export function WorkDetailPage({
           </div>
         </div>
       )}
+
+      {/* Página / Folha de Entidade (Autor, Diretor, Estúdio, Elenco, Banda) — v2.4.0 Fase 4.4 */}
+      <Suspense fallback={null}>
+        {activeEntity && (
+          <EntitySheetModal
+            entity={activeEntity}
+            allItems={allItems}
+            tmdbKey={tmdbKey}
+            onClose={() => setActiveEntity(null)}
+            onSelectWork={(work) => {
+              setActiveEntity(null);
+              onSelectItem?.(work);
+            }}
+            onQuickCatalogCandidate={(cand) => {
+              onQuickCatalogItem?.(cand);
+              setActiveEntity(null);
+            }}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

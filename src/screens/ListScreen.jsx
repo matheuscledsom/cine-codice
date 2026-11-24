@@ -5,6 +5,7 @@ import {
   CheckSquare,
   Command,
   Dices,
+  Disc3,
   FolderPlus,
   LayoutGrid,
   LayoutList,
@@ -14,13 +15,15 @@ import {
   RotateCcw,
   Search,
   SlidersHorizontal,
-  Star,
   Trash2,
   User,
   X,
 } from 'lucide-react';
 import {
+  Suspense,
+  lazy,
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -30,10 +33,30 @@ import {
 import { CollectionCreatorBar } from '../components/CollectionCreatorBar';
 import { CoverArt } from '../components/CoverArt';
 import { DomainSwitcherBar } from '../components/DomainSwitcherBar';
-import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
 import { ResponsiveSheet } from '../components/ResponsiveSheet';
+import { StarRatingDisplay } from '../components/StarRatingPicker';
 import { StatusBadge } from '../components/StatusBadge';
 import { WorkCard } from '../components/WorkCard';
+import {
+  CATALOG_PAGE_BATCH_SIZE,
+  computeCatalogVisibleSlice,
+} from '../lib/catalogPagination';
+
+const EntitySheetModal = lazy(() =>
+  import('../components/EntitySheetModal').then((m) => ({
+    default: m.EntitySheetModal,
+  }))
+);
+const MusicDiscographyView = lazy(() =>
+  import('../components/MusicDiscographyView').then((m) => ({
+    default: m.MusicDiscographyView,
+  }))
+);
+const OfflineBookPickerModal = lazy(() =>
+  import('../components/OfflineBookPickerModal').then((m) => ({
+    default: m.OfflineBookPickerModal,
+  }))
+);
 import {
   OMNIPRISM_DOMAINS,
   domainConfig,
@@ -80,7 +103,7 @@ const VIEW_MODES = [
   { id: 'shelf', label: 'Estante', icon: Library },
 ];
 
-const LIST_WINDOW_BATCH = 60;
+const LIST_WINDOW_BATCH = CATALOG_PAGE_BATCH_SIZE;
 export { formatCatalogCardFormatBadge };
 
 function loadSavedTitleMode() {
@@ -96,6 +119,7 @@ function loadSavedViewMode() {
   try {
     const val = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
     if (val === 'shelf' && !isFlagEnabled('spineShelf')) return 'grid';
+    if (val === 'discography') return 'discography';
     return VIEW_MODES.some((m) => m.id === val) ? val : 'grid';
   } catch {
     return 'grid';
@@ -116,6 +140,7 @@ export function ListScreen({
   onBatchUpdateItems,
   onBatchRemoveItems,
   onRestoreRemovedItems,
+  onUpdateItem,
   onStartPickedWork,
   onSelectItem,
   onOpenCommandPalette,
@@ -146,6 +171,7 @@ export function ListScreen({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [collectionManagerOpen, setCollectionManagerOpen] = useState(false);
   const [rouletteOpen, setRouletteOpen] = useState(false);
+  const [activeEntity, setActiveEntity] = useState(null);
   const [localQuery, setLocalQuery] = useState('');
   const [creatorFilterBanner, setCreatorFilterBanner] = useState('');
   const [moreCreatorState, setMoreCreatorState] = useState({
@@ -461,15 +487,12 @@ export function ListScreen({
     layoutMode,
   ]);
 
-  const visibleItems = useMemo(
-    () =>
-      filteredAndSortedItems.length > visibleLimit
-        ? filteredAndSortedItems.slice(0, visibleLimit)
-        : filteredAndSortedItems,
+  const paginationSlice = useMemo(
+    () => computeCatalogVisibleSlice(filteredAndSortedItems, visibleLimit),
     [filteredAndSortedItems, visibleLimit]
   );
-
-  const hasMoreVisible = visibleItems.length < filteredAndSortedItems.length;
+  const visibleItems = paginationSlice.visibleItems;
+  const hasMoreVisible = paginationSlice.hasMore;
 
   useEffect(() => {
     setSelectedIds((prev) =>
@@ -495,7 +518,7 @@ export function ListScreen({
     return () => observer.disconnect();
   }, [hasMoreVisible]);
 
-  const toggleSelectedId = (workId) => {
+  const toggleSelectedId = useCallback((workId) => {
     const targetId = String(workId || '');
     if (!targetId) return;
     setSelectedIds((prev) =>
@@ -503,26 +526,32 @@ export function ListScreen({
         ? prev.filter((id) => id !== targetId)
         : [...prev, targetId]
     );
-  };
+  }, []);
 
-  const handleWorkCardClick = (item) => {
-    if (!item) return;
-    if (selectionMode) {
-      toggleSelectedId(item.id);
-      return;
-    }
-    onSelectItem(item);
-  };
+  const handleWorkCardClick = useCallback(
+    (item) => {
+      if (!item) return;
+      if (selectionMode) {
+        toggleSelectedId(item.id);
+        return;
+      }
+      onSelectItem(item);
+    },
+    [selectionMode, toggleSelectedId, onSelectItem]
+  );
 
-  const handleLongPressWork = (item) => {
-    if (!item) return;
-    if (!selectionMode) {
-      setSelectionMode(true);
-      setSelectedIds([String(item.id)]);
-    } else {
-      toggleSelectedId(item.id);
-    }
-  };
+  const handleLongPressWork = useCallback(
+    (item) => {
+      if (!item) return;
+      if (!selectionMode) {
+        setSelectionMode(true);
+        setSelectedIds([String(item.id)]);
+      } else {
+        toggleSelectedId(item.id);
+      }
+    },
+    [selectionMode, toggleSelectedId]
+  );
 
   const toggleSelectAllVisible = () => {
     const visibleIdSet = visibleItems.map((i) => String(i.id));
@@ -539,23 +568,75 @@ export function ListScreen({
 
   const handleBatchStatusChange = (nextStatus) => {
     if (!nextStatus || selectedIds.length === 0 || !onBatchUpdateItems) return;
+    const prevSnapshots = backlogItems
+      .filter((it) => selectedIds.includes(String(it.id)))
+      .map((it) => ({
+        id: it.id,
+        status: it.status,
+        completedDate: it.completedDate || null,
+        completedAt: it.completedAt || null,
+      }));
+    const count = selectedIds.length;
     onBatchUpdateItems(selectedIds, { status: nextStatus });
     const statusLabel =
       getStatusConfigForDomain(nextStatus, selectedDomain)?.label || nextStatus;
     showToast({
-      message: `${selectedIds.length} obra(s) movida(s) para ${statusLabel}.`,
+      message: `${count} obra(s) movida(s) para ${statusLabel}.`,
       type: 'success',
+      duration: 8000,
+      action:
+        onUpdateItem && prevSnapshots.length > 0
+          ? {
+              label: 'Desfazer',
+              onClick: () => {
+                prevSnapshots.forEach((snap) => {
+                  onUpdateItem(snap.id, {
+                    status: snap.status,
+                    completedDate: snap.completedDate,
+                    completedAt: snap.completedAt,
+                  });
+                });
+                showToast({
+                  message: `Alteração de status desfeita para ${prevSnapshots.length} obra(s).`,
+                  type: 'info',
+                });
+              },
+            }
+          : undefined,
     });
     clearSelectionMode();
   };
 
   const handleBatchAssignCollection = (collectionId) => {
     if (!collectionId || selectedIds.length === 0 || !onBatchUpdateItems) return;
+    const prevSnapshots = backlogItems
+      .filter((it) => selectedIds.includes(String(it.id)))
+      .map((it) => ({
+        id: it.id,
+        collectionIds: Array.isArray(it.collectionIds) ? [...it.collectionIds] : [],
+      }));
+    const count = selectedIds.length;
     onBatchUpdateItems(selectedIds, { addCollectionId: collectionId });
     const colName = collections.find((c) => c.id === collectionId)?.name || 'Coleção';
     showToast({
-      message: `${selectedIds.length} obra(s) adicionada(s) a "${colName}".`,
+      message: `${count} obra(s) adicionada(s) a "${colName}".`,
       type: 'success',
+      duration: 8000,
+      action:
+        onUpdateItem && prevSnapshots.length > 0
+          ? {
+              label: 'Desfazer',
+              onClick: () => {
+                prevSnapshots.forEach((snap) => {
+                  onUpdateItem(snap.id, { collectionIds: snap.collectionIds });
+                });
+                showToast({
+                  message: `Coleção desfeita para ${prevSnapshots.length} obra(s).`,
+                  type: 'info',
+                });
+              },
+            }
+          : undefined,
     });
     setBatchColTarget('');
     clearSelectionMode();
@@ -607,8 +688,22 @@ export function ListScreen({
 
   const visibleViewModes = useMemo(() => {
     const spineEnabled = isFlagEnabled('spineShelf');
-    return VIEW_MODES.filter((m) => m.id !== 'shelf' || spineEnabled);
-  }, []);
+    const base = VIEW_MODES.filter((m) => m.id !== 'shelf' || spineEnabled);
+    if (selectedDomain === 'music') {
+      return [
+        ...base.slice(0, 2),
+        { id: 'discography', label: 'Discografia', icon: Disc3 },
+        ...base.slice(2),
+      ];
+    }
+    return base;
+  }, [selectedDomain]);
+
+  useEffect(() => {
+    if (selectedDomain !== 'music' && layoutMode === 'discography') {
+      setLayoutMode('grid');
+    }
+  }, [selectedDomain, layoutMode]);
 
   const extraFilterCount = useMemo(() => {
     let count = 0;
@@ -869,15 +964,16 @@ export function ListScreen({
           type="button"
           onClick={() => setFiltersOpen(true)}
           aria-expanded={filtersOpen}
-          aria-label="Abrir filtros avançados e ordenação"
-          className={`relative inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[4px] border px-3 py-1.5 text-xs font-medium transition-colors ${
+          aria-label="Filtrar e ordenar catálogo"
+          data-testid="list-filter-button"
+          className={`relative inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[6px] border px-3 py-1.5 text-xs font-medium transition-colors ${
             extraFilterCount > 0
               ? 'border-accent bg-accent/15 text-ink'
               : 'border-line bg-card text-muted hover:text-ink'
           }`}
         >
           <SlidersHorizontal className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-          <span className="hidden sm:inline">Filtros</span>
+          <span className="hidden sm:inline">Filtrar</span>
           {extraFilterCount > 0 && (
             <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold tabular-nums text-accent-ink">
               {extraFilterCount}
@@ -1090,7 +1186,7 @@ export function ListScreen({
 
       {/* Barra contextual de Seleção em Lote */}
       {selectionMode && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-accent/50 bg-accent/10 p-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-line bg-card p-3">
           <div className="flex items-center gap-2 text-xs">
             <span className="font-semibold tabular-nums text-ink">
               {selectedIds.length} selecionada(s)
@@ -1098,7 +1194,7 @@ export function ListScreen({
             <button
               type="button"
               onClick={toggleSelectAllVisible}
-              className="min-h-[34px] rounded-[4px] border border-line bg-card px-2 text-[11px] font-medium text-ink hover:border-accent"
+              className="min-h-[44px] rounded-[6px] border border-line bg-app px-3 text-xs font-medium text-ink hover:border-muted"
             >
               Marcar visíveis
             </button>
@@ -1112,7 +1208,7 @@ export function ListScreen({
               onChange={(e) => {
                 if (e.target.value) handleBatchStatusChange(e.target.value);
               }}
-              className="min-h-[36px] rounded-[4px] border border-line bg-card px-2 text-[11px] text-ink disabled:opacity-45"
+              className="min-h-[44px] rounded-[6px] border border-line bg-app px-2.5 text-xs text-ink disabled:opacity-45"
             >
               <option value="">Status...</option>
               {statuses.map((s) => (
@@ -1130,7 +1226,7 @@ export function ListScreen({
                 onChange={(e) => {
                   if (e.target.value) handleBatchAssignCollection(e.target.value);
                 }}
-                className="min-h-[36px] rounded-[4px] border border-line bg-card px-2 text-[11px] text-ink disabled:opacity-45"
+                className="min-h-[44px] rounded-[6px] border border-line bg-app px-2.5 text-xs text-ink disabled:opacity-45"
               >
                 <option value="">Coleção...</option>
                 {collections.map((c) => (
@@ -1145,7 +1241,7 @@ export function ListScreen({
               type="button"
               disabled={selectedIds.length === 0}
               onClick={handleBatchDelete}
-              className="inline-flex min-h-[36px] items-center gap-1 rounded-[4px] border border-rose-500/40 bg-rose-500/15 px-2.5 text-[11px] font-semibold text-rose-400 disabled:opacity-45"
+              className="inline-flex min-h-[44px] items-center gap-1 rounded-[6px] border border-line bg-app px-3 text-xs font-semibold text-rose-400 hover:border-rose-400 disabled:opacity-45"
             >
               <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
               Excluir
@@ -1154,7 +1250,7 @@ export function ListScreen({
             <button
               type="button"
               onClick={clearSelectionMode}
-              className="min-h-[36px] rounded-[4px] border border-line bg-card px-2.5 text-[11px] text-muted hover:text-ink"
+              className="min-h-[44px] rounded-[6px] px-3 text-xs text-muted hover:text-ink"
             >
               Cancelar
             </button>
@@ -1164,16 +1260,9 @@ export function ListScreen({
 
       {/* Conteúdo Principal */}
       {domainScopedItems.length === 0 ? (
-        <div className="rounded-[6px] border border-line bg-card px-6 py-10 text-center">
-          <p className="text-sm font-semibold text-ink">
-            {selectedDomain === 'all'
-              ? list.emptyBacklogTitle
-              : `Nenhuma obra em ${getDomainMeta(selectedDomain).label}`}
-          </p>
-          <p className="mt-1 text-xs text-muted">
-            {selectedDomain === 'all'
-              ? 'Comece catalogando obras em qualquer um dos 4 mundos no botão Catalogar.'
-              : `Comece catalogando obras de ${getDomainMeta(selectedDomain).label} no botão Catalogar.`}
+        <div className="flex flex-col items-start gap-3 border-y border-line py-8">
+          <p className="font-editorial text-lg font-semibold text-ink">
+            {listVocab.emptyTitle}
           </p>
           {onNavigateAdd && (
             <button
@@ -1181,7 +1270,7 @@ export function ListScreen({
               onClick={() =>
                 onNavigateAdd('', selectedDomain === 'all' ? activeDomain : selectedDomain)
               }
-              className="mt-4 inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] bg-accent px-4 py-2 text-xs font-semibold text-accent-ink"
+              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] bg-accent px-4 py-2 text-xs font-semibold text-accent-ink hover:opacity-90"
             >
               <Plus className="h-4 w-4" strokeWidth={1.5} />
               {listVocab.emptyCta || list.emptyBacklogCta}
@@ -1189,26 +1278,43 @@ export function ListScreen({
           )}
         </div>
       ) : filteredAndSortedItems.length === 0 ? (
-        <div className="rounded-[6px] border border-dashed border-line bg-card px-6 py-8 text-center space-y-2.5">
-          <p className="text-xs font-medium text-ink">{list.emptyMessage}</p>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-y border-line py-6">
+          <p className="text-sm text-muted">{list.emptyMessage}</p>
           <button
             type="button"
             onClick={clearAllFilters}
-            className="min-h-[40px] rounded-[4px] border border-accent bg-accent/10 px-3.5 text-xs font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+            className="min-h-[44px] rounded-[6px] bg-accent px-4 text-xs font-semibold text-accent-ink hover:opacity-90"
           >
             Limpar filtros
           </button>
         </div>
+      ) : selectedDomain === 'music' && layoutMode === 'discography' ? (
+        <Suspense
+          fallback={
+            <div className="space-y-2 py-4">
+              <div className="h-24 animate-pulse rounded-[6px] border border-line bg-card" />
+              <div className="h-24 animate-pulse rounded-[6px] border border-line bg-card" />
+            </div>
+          }
+        >
+          <MusicDiscographyView
+            items={filteredAndSortedItems}
+            onSelectItem={handleWorkCardClick}
+            onUpdateItem={onUpdateItem}
+            onOpenEntity={(ent) => setActiveEntity(ent)}
+            onShowToast={showToast}
+          />
+        </Suspense>
       ) : layoutMode === 'shelf' ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2 px-0.5">
-            <span className="text-[11px] text-subtle">
+            <span className="text-xs text-subtle">
               Lombadas pela cor dominante da capa
             </span>
             <button
               type="button"
               onClick={() => setShelfGroupByTheme((v) => !v)}
-              className="min-h-[36px] rounded-[4px] border border-line bg-card px-2.5 text-[11px] font-medium text-ink hover:border-accent"
+              className="min-h-[44px] rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-ink hover:border-muted"
             >
               {shelfGroupByTheme ? 'Agrupar: Por Gênero' : 'Agrupar: Contínuo'}
             </button>
@@ -1251,11 +1357,19 @@ export function ListScreen({
                     {isSelected && <Check className="h-3.5 w-3.5" strokeWidth={2} />}
                   </span>
                 )}
-                <CoverArt item={item} compact className="h-16 w-11 shrink-0 rounded-[3px]" />
+                <CoverArt
+                  item={item}
+                  compact
+                  className={
+                    itemDomain === 'music'
+                      ? 'h-12 w-12 shrink-0 rounded-[4px]'
+                      : 'h-16 w-11 shrink-0 rounded-[4px]'
+                  }
+                />
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-xs font-semibold text-ink">
+                      <p className="truncate font-editorial text-sm font-semibold text-ink">
                         {titles.primary}
                       </p>
                       {titles.secondary && (
@@ -1264,12 +1378,12 @@ export function ListScreen({
                         </p>
                       )}
                     </div>
-                    {typeof item.rating === 'number' && (
-                      <span className="inline-flex shrink-0 items-center gap-1 rounded-[3px] border border-line bg-app px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
-                        <Star className="h-3 w-3 fill-current" strokeWidth={1.5} />
-                        {item.rating}
-                      </span>
-                    )}
+                    <StarRatingDisplay
+                      work={item}
+                      size="sm"
+                      showNumeric
+                      className="shrink-0"
+                    />
                   </div>
 
                   <p className="truncate text-[11px] text-muted">
@@ -1335,11 +1449,11 @@ export function ListScreen({
         </div>
       )}
 
-      {/* Drawer de Filtros Avançados & Ordenação */}
+      {/* Folha única de Filtros e Ordenação ("Filtrar") */}
       <ResponsiveSheet
         isOpen={filtersOpen}
         onClose={() => setFiltersOpen(false)}
-        title="Filtros & Ordenação"
+        title="Filtrar"
       >
         <div className="space-y-4 p-1">
           <div>
@@ -1391,10 +1505,10 @@ export function ListScreen({
                 <button
                   type="button"
                   onClick={() => setSelectedCollectionId('all')}
-                  className={`min-h-[38px] rounded-[4px] border px-2.5 text-xs font-medium ${
+                  className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium ${
                     selectedCollectionId === 'all'
-                      ? 'border-accent bg-accent/15 text-ink'
-                      : 'border-line bg-app text-muted'
+                      ? 'border-accent bg-accent text-accent-ink'
+                      : 'border-line bg-app text-muted hover:text-ink'
                   }`}
                 >
                   Todas
@@ -1404,10 +1518,10 @@ export function ListScreen({
                     key={col.id}
                     type="button"
                     onClick={() => setSelectedCollectionId(col.id)}
-                    className={`min-h-[38px] rounded-[4px] border px-2.5 text-xs font-medium ${
+                    className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium ${
                       selectedCollectionId === col.id
-                        ? 'border-accent bg-accent/15 text-ink'
-                        : 'border-line bg-app text-muted'
+                        ? 'border-accent bg-accent text-accent-ink'
+                        : 'border-line bg-app text-muted hover:text-ink'
                     }`}
                   >
                     {col.name}
@@ -1424,10 +1538,10 @@ export function ListScreen({
                 <button
                   type="button"
                   onClick={() => setSelectedGenre('all')}
-                  className={`min-h-[36px] rounded-[4px] border px-2.5 text-[11px] font-medium ${
+                  className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium ${
                     selectedGenre === 'all'
-                      ? 'border-accent bg-accent/15 text-ink'
-                      : 'border-line bg-app text-muted'
+                      ? 'border-accent bg-accent text-accent-ink'
+                      : 'border-line bg-app text-muted hover:text-ink'
                   }`}
                 >
                   Todos
@@ -1437,10 +1551,10 @@ export function ListScreen({
                     key={g.name}
                     type="button"
                     onClick={() => setSelectedGenre(g.name)}
-                    className={`min-h-[36px] rounded-[4px] border px-2.5 text-[11px] font-medium tabular-nums ${
+                    className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium tabular-nums ${
                       selectedGenre === g.name
-                        ? 'border-accent bg-accent/15 text-ink'
-                        : 'border-line bg-app text-muted'
+                        ? 'border-accent bg-accent text-accent-ink'
+                        : 'border-line bg-app text-muted hover:text-ink'
                     }`}
                   >
                     {g.name} ({g.count})
@@ -1457,10 +1571,10 @@ export function ListScreen({
                 <button
                   type="button"
                   onClick={() => setSelectedFormat('all')}
-                  className={`min-h-[36px] rounded-[4px] border px-2.5 text-[11px] font-medium ${
+                  className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium ${
                     selectedFormat === 'all'
-                      ? 'border-accent bg-accent/15 text-ink'
-                      : 'border-line bg-app text-muted'
+                      ? 'border-accent bg-accent text-accent-ink'
+                      : 'border-line bg-app text-muted hover:text-ink'
                   }`}
                 >
                   Todas
@@ -1470,10 +1584,10 @@ export function ListScreen({
                     key={f.name}
                     type="button"
                     onClick={() => setSelectedFormat(f.name)}
-                    className={`min-h-[36px] rounded-[4px] border px-2.5 text-[11px] font-medium ${
+                    className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium ${
                       selectedFormat === f.name
-                        ? 'border-accent bg-accent/15 text-ink'
-                        : 'border-line bg-app text-muted'
+                        ? 'border-accent bg-accent text-accent-ink'
+                        : 'border-line bg-app text-muted hover:text-ink'
                     }`}
                   >
                     {f.name}
@@ -1490,10 +1604,10 @@ export function ListScreen({
                 <button
                   type="button"
                   onClick={() => setSelectedAudioFormat('all')}
-                  className={`min-h-[36px] rounded-[4px] border px-2.5 text-[11px] font-medium ${
+                  className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium ${
                     selectedAudioFormat === 'all'
-                      ? 'border-accent bg-accent/15 text-ink'
-                      : 'border-line bg-app text-muted'
+                      ? 'border-accent bg-accent text-accent-ink'
+                      : 'border-line bg-app text-muted hover:text-ink'
                   }`}
                 >
                   Todos
@@ -1503,10 +1617,10 @@ export function ListScreen({
                     key={a.name}
                     type="button"
                     onClick={() => setSelectedAudioFormat(a.name)}
-                    className={`min-h-[36px] rounded-[4px] border px-2.5 text-[11px] font-medium ${
+                    className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium ${
                       selectedAudioFormat === a.name
-                        ? 'border-accent bg-accent/15 text-ink'
-                        : 'border-line bg-app text-muted'
+                        ? 'border-accent bg-accent text-accent-ink'
+                        : 'border-line bg-app text-muted hover:text-ink'
                     }`}
                   >
                     {a.name}
@@ -1524,10 +1638,10 @@ export function ListScreen({
                   key={m.id}
                   type="button"
                   onClick={() => setTitleMode(m.id)}
-                  className={`min-h-[38px] rounded-[4px] border text-xs font-medium ${
+                  className={`min-h-[44px] rounded-[6px] border text-xs font-medium ${
                     titleMode === m.id
-                      ? 'border-accent bg-accent/15 text-ink'
-                      : 'border-line bg-app text-muted'
+                      ? 'border-accent bg-accent text-accent-ink'
+                      : 'border-line bg-app text-muted hover:text-ink'
                   }`}
                 >
                   {m.label}
@@ -1570,7 +1684,7 @@ export function ListScreen({
           )}
 
           {collections.length === 0 ? (
-            <p className="rounded-[4px] border border-dashed border-line bg-app py-6 text-center text-xs text-subtle">
+            <p className="border-y border-line py-5 text-xs text-muted">
               Crie coleções temáticas reunindo obras de qualquer domínio.
             </p>
           ) : (
@@ -1617,7 +1731,7 @@ export function ListScreen({
                             disabled={idx === 0}
                             onClick={() => onMoveCollection(col.id, -1)}
                             aria-label={`Mover coleção ${col.name} para cima`}
-                            className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-[4px] border border-line bg-card text-muted disabled:opacity-35"
+                            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] border border-line bg-card text-muted disabled:opacity-35"
                           >
                             <ArrowUp className="h-3.5 w-3.5" strokeWidth={1.5} />
                           </button>
@@ -1626,7 +1740,7 @@ export function ListScreen({
                             disabled={idx === collections.length - 1}
                             onClick={() => onMoveCollection(col.id, 1)}
                             aria-label={`Mover coleção ${col.name} para baixo`}
-                            className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-[4px] border border-line bg-card text-muted disabled:opacity-35"
+                            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] border border-line bg-card text-muted disabled:opacity-35"
                           >
                             <ArrowDown className="h-3.5 w-3.5" strokeWidth={1.5} />
                           </button>
@@ -1637,7 +1751,7 @@ export function ListScreen({
                           type="button"
                           onClick={() => onDeleteCollection(col.id)}
                           aria-label={`Excluir coleção ${col.name}`}
-                          className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-[4px] border border-line bg-card text-rose-400 hover:border-rose-500/40"
+                          className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] border border-line bg-card text-rose-400 hover:border-rose-400"
                         >
                           <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
                         </button>
@@ -1687,15 +1801,43 @@ export function ListScreen({
         </div>
       </ResponsiveSheet>
 
-      <OfflineBookPickerModal
-        isOpen={rouletteOpen}
-        onClose={() => setRouletteOpen(false)}
-        items={items}
-        domain={selectedDomain}
-        readerDna={profile?.readerDna || null}
-        onStartReading={onStartPickedWork}
-        onSelectItem={onSelectItem}
-      />
+      {rouletteOpen && (
+        <Suspense fallback={null}>
+          <OfflineBookPickerModal
+            isOpen={rouletteOpen}
+            onClose={() => setRouletteOpen(false)}
+            items={items}
+            domain={selectedDomain}
+            readerDna={profile?.readerDna || null}
+            onStartReading={onStartPickedWork}
+            onSelectItem={onSelectItem}
+          />
+        </Suspense>
+      )}
+
+      {/* Página / Folha de Entidade (Autor, Diretor, Estúdio, Elenco, Banda) */}
+      <Suspense fallback={null}>
+        {activeEntity && (
+          <EntitySheetModal
+            entity={activeEntity}
+            allItems={items}
+            tmdbKey={tmdbKey}
+            onClose={() => setActiveEntity(null)}
+            onSelectWork={(work) => {
+              setActiveEntity(null);
+              onSelectItem?.(work);
+            }}
+            onQuickCatalogCandidate={(cand) => {
+              onAddItem?.({
+                ...cand,
+                status: 'queued',
+                inBacklog: true,
+              });
+              setActiveEntity(null);
+            }}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

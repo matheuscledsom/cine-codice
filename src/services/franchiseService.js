@@ -1,4 +1,13 @@
+import { inferDomainFromWork } from '../config/domainConfig.js';
+import {
+  UNCLASSIFIED_FRANCHISE_TIER,
+  buildDomainFranchiseModel,
+  computeFranchiseScopeProgress,
+  inferFranchiseTier,
+  normalizeFranchiseTier,
+} from '../lib/franchiseTier.js';
 import { isConfirmedUserRating } from '../lib/ratings.js';
+import { fetchTmdbViaProxyOrDirect } from './apiProxyClient.js';
 import { loadTmdbApiKey, normalizeTitleForDedup } from './cinemaApi.js';
 import { findFranchiseForItem } from './franchiseEngine.js';
 
@@ -34,18 +43,37 @@ export function filterStrictlyCanonicalRelations(relations = []) {
 
 export async function fetchTmdbCollectionParts(
   collectionId,
-  { apiKey = '', fetchImpl = globalThis.fetch, signal } = {}
+  {
+    apiKey = '',
+    fetchImpl = globalThis.fetch,
+    signal,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
 ) {
   const cleanId = Number(collectionId);
   if (!Number.isInteger(cleanId) || cleanId <= 0) return [];
   const key = String(apiKey || loadTmdbApiKey() || '').trim();
-  if (!key || typeof fetchImpl !== 'function') return [];
+  if (typeof fetchImpl !== 'function') return [];
 
   try {
-    const url = `https://api.themoviedb.org/3/collection/${cleanId}?api_key=${encodeURIComponent(key)}&language=pt-BR`;
-    const res = await fetchImpl(url, { signal });
-    if (!res.ok) return [];
-    const json = await res.json();
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      `collection/${cleanId}`,
+      { language: 'pt-BR' },
+      {
+        directApiKey: key,
+        signal,
+        fetchImpl,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
+    );
+    if (outcome.missingKey || !outcome.res || !outcome.res.ok) return [];
+    const json = await outcome.res.json();
     const parts = Array.isArray(json?.parts) ? json.parts : [];
     return parts
       .map((part) => {
@@ -70,6 +98,326 @@ export async function fetchTmdbCollectionParts(
   } catch {
     return [];
   }
+}
+
+export async function searchTmdbCollections(
+  query,
+  {
+    apiKey = '',
+    fetchImpl = globalThis.fetch,
+    signal,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
+) {
+  const cleanQuery = String(query || '').trim();
+  if (cleanQuery.length < 2 || typeof fetchImpl !== 'function') return [];
+  const key = String(apiKey || loadTmdbApiKey() || '').trim();
+
+  try {
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      'search/collection',
+      { query: cleanQuery, language: 'pt-BR' },
+      {
+        directApiKey: key,
+        signal,
+        fetchImpl,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
+    );
+    if (outcome.missingKey || !outcome.res || !outcome.res.ok) return [];
+    const json = await outcome.res.json();
+    return (Array.isArray(json?.results) ? json.results : [])
+      .map((col) => ({
+        id: Number(col.id) || null,
+        name: String(col.name || '').trim(),
+        overview: String(col.overview || '').trim(),
+        posterUrl: col.poster_path
+          ? `https://image.tmdb.org/t/p/w342${col.poster_path}`
+          : null,
+      }))
+      .filter((c) => c.id && c.name);
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchTmdbKeywordDetail(
+  keywordId,
+  {
+    apiKey = '',
+    fetchImpl = globalThis.fetch,
+    signal,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
+) {
+  const cleanId = Number(keywordId);
+  if (!Number.isInteger(cleanId) || cleanId <= 0 || typeof fetchImpl !== 'function') {
+    return null;
+  }
+  const key = String(apiKey || loadTmdbApiKey() || '').trim();
+  try {
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      `keyword/${cleanId}`,
+      {},
+      {
+        directApiKey: key,
+        signal,
+        fetchImpl,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
+    );
+    if (outcome.missingKey || !outcome.res || !outcome.res.ok) return null;
+    const json = await outcome.res.json();
+    const id = Number(json?.id) || cleanId;
+    const name = String(json?.name || '').trim();
+    return name ? { id, name } : null;
+  } catch {
+    return null;
+  }
+}
+
+const UNIVERSE_KEYWORD_HINT_RE =
+  /\b(cinematic\s+universe|shared\s+universe|marvel\s+cinematic|dc\s+extended|dc\s+universe|monsterverse|conjuring|star\s+wars|wizarding\s+world|middle[- ]?earth|alien\s+franchise|predator|jurassic|fast\s+and\s+furious|x-men|spider-verse|dune)\b/i;
+
+export function isLikelySharedUniverseKeyword(name = '') {
+  return UNIVERSE_KEYWORD_HINT_RE.test(String(name || '').trim());
+}
+
+export async function fetchTmdbWorkKeywords(
+  work = {},
+  {
+    apiKey = '',
+    fetchImpl = globalThis.fetch,
+    signal,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
+) {
+  const tmdbId = Number(work?.tmdbId || work?.ids?.tmdb);
+  if (!Number.isInteger(tmdbId) || tmdbId <= 0 || typeof fetchImpl !== 'function') {
+    return [];
+  }
+  const key = String(apiKey || loadTmdbApiKey() || '').trim();
+  const isMovie = work?.workType === 'movie';
+  const endpoint = isMovie ? `movie/${tmdbId}/keywords` : `tv/${tmdbId}/keywords`;
+
+  try {
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      endpoint,
+      {},
+      {
+        directApiKey: key,
+        signal,
+        fetchImpl,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
+    );
+    if (outcome.missingKey || !outcome.res || !outcome.res.ok) return [];
+    const json = await outcome.res.json();
+    const rawList = Array.isArray(json?.keywords)
+      ? json.keywords
+      : Array.isArray(json?.results)
+        ? json.results
+        : [];
+    return rawList
+      .map((kw) => ({
+        id: Number(kw.id) || null,
+        name: String(kw.name || '').trim(),
+        isUniverseHint: isLikelySharedUniverseKeyword(kw.name),
+      }))
+      .filter((kw) => kw.id && kw.name)
+      .sort((a, b) => Number(b.isUniverseHint) - Number(a.isUniverseHint));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Busca SUGESTÕES de universo compartilhado (ex.: UCM e similares) via TMDB
+ * `discover/movie` e `discover/tv` filtrados por `with_keywords`.
+ *
+ * Regra v2.5.0:
+ * - Nunca classifica automaticamente em `mainline` ou `spinoff`.
+ * - Toda sugestão chega com `franchiseTier: 'unclassified'` ("Não classificado")
+ *   e `tierConfirmedByUser: false` para confirmação explícita do usuário.
+ */
+export async function fetchTmdbUniverseSuggestionsByKeyword(
+  keywordId,
+  {
+    keywordName = '',
+    mediaTypes = ['movie', 'tv'],
+    apiKey = '',
+    fetchImpl = globalThis.fetch,
+    signal,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
+    limit = 30,
+  } = {}
+) {
+  const cleanId = Number(keywordId);
+  if (!Number.isInteger(cleanId) || cleanId <= 0 || typeof fetchImpl !== 'function') {
+    return { keyword: null, suggestions: [] };
+  }
+  const key = String(apiKey || loadTmdbApiKey() || '').trim();
+  const proxyOpts = {
+    directApiKey: key,
+    signal,
+    fetchImpl,
+    accessToken,
+    supabaseClient,
+    forceProxy,
+    ...(isDev !== undefined ? { isDev } : {}),
+  };
+
+  let resolvedName = String(keywordName || '').trim();
+  if (!resolvedName) {
+    const kwDetail = await fetchTmdbKeywordDetail(cleanId, proxyOpts);
+    resolvedName = kwDetail?.name || `Keyword #${cleanId}`;
+  }
+
+  const wanted = Array.isArray(mediaTypes) && mediaTypes.length > 0 ? mediaTypes : ['movie', 'tv'];
+  const collected = [];
+  const seen = new Set();
+
+  const tasks = [];
+  if (wanted.includes('movie')) {
+    tasks.push(
+      fetchTmdbViaProxyOrDirect(
+        'discover/movie',
+        {
+          with_keywords: String(cleanId),
+          language: 'pt-BR',
+          sort_by: 'release_date.asc',
+          page: 1,
+        },
+        proxyOpts
+      )
+        .then(async (out) => {
+          if (out.missingKey || !out.res || !out.res.ok) return [];
+          const json = await out.res.json();
+          return (Array.isArray(json?.results) ? json.results : []).map((m) => ({
+            raw: m,
+            workType: 'movie',
+          }));
+        })
+        .catch(() => [])
+    );
+  }
+  if (wanted.includes('tv')) {
+    tasks.push(
+      fetchTmdbViaProxyOrDirect(
+        'discover/tv',
+        {
+          with_keywords: String(cleanId),
+          language: 'pt-BR',
+          sort_by: 'first_air_date.asc',
+          page: 1,
+        },
+        proxyOpts
+      )
+        .then(async (out) => {
+          if (out.missingKey || !out.res || !out.res.ok) return [];
+          const json = await out.res.json();
+          return (Array.isArray(json?.results) ? json.results : []).map((t) => ({
+            raw: t,
+            workType: 'series',
+          }));
+        })
+        .catch(() => [])
+    );
+  }
+
+  const chunks = await Promise.all(tasks);
+  for (const list of chunks) {
+    for (const { raw, workType } of list) {
+      const tmdbId = Number(raw?.id) || null;
+      const title = String(
+        raw?.title || raw?.name || raw?.original_title || raw?.original_name || ''
+      ).trim();
+      if (!tmdbId || !title) continue;
+      const dedupKey = `${workType}:${tmdbId}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+      const dateStr = raw?.release_date || raw?.first_air_date || '';
+      const yearMatch = String(dateStr).match(/^(\d{4})/);
+      collected.push({
+        id: `universe-suggestion-${workType}-${tmdbId}`,
+        tmdbId,
+        domain: 'cinema',
+        workType,
+        title,
+        originalTitle: String(raw?.original_title || raw?.original_name || '').trim(),
+        releaseYear: yearMatch ? Number(yearMatch[1]) : null,
+        coverUrl: raw?.poster_path
+          ? `https://image.tmdb.org/t/p/w500${raw.poster_path}`
+          : null,
+        backdropUrl: raw?.backdrop_path
+          ? `https://image.tmdb.org/t/p/w1280${raw.backdrop_path}`
+          : null,
+        synopsis: String(raw?.overview || '').trim(),
+        isUniverseSuggestion: true,
+        sourceKind: 'tmdb_keyword_discover',
+        sourceLabel: `Sugestão TMDB · ${resolvedName}`,
+        suggestedKeywordId: cleanId,
+        suggestedKeywordName: resolvedName,
+        franchiseTier: UNCLASSIFIED_FRANCHISE_TIER,
+        tierConfirmedByUser: false,
+      });
+    }
+  }
+
+  collected.sort((a, b) => (a.releaseYear || 9999) - (b.releaseYear || 9999));
+
+  return {
+    keyword: { id: cleanId, name: resolvedName },
+    suggestions: collected.slice(0, Math.max(1, Number(limit) || 30)),
+  };
+}
+
+/**
+ * Cruza sugestões TMDB (keyword/discover) com o catálogo local mantendo
+ * `unclassified` ("Não classificado") para tudo que o usuário ainda não confirmou.
+ */
+export function buildUniverseSuggestionsModel(suggestions = [], allCatalogItems = []) {
+  const catalog = (Array.isArray(allCatalogItems) ? allCatalogItems : []).filter(Boolean);
+  return (Array.isArray(suggestions) ? suggestions : []).map((sug) => {
+    const dec = decorateCatalogStatus(sug, catalog);
+    const explicitUserTier = dec.item
+      ? normalizeFranchiseTier(
+          dec.item.franchiseTier ?? dec.item.progress_data?.franchiseTier
+        )
+      : '';
+    const confirmedTier =
+      explicitUserTier && explicitUserTier !== UNCLASSIFIED_FRANCHISE_TIER
+        ? explicitUserTier
+        : UNCLASSIFIED_FRANCHISE_TIER;
+    return {
+      ...dec,
+      isUniverseSuggestion: true,
+      sourceKind: 'tmdb_keyword_discover',
+      franchiseTier: confirmedTier,
+      tierConfirmedByUser: confirmedTier !== UNCLASSIFIED_FRANCHISE_TIER,
+    };
+  });
 }
 
 function classifyUniverseGroup(node) {
@@ -236,7 +584,13 @@ export function buildDeterministicFranchiseOrUniverseModel(
 
   const decorated = rawNodes
     .filter((node) => isAllowedUniverseRelation(node.relationSource || {}))
-    .map((node) => decorateCatalogStatus(node, catalog))
+    .map((node) => {
+      const dec = decorateCatalogStatus(node, catalog);
+      return {
+        ...dec,
+        franchiseTier: inferFranchiseTier(dec.item || dec),
+      };
+    })
     .sort((a, b) => {
       const yA = Number(a.releaseYear) || 9999;
       const yB = Number(b.releaseYear) || 9999;
@@ -248,6 +602,7 @@ export function buildDeterministicFranchiseOrUniverseModel(
   const completedCount = decorated.filter((n) => n.isCompleted).length;
   const completionPct =
     totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+  const scopeProgress = computeFranchiseScopeProgress(decorated, 'cinema');
 
   if (isMovie) {
     const noun = totalCount === 1 ? 'filme' : 'filmes';
@@ -263,6 +618,7 @@ export function buildDeterministicFranchiseOrUniverseModel(
       completedCount,
       totalCount,
       completionPct,
+      scopeProgress,
       entries: decorated,
       groups: null,
       baseFranchise,
@@ -306,8 +662,32 @@ export function buildDeterministicFranchiseOrUniverseModel(
     completedCount,
     totalCount,
     completionPct,
+    scopeProgress,
     entries: decorated,
     groups,
     baseFranchise,
   };
+}
+
+/**
+ * Modelo unificado de Franquia & Escopos para Cinema/Séries, Livros e Games (v2.4.0 Fase 4.2).
+ */
+export function buildUnifiedFranchiseModel(
+  work,
+  allCatalogItems = [],
+  remoteCollectionParts = []
+) {
+  if (!work || typeof work !== 'object') return null;
+  const domain = inferDomainFromWork(work);
+  if (domain === 'reading' || domain === 'games') {
+    return buildDomainFranchiseModel(work, allCatalogItems);
+  }
+  if (domain === 'cinema') {
+    return buildDeterministicFranchiseOrUniverseModel(
+      work,
+      allCatalogItems,
+      remoteCollectionParts
+    );
+  }
+  return null;
 }

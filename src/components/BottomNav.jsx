@@ -41,17 +41,17 @@ export function BottomNav({ activeTab, onChangeTab }) {
                   className="group flex flex-col items-center justify-center gap-0.5 min-h-[44px] focus:outline-none"
                 >
                   <span
-                    className={`flex h-10 w-10 items-center justify-center rounded-[4px] transition-colors duration-200 ${
+                    className={`flex h-10 w-10 items-center justify-center rounded-[6px] transition-colors duration-200 ${
                       isActive
                         ? 'bg-accent text-accent-ink border border-accent'
-                        : 'border border-accent/40 bg-accent/10 text-accent group-hover:bg-accent/20'
+                        : 'border border-line bg-card text-muted group-hover:text-ink'
                     }`}
                   >
                     <Icon className="h-5 w-5" strokeWidth={1.5} />
                   </span>
                   <span
                     className={`text-[10px] font-medium tracking-tight transition-colors ${
-                      isActive ? 'text-ink' : 'text-accent'
+                      isActive ? 'text-ink' : 'text-subtle'
                     }`}
                   >
                     {item.label}

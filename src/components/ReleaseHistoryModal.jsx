@@ -34,7 +34,7 @@ export function ReleaseHistoryModal({ isOpen, onClose }) {
           <div className="min-w-0">
             <p className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted font-medium">
               <GitBranch className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-              <span>Versionamento Oficial</span>
+              <span>Novidades da versão</span>
             </p>
             <h2 className="text-base font-semibold tracking-tight text-ink tabular-nums">
               OmniPrism {CODICE_RELEASE.label}

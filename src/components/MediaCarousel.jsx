@@ -128,9 +128,9 @@ export function MediaCarousel({
                       {slide.url}
                     </p>
                     <a
-                      href={slide.url}
+                      href={/^https?:\/\//i.test(String(slide.url || '')) ? slide.url : '#'}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3.5 py-2 text-xs font-semibold text-accent-ink"
                     >
                       Abrir vídeo

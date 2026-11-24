@@ -51,9 +51,11 @@
     --space-6: 24px;
     --space-8: 32px;
 
-    --radius-book: 2px;
-    --radius-sm: 4px;
+    /* 2 valores oficiais de raio (docs/DESIGN.md): 6px controles/cards, 14px folhas/modais */
+    --radius-book: 6px;
+    --radius-sm: 6px;
     --radius-card: 6px;
+    --radius-control: 6px;
     --radius-sheet: 14px;
     --radius-pill: 9999px;
 

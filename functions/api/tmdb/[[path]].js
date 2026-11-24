@@ -29,7 +29,11 @@ export async function handleTmdbProxyRequest(
     return jsonResponse({ error: 'URL de requisição inválida.' }, 400);
   }
 
-  const validation = validateTmdbPath(incomingUrl.pathname, params?.path);
+  const validation = validateTmdbPath(
+    incomingUrl.pathname,
+    params?.path,
+    incomingUrl.searchParams
+  );
   if (!validation.allowed) {
     return jsonResponse({ error: 'Endpoint TMDB não permitido pelo proxy.' }, 403);
   }

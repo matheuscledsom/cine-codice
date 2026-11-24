@@ -4,11 +4,14 @@ import '@fontsource-variable/newsreader/wght.css';
 import '@fontsource-variable/source-sans-3/wght.css';
 import { registerSW } from 'virtual:pwa-register';
 import App from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { domainConfig } from './config/domainConfig';
 import { ToastProvider } from './context/ToastContext';
+import { installGlobalErrorListeners } from './lib/errorLogger';
 import './index.css';
 
 document.title = domainConfig.appFullTitle || domainConfig.appName;
+installGlobalErrorListeners();
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   let hadController = Boolean(navigator.serviceWorker.controller);
@@ -51,8 +54,10 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <ToastProvider>
-      <App />
-    </ToastProvider>
+    <ErrorBoundary isGlobal screenName="o OmniPrism">
+      <ToastProvider>
+        <App />
+      </ToastProvider>
+    </ErrorBoundary>
   </StrictMode>
 );

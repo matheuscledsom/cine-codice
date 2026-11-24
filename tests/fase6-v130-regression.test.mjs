@@ -261,26 +261,28 @@ describe('FASE 6 (v1.3.0) — Regressão Ponta-a-Ponta · Cine Códice v1.3.0 Lu
     assert.equal(legacy, null);
   });
 
-  it('(f) Consistência Nominal e Semântica da Versão atual (2.3.3) e preservação do histórico 1.x em todos os arquivos oficiais', () => {
+  it('(f) Consistência Nominal e Semântica da Versão atual (2.4.0) e preservação do histórico 1.x/2.3.3 em todos os arquivos oficiais', () => {
     const pkg = JSON.parse(readText('package.json'));
     const lock = JSON.parse(readText('package-lock.json'));
 
     assert.equal(pkg.name, 'omniprism');
-    assert.equal(pkg.version, '2.3.3');
-    assert.equal(lock.version, '2.3.3');
-    assert.equal(lock.packages?.['']?.version, '2.3.3');
+    assert.equal(pkg.version, '2.4.0');
+    assert.equal(lock.version, '2.4.0');
+    assert.equal(lock.packages?.['']?.version, '2.4.0');
 
-    assert.equal(CODICE_RELEASE.version, '2.3.3');
-    assert.equal(CODICE_RELEASE.label, 'v2.3.3');
+    assert.equal(CODICE_RELEASE.version, '2.4.0');
+    assert.equal(CODICE_RELEASE.label, 'v2.4.0');
     assert.equal(CODICE_RELEASE.label.includes('Lumière'), false);
 
-    assert.equal(RELEASE_HISTORY[0].version, '2.3.3');
+    assert.equal(RELEASE_HISTORY[0].version, '2.4.0');
+    assert.ok(RELEASE_HISTORY.some((r) => r.version === '2.3.3'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.3.0'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.2.0'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.1.0'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.0.0'));
 
     const changelog = readText('CHANGELOG.md');
+    assert.match(changelog, /## \[v2\.4\.0\]/);
     assert.match(changelog, /## \[v2\.3\.3\]/);
     assert.match(changelog, /## \[v1\.3\.0 · Lumière\]/);
     assert.match(changelog, /## \[v1\.2\.0 · Lumière\]/);

@@ -4,6 +4,7 @@ import { getAllEpisodeEvaluations, importEpisodeEvaluations } from './api/cacheD
 import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { OmniLogo } from './components/OmniLogo';
+import { PwaUpdateBanner } from './components/PwaUpdateBanner';
 import { SkeletonScreen } from './components/SkeletonScreen';
 import {
   domainConfig,
@@ -33,6 +34,7 @@ import {
   loadEmergencyMirror,
   mergeSnapshots,
   requestPersistentStorage,
+  restoreSnapshotWithSafety,
   saveAutoSnapshot,
   saveEmergencyMirror,
   shareOrDownloadSignedBackup,
@@ -241,6 +243,7 @@ export function App() {
   const [globalRouletteOpen, setGlobalRouletteOpen] = useState(false);
   const [aboutCreditsOpen, setAboutCreditsOpen] = useState(false);
   const [cloudModalOpen, setCloudModalOpen] = useState(false);
+  const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
   const [cloudSyncState, setCloudSyncState] = useState(() => ({
     configured: getSupabaseConfig().isConfigured,
     authenticated: false,
@@ -770,6 +773,7 @@ export function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const onSwUpdate = () => {
+      setPwaUpdateAvailable(true);
       showToast({
         message: 'Nova versão disponível — Atualizar',
         type: 'info',
@@ -1220,55 +1224,8 @@ export function App() {
     async (incomingSnapshot, modeArg = 'merge') => {
       if (!incomingSnapshot) return;
       const currentEvals = await getAllEpisodeEvaluations().catch(() => []);
-
-      if (modeArg === 'replace') {
-        await saveAutoSnapshot(
-          {
-            items,
-            profile,
-            posts,
-            streak: streakData,
-            readingSessions,
-            collections,
-            episodeEvaluations: currentEvals,
-          },
-          { reason: 'pre-restore', label: 'Pré-restauração automática', force: true }
-        ).catch(() => {});
-
-        const migratedItems = (incomingSnapshot.items || []).map((entry) =>
-          migrateWorkItem(entry)
-        );
-        const migratedProfile = incomingSnapshot.profile
-          ? migrateProfileData(incomingSnapshot.profile)
-          : undefined;
-
-        replaceWorkspaceData({
-          items: migratedItems,
-          readingSessions: incomingSnapshot.readingSessions || [],
-          collections: incomingSnapshot.collections || [],
-        });
-        restoreSocialBackup({
-          profile: migratedProfile,
-          posts: incomingSnapshot.posts || [],
-        });
-        restoreStreakBackup(
-          incomingSnapshot.streak || { count: 0, lastDate: null, history: [] }
-        );
-        if (
-          Array.isArray(incomingSnapshot.episodeEvaluations) &&
-          incomingSnapshot.episodeEvaluations.length > 0
-        ) {
-          await importEpisodeEvaluations(incomingSnapshot.episodeEvaluations).catch(() => {});
-        }
-        showToast({
-          message: `Catálogo restaurada (${migratedItems.length} obras)`,
-          type: 'success',
-        });
-        return;
-      }
-
-      const merged = mergeSnapshots(
-        {
+      const restored = await restoreSnapshotWithSafety({
+        currentWorkspace: {
           items,
           profile,
           posts,
@@ -1277,29 +1234,37 @@ export function App() {
           collections,
           episodeEvaluations: currentEvals,
         },
-        incomingSnapshot
-      );
-      const migratedMergedItems = (merged.items || []).map((entry) =>
-        migrateWorkItem(entry)
-      );
+        incomingSnapshot,
+        mode: modeArg,
+        saveSnapshotFn: saveAutoSnapshot,
+      });
+
+      if (!restored?.ok || !restored.workspace) return;
+      const nextWs = restored.workspace;
+
       replaceWorkspaceData({
-        items: migratedMergedItems,
-        readingSessions: merged.readingSessions,
-        collections: merged.collections || [],
+        items: nextWs.items || [],
+        readingSessions: nextWs.readingSessions || [],
+        collections: nextWs.collections || [],
       });
       restoreSocialBackup({
-        profile: merged.profile ? migrateProfileData(merged.profile) : merged.profile,
-        posts: merged.posts,
+        profile: nextWs.profile,
+        posts: nextWs.posts || [],
       });
-      restoreStreakBackup(merged.streak);
+      restoreStreakBackup(
+        nextWs.streak || { count: 0, lastDate: null, history: [] }
+      );
       if (
-        Array.isArray(merged.episodeEvaluations) &&
-        merged.episodeEvaluations.length > 0
+        Array.isArray(nextWs.episodeEvaluations) &&
+        nextWs.episodeEvaluations.length > 0
       ) {
-        await importEpisodeEvaluations(merged.episodeEvaluations).catch(() => {});
+        await importEpisodeEvaluations(nextWs.episodeEvaluations).catch(() => {});
       }
       showToast({
-        message: `Backup mesclado com sucesso (${migratedMergedItems.length} obras no catálogo)`,
+        message:
+          restored.mode === 'replace'
+            ? `Catálogo restaurado (${(nextWs.items || []).length} obras)`
+            : `Backup mesclado com snapshot prévio (${(nextWs.items || []).length} obras no catálogo)`,
         type: 'success',
       });
     },
@@ -2086,6 +2051,7 @@ export function App() {
                   onBatchUpdateItems={batchUpdateItems}
                   onBatchRemoveItems={handleBatchRemoveWithCloud}
                   onRestoreRemovedItems={handleRestoreRemovedWithCloud}
+                  onUpdateItem={handleUpdateItem}
                   onStartPickedWork={handleStartPickedWork}
                   onSelectItem={(item) => setSelectedItemId(item.id)}
                   onOpenCommandPalette={() => setPaletteOpen(true)}
@@ -2398,6 +2364,15 @@ export function App() {
 
           {perfDebugEnabled && <PerfOverlay />}
         </Suspense>
+
+        <PwaUpdateBanner
+          visible={pwaUpdateAvailable}
+          onUpdate={() => {
+            setPwaUpdateAvailable(false);
+            window.__codiceApplySwUpdate?.();
+          }}
+          onDismiss={() => setPwaUpdateAvailable(false)}
+        />
       </div>
     </div>
   );

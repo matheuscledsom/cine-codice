@@ -1,4 +1,8 @@
 import {
+  formatAnimeEpisodeCountLabel,
+  resolveAnimeEpisodeReleaseInfo,
+} from '../lib/animeEpisodes.js';
+import {
   buildAniListRating,
   buildMalRating,
   buildTmdbRating,
@@ -544,6 +548,9 @@ export function normalizeAniListMedia(media) {
     null,
     media.externalLinks || []
   );
+  const episodeReleaseInfo = resolveAnimeEpisodeReleaseInfo(media, {
+    source: 'AniList',
+  });
 
   return applyCanonicalIdsToWork({
     id: `anilist-${media.id}`,
@@ -560,7 +567,10 @@ export function normalizeAniListMedia(media) {
     nextAiringEpisode: media.nextAiringEpisode || null,
     releaseYear: year,
     totalSeasons: 1,
-    totalEpisodes: Number(media.episodes) > 0 ? Number(media.episodes) : null,
+    totalEpisodes: episodeReleaseInfo.totalEpisodes,
+    releasedEpisodesCount: episodeReleaseInfo.releasedEpisodesCount,
+    releasedEpisodesSource: episodeReleaseInfo.releasedEpisodesSource,
+    releasedEpisodesFetchedAt: episodeReleaseInfo.releasedEpisodesFetchedAt,
     episodeDurationMinutes: Number(media.duration) > 0 ? Number(media.duration) : 24,
     durationMinutes: Number(media.duration) > 0 ? Number(media.duration) : null,
     totalSeconds:
@@ -1528,6 +1538,7 @@ export async function searchCinemaMedia(
     supabaseClient = null,
     forceProxy = null,
     isDev = undefined,
+    onPartialResults = null,
   } = {}
 ) {
   const cleanQuery = String(query || '').trim();
@@ -1589,9 +1600,48 @@ export async function searchCinemaMedia(
     internetArchive: () => searchInternetArchiveMovies(cleanQuery, { signal, fetchImpl, timeoutMs }),
   };
 
+  const filterCinemaByType = (rawList) =>
+    filter === 'all'
+      ? rawList
+      : rawList.filter((item) => {
+          if (filter === 'anime') return item.workType === 'anime';
+          if (filter === 'series') return item.workType === 'series' || item.workType === 'anime';
+          return item.workType === 'movie';
+        });
+
   const runners = activeSources
     .filter((id) => typeof sourceFetchers[id] === 'function')
     .map((id) => ({ id, promise: sourceFetchers[id]() }));
+
+  if (typeof onPartialResults === 'function' && runners.length > 0) {
+    const streamedCollected = [];
+    const streamedSources = new Set();
+    let remaining = runners.length;
+
+    runners.forEach((runner) => {
+      runner.promise
+        .then((items) => {
+          remaining = Math.max(0, remaining - 1);
+          if (signal?.aborted) return;
+          if (Array.isArray(items) && items.length > 0) {
+            streamedCollected.push(...items);
+            streamedSources.add(runner.id);
+            const partialResults = deduplicateCinemaResults(
+              filterCinemaByType(streamedCollected)
+            );
+            onPartialResults({
+              results: partialResults,
+              usedSources: Array.from(streamedSources),
+              pendingCount: remaining,
+              partial: remaining > 0,
+            });
+          }
+        })
+        .catch(() => {
+          remaining = Math.max(0, remaining - 1);
+        });
+    });
+  }
 
   const settled = await Promise.allSettled(runners.map((r) => r.promise));
 
@@ -1607,14 +1657,7 @@ export async function searchCinemaMedia(
     }
   });
 
-  const filteredByType =
-    filter === 'all'
-      ? collected
-      : collected.filter((item) => {
-          if (filter === 'anime') return item.workType === 'anime';
-          if (filter === 'series') return item.workType === 'series' || item.workType === 'anime';
-          return item.workType === 'movie';
-        });
+  const filteredByType = filterCinemaByType(collected);
 
   const deduplicated = deduplicateCinemaResults(filteredByType);
   const allFailed = runners.length > 0 && failedSources.length === runners.length;
@@ -2028,6 +2071,19 @@ export async function enrichWorkWithExternalRatings(
     succeededSources.push('anilist');
     const ad = aniListRes.data;
     const mergedIds = mergeIdsBlocks(enriched.ids, ad.ids);
+    const aniReleaseInfo = resolveAnimeEpisodeReleaseInfo(
+      {
+        episodes: enriched.totalEpisodes || ad.totalEpisodes || null,
+        nextAiringEpisode: ad.nextAiringEpisode || enriched.nextAiringEpisode || null,
+        releasedEpisodesCount:
+          ad.releasedEpisodesCount ?? enriched.releasedEpisodesCount ?? null,
+        releasedEpisodesSource:
+          ad.releasedEpisodesSource || enriched.releasedEpisodesSource || 'AniList',
+        releasedEpisodesFetchedAt:
+          ad.releasedEpisodesFetchedAt || enriched.releasedEpisodesFetchedAt || null,
+      },
+      { source: 'AniList' }
+    );
     enriched = applyCanonicalIdsToWork({
       ...enriched,
       ids: mergedIds,
@@ -2037,7 +2093,10 @@ export async function enrichWorkWithExternalRatings(
         Array.isArray(ad.franchiseRelations) && ad.franchiseRelations.length > 0
           ? ad.franchiseRelations
           : enriched.franchiseRelations || [],
-      totalEpisodes: enriched.totalEpisodes || ad.totalEpisodes || null,
+      totalEpisodes: aniReleaseInfo.totalEpisodes,
+      releasedEpisodesCount: aniReleaseInfo.releasedEpisodesCount,
+      releasedEpisodesSource: aniReleaseInfo.releasedEpisodesSource,
+      releasedEpisodesFetchedAt: aniReleaseInfo.releasedEpisodesFetchedAt,
       animeStatus: ad.animeStatus || enriched.animeStatus || null,
       streamingProvidersBR: normalizeBrazilStreamingProviders(
         enriched.streamingProvidersBR || [],
@@ -2080,12 +2139,29 @@ export async function enrichWorkWithExternalRatings(
         anilist: confirmed.anilistId,
         mal: confirmed.malId || aniMedia?.malId || null,
       });
+      const aniReleaseInfo = resolveAnimeEpisodeReleaseInfo(
+        {
+          episodes: enriched.totalEpisodes || aniMedia?.totalEpisodes || null,
+          nextAiringEpisode: aniMedia?.nextAiringEpisode || enriched.nextAiringEpisode || null,
+          releasedEpisodesCount:
+            aniMedia?.releasedEpisodesCount ?? enriched.releasedEpisodesCount ?? null,
+          releasedEpisodesSource:
+            aniMedia?.releasedEpisodesSource || enriched.releasedEpisodesSource || 'AniList',
+          releasedEpisodesFetchedAt:
+            aniMedia?.releasedEpisodesFetchedAt || enriched.releasedEpisodesFetchedAt || null,
+        },
+        { source: 'AniList' }
+      );
       enriched = applyCanonicalIdsToWork({
         ...enriched,
         workType: 'anime',
         ids: mergedIds,
         animeFormat: enriched.animeFormat || aniMedia?.animeFormat || 'TV',
         animeStatus: aniMedia?.animeStatus || enriched.animeStatus || null,
+        totalEpisodes: aniReleaseInfo.totalEpisodes,
+        releasedEpisodesCount: aniReleaseInfo.releasedEpisodesCount,
+        releasedEpisodesSource: aniReleaseInfo.releasedEpisodesSource,
+        releasedEpisodesFetchedAt: aniReleaseInfo.releasedEpisodesFetchedAt,
         nextAiringEpisode: aniMedia?.nextAiringEpisode || enriched.nextAiringEpisode || null,
         franchiseRelations:
           Array.isArray(aniMedia?.franchiseRelations) && aniMedia.franchiseRelations.length > 0
@@ -4085,6 +4161,13 @@ export function formatWorkStructureBadge(work = {}) {
       return `${formattedEps}+ Episódios · Em exibição`;
     }
     return `${formattedEps} Episódios`;
+  }
+
+  if (work.workType === 'anime' && eps === 0) {
+    const relInfo = formatAnimeEpisodeCountLabel(work);
+    if (relInfo.kind === 'released-so-far' && relInfo.label) {
+      return isOngoing ? `${relInfo.label} · Em exibição` : relInfo.label;
+    }
   }
 
   const parts = [];

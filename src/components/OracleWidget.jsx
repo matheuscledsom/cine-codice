@@ -1,7 +1,11 @@
-import { ArrowRight, Compass, Film, KeyRound, Sparkles } from 'lucide-react';
-import { useState } from 'react';
-import { AI_PROVIDER_META, runMultiCollectionOracle } from '../services/aiProvider';
+import { ArrowRight, Compass, KeyRound, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { normalizeViewerFocusList } from '../lib/migrations';
+import {
+  getOracleConfigForDomain,
+  scopeOracleItemsForDomain,
+} from '../lib/oracleDomainConfig';
+import { AI_PROVIDER_META, runMultiCollectionOracle } from '../services/aiProvider';
 import { generateOfflineRecommendations } from '../services/recommendationEngine';
 import { getDisplayTitles } from '../utils/backlogHelpers';
 import { formatPreferredCriteriaText } from '../utils/readerPreferences';
@@ -11,16 +15,9 @@ import {
 } from './AiPrivacyNotice';
 import { VectorIcon } from './VectorIcon';
 
-const MOOD_PRESETS = [
-  { id: 'Imersão Épica', label: 'Imersão Épica', icon: 'Mountain' },
-  { id: 'Sessão Leve', label: 'Sessão Leve', icon: 'Feather' },
-  { id: 'Suspense Sombrio', label: 'Suspense / Noir', icon: 'Moon' },
-  { id: 'Drama & Reflexão', label: 'Drama & Reflexão', icon: 'Compass' },
-  { id: 'Maratona Sci-Fi / Anime', label: 'Sci-Fi & Mecha', icon: 'Cpu' },
-];
-
 export function OracleWidget({
   items = [],
+  activeDomain = 'cinema',
   profile = null,
   geminiKey = '',
   onSelectItem,
@@ -28,15 +25,27 @@ export function OracleWidget({
 }) {
   const { activeProvider, shouldShowNotice, acknowledgeNotice } =
     useExternalAiNotice(geminiKey);
-  const [selectedMood, setSelectedMood] = useState(MOOD_PRESETS[0].id);
+  const oracleCfg = useMemo(
+    () => getOracleConfigForDomain(activeDomain),
+    [activeDomain]
+  );
+
+  const [selectedMood, setSelectedMood] = useState(oracleCfg.presets[0].id);
   const [customMood, setCustomMood] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [infoNotice, setInfoNotice] = useState('');
   const [result, setResult] = useState(null);
 
-  const backlogItems = items.filter((item) => item.inBacklog);
-  const queuedItems = backlogItems.filter((item) => item.status === 'queued');
-  const completedItems = backlogItems.filter((item) => item.status === 'completed');
+  useEffect(() => {
+    setSelectedMood(oracleCfg.presets[0].id);
+    setResult(null);
+    setInfoNotice('');
+  }, [oracleCfg]);
+
+  const { scopedItems, queuedItems, completedItems } = useMemo(
+    () => scopeOracleItemsForDomain(items, activeDomain),
+    [items, activeDomain]
+  );
   const hasExternalAi = Boolean(activeProvider);
 
   const handleConsult = async () => {
@@ -44,9 +53,7 @@ export function OracleWidget({
 
     if (queuedItems.length === 0) {
       setResult(null);
-      setInfoNotice(
-        'Adicione pelo menos uma obra na sua fila para gerar uma sugestão.'
-      );
+      setInfoNotice(oracleCfg.emptyQueueNotice);
       return;
     }
 
@@ -54,7 +61,7 @@ export function OracleWidget({
 
     if (!hasExternalAi) {
       const offlineRec = generateOfflineRecommendations({
-        items,
+        items: scopedItems,
         profile,
         mood: moodQuery,
       });
@@ -74,7 +81,7 @@ export function OracleWidget({
         profile?.readerFocus ?? profile?.reader_focus
       );
       const recommendation = await runMultiCollectionOracle({
-        mood: moodQuery,
+        mood: `[${oracleCfg.title}] ${moodQuery}`,
         queuedItems,
         completedItems,
         favoriteGenres: profile?.favoriteGenres || [],
@@ -89,7 +96,7 @@ export function OracleWidget({
       setInfoNotice(`Sugestão gerada via ${providerLabel}.`);
     } catch (error) {
       const fallbackRec = generateOfflineRecommendations({
-        items,
+        items: scopedItems,
         profile,
         mood: moodQuery,
       });
@@ -113,20 +120,22 @@ export function OracleWidget({
 
   return (
     <section
-      aria-label="Programador de Sessão"
+      aria-label={oracleCfg.title}
+      data-testid="oracle-widget"
+      data-domain={oracleCfg.domain}
       className="rounded-[6px] border border-line bg-card p-3.5"
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-[4px] border border-line bg-app text-accent">
-            <Compass className="h-4 w-4" strokeWidth={1.5} />
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] border border-line bg-app text-accent">
+            <Compass className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
           </div>
-          <div>
-            <h2 className="text-xs font-semibold tracking-tight text-ink">
-              Curador da Sessão
+          <div className="min-w-0">
+            <h2 className="truncate text-xs font-semibold tracking-tight text-ink">
+              {oracleCfg.title}
             </h2>
-            <p className="text-[10px] tabular-nums text-subtle">
-              Cruza clima, DNA e sua fila ({queuedItems.length})
+            <p className="truncate text-[11px] tabular-nums text-subtle">
+              {oracleCfg.subtitle} ({queuedItems.length})
             </p>
           </div>
         </div>
@@ -135,14 +144,16 @@ export function OracleWidget({
           type="button"
           onClick={handleConsult}
           disabled={isLoading}
-          className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[4px] bg-accent px-3 py-1.5 text-[11px] font-semibold text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[6px] bg-accent px-3.5 py-2 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
-          {isLoading
-            ? 'Analisando...'
-            : hasExternalAi
-              ? 'Consultar Curador'
-              : 'Sugerir Sessão'}
+          <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+          <span>
+            {isLoading
+              ? 'Analisando...'
+              : hasExternalAi
+                ? oracleCfg.aiActionLabel
+                : oracleCfg.actionLabel}
+          </span>
         </button>
       </div>
 
@@ -156,7 +167,7 @@ export function OracleWidget({
       )}
 
       <div className="mt-3 flex gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
-        {MOOD_PRESETS.map((preset) => {
+        {oracleCfg.presets.map((preset) => {
           const isSelected = !customMood.trim() && selectedMood === preset.id;
           return (
             <button
@@ -166,17 +177,17 @@ export function OracleWidget({
                 setCustomMood('');
                 setSelectedMood(preset.id);
               }}
-              className={`inline-flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-[4px] border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+              className={`inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[6px] border px-3 py-1.5 text-xs font-medium transition-colors ${
                 isSelected
-                  ? 'border-accent bg-accent/15 text-accent'
+                  ? 'border-accent bg-accent/15 text-ink'
                   : 'border-line bg-app text-muted hover:text-ink'
               }`}
             >
               <VectorIcon
                 name={preset.icon}
-                className={`h-3 w-3 ${isSelected ? 'text-accent' : 'text-subtle'}`}
+                className={`h-3.5 w-3.5 ${isSelected ? 'text-accent' : 'text-subtle'}`}
               />
-              {preset.label}
+              <span>{preset.label}</span>
             </button>
           );
         })}
@@ -186,71 +197,75 @@ export function OracleWidget({
         type="text"
         value={customMood}
         onChange={(e) => setCustomMood(e.target.value)}
-        placeholder="Ou descreva o clima (ex: suspense de 90 min para ver hoje à noite)..."
-        className="mt-2.5 min-h-[44px] w-full rounded-[4px] border border-line bg-app px-3 py-2 text-[11px] text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+        placeholder={oracleCfg.placeholder}
+        aria-label={oracleCfg.placeholder}
+        className="mt-2.5 min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 py-2 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
       />
 
       {infoNotice && (
         <div
           role="status"
-          className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-line bg-app px-3 py-2 text-[11px] text-muted"
+          className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-line bg-app px-3 py-2 text-xs text-muted"
         >
           <span>{infoNotice}</span>
           {onOpenGeminiSettings && (
             <button
               type="button"
               onClick={onOpenGeminiSettings}
-              className="inline-flex min-h-[36px] items-center gap-1 rounded-[4px] border border-line px-2 py-1 text-[10px] font-medium text-accent hover:border-accent"
+              className="inline-flex min-h-[44px] items-center gap-1 rounded-[6px] border border-line px-2.5 text-xs font-medium text-accent hover:border-accent"
             >
-              <KeyRound className="h-3 w-3" strokeWidth={1.5} />
-              {hasExternalAi ? 'Provedores IA' : 'Ativar IA (opcional)'}
+              <KeyRound className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+              <span>{hasExternalAi ? 'Provedores IA' : 'Ativar IA (opcional)'}</span>
             </button>
           )}
         </div>
       )}
 
       {result && primaryItem && (
-        <div className="mt-3 space-y-2.5 rounded-[4px] border border-accent/40 bg-app p-3">
+        <div className="mt-3 space-y-2.5 border-t border-line pt-3">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-accent">
                 {result.headline}
               </p>
               <button
                 type="button"
                 onClick={() => onSelectItem?.(primaryItem)}
-                className="mt-0.5 inline-flex items-center gap-1.5 text-left text-sm font-semibold text-ink hover:text-accent"
+                className="mt-0.5 inline-flex min-h-[44px] items-center gap-1.5 text-left font-editorial text-base font-semibold text-ink hover:text-accent"
               >
-                <Film className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.5} />
+                <VectorIcon
+                  name={oracleCfg.iconName}
+                  className="h-4 w-4 shrink-0 text-accent"
+                />
                 <span className="truncate">{primaryTitles?.primary}</span>
-                <ArrowRight className="h-3 w-3 shrink-0" strokeWidth={1.5} />
+                <ArrowRight className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
               </button>
               {primaryTitles?.secondary && (
                 <p
-                  className="truncate text-[11px] italic"
+                  className="truncate text-xs italic"
                   style={{ color: 'var(--text-secondary)' }}
                 >
                   {primaryTitles.secondary}
                 </p>
               )}
-              {(primaryItem.director || primaryItem.studio || primaryItem.author) && (
-                <p className="text-[11px] text-muted">
-                  {primaryItem.director || primaryItem.studio || primaryItem.author}
+              {(primaryItem.creator || primaryItem.director || primaryItem.studio || primaryItem.author) && (
+                <p className="text-xs text-muted">
+                  {primaryItem.creator || primaryItem.director || primaryItem.studio || primaryItem.author}
                 </p>
               )}
             </div>
           </div>
 
           {result.reason && (
-            <p className="text-[11px] leading-relaxed text-muted">
+            <p className="text-xs leading-relaxed text-muted">
               {result.reason}
             </p>
           )}
 
           {result.alternatives?.length > 0 && (
             <div className="space-y-1 border-t border-line pt-2">
-              <p className="text-[10px] font-medium text-subtle">
-                Outras opções da sua estante:
+              <p className="text-[11px] font-medium text-subtle">
+                {oracleCfg.alternativesHeading}
               </p>
               {result.alternatives.map((alt) => {
                 const altItem = queuedItems.find((i) => i.id === alt.id);
@@ -260,12 +275,12 @@ export function OracleWidget({
                     key={alt.id}
                     type="button"
                     onClick={() => onSelectItem?.(altItem)}
-                    className="flex min-h-[38px] w-full items-baseline justify-between gap-2 rounded-[4px] px-2 py-1 text-left text-[11px] hover:bg-card"
+                    className="flex min-h-[44px] w-full items-baseline justify-between gap-2 rounded-[6px] px-2 py-1 text-left text-xs hover:bg-app"
                   >
-                    <span className="truncate font-medium text-ink">
+                    <span className="truncate font-editorial font-medium text-ink">
                       {altItem.title}
                     </span>
-                    <span className="truncate text-[10px] text-subtle">
+                    <span className="truncate text-[11px] text-subtle">
                       {alt.why}
                     </span>
                   </button>

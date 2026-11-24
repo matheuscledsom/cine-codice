@@ -11,13 +11,38 @@
 
 export const TMDB_UPSTREAM_BASE = 'https://api.themoviedb.org/3';
 export const OMDB_UPSTREAM_BASE = 'https://www.omdbapi.com/';
+export const LASTFM_UPSTREAM_BASE = 'https://ws.audioscrobbler.com/2.0/';
+export const RAWG_UPSTREAM_BASE = 'https://api.rawg.io/api';
 
 export const SEARCH_CACHE_TTL_SECONDS = 600; // 10 minutos
 export const DETAIL_CACHE_TTL_SECONDS = 86400; // 24 horas
 
-const SECRET_PARAM_RE = /^(api_?key|apikey|access_token|token)$/i;
+const SECRET_PARAM_RE = /^(api_?key|apikey|access_token|token|key|sk|api_sig)$/i;
 const SAFE_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
-const ALLOWED_TMDB_SEARCH_TARGETS = new Set(['movie', 'tv', 'multi']);
+const SAFE_RAWG_ID_RE = /^[a-zA-Z0-9-]+$/;
+const NUMERIC_ID_RE = /^\d+$/;
+const TMDB_KEYWORDS_PARAM_RE = /^\d+(?:[,|]\d+)*$/;
+const ALLOWED_TMDB_SEARCH_TARGETS = new Set(['movie', 'tv', 'multi', 'collection']);
+const ALLOWED_TMDB_DISCOVER_TARGETS = new Set(['movie', 'tv']);
+const ALLOWED_LASTFM_METHODS = new Map([
+  ['artist.gettoptags', 'artist.getTopTags'],
+  ['album.gettoptags', 'album.getTopTags'],
+]);
+const ALLOWED_LASTFM_PARAMS = new Map([
+  ['artist', 'artist'],
+  ['album', 'album'],
+  ['autocorrect', 'autocorrect'],
+  ['mbid', 'mbid'],
+]);
+const ALLOWED_RAWG_SEARCH_PARAMS = new Map([
+  ['search', 'search'],
+  ['page', 'page'],
+  ['page_size', 'page_size'],
+  ['platforms', 'platforms'],
+  ['ordering', 'ordering'],
+  ['search_precise', 'search_precise'],
+  ['search_exact', 'search_exact'],
+]);
 const ALLOWED_OMDB_PARAMS = new Map([
   ['i', 'i'],
   ['t', 't'],
@@ -79,15 +104,21 @@ export function readServerEnvConfig(env = {}) {
   ).trim();
   const tmdbApiKey = String(env?.TMDB_API_KEY || '').trim();
   const omdbApiKey = String(env?.OMDB_API_KEY || '').trim();
+  const lastfmApiKey = String(env?.LASTFM_API_KEY || '').trim();
+  const rawgApiKey = String(env?.RAWG_API_KEY || '').trim();
 
   return {
     supabaseUrl,
     supabaseAnonKey,
     tmdbApiKey,
     omdbApiKey,
+    lastfmApiKey,
+    rawgApiKey,
     providers: {
       tmdb: { configured: Boolean(tmdbApiKey) },
       omdb: { configured: Boolean(omdbApiKey) },
+      lastfm: { configured: Boolean(lastfmApiKey) },
+      rawg: { configured: Boolean(rawgApiKey) },
     },
   };
 }
@@ -170,7 +201,7 @@ export async function verifySupabaseAuth(request, env, { fetchImpl = fetch } = {
   }
 }
 
-export function validateTmdbPath(rawPathname = '', paramsPath = null) {
+export function validateTmdbPath(rawPathname = '', paramsPath = null, searchParams = null) {
   const pathname = String(rawPathname || '');
   const lowerRaw = pathname.toLowerCase();
   if (
@@ -210,6 +241,36 @@ export function validateTmdbPath(rawPathname = '', paramsPath = null) {
         allowed: true,
         kind: 'search',
         ttlSeconds: SEARCH_CACHE_TTL_SECONDS,
+        cleanPath: `${head}/${second}`,
+      };
+    }
+    return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
+  }
+
+  if (head === 'discover') {
+    if (segments.length === 2 && ALLOWED_TMDB_DISCOVER_TARGETS.has(second)) {
+      const rawKeywords =
+        searchParams && typeof searchParams.get === 'function'
+          ? String(searchParams.get('with_keywords') || '').trim()
+          : '';
+      if (rawKeywords && TMDB_KEYWORDS_PARAM_RE.test(rawKeywords)) {
+        return {
+          allowed: true,
+          kind: 'search',
+          ttlSeconds: SEARCH_CACHE_TTL_SECONDS,
+          cleanPath: `${head}/${second}`,
+        };
+      }
+    }
+    return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
+  }
+
+  if (head === 'collection' || head === 'keyword') {
+    if (segments.length === 2 && NUMERIC_ID_RE.test(second)) {
+      return {
+        allowed: true,
+        kind: 'detail',
+        ttlSeconds: DETAIL_CACHE_TTL_SECONDS,
         cleanPath: `${head}/${second}`,
       };
     }
@@ -304,6 +365,152 @@ export function buildSanitizedOmdbUrls(incomingSearchParams, omdbApiKey) {
     cacheUrl,
     upstreamUrl,
   };
+}
+
+export function buildSanitizedLastfmUrls(incomingSearchParams, lastfmApiKey) {
+  const rawMethod = String(incomingSearchParams?.get?.('method') || '').trim().toLowerCase();
+  const canonicalMethod = ALLOWED_LASTFM_METHODS.get(rawMethod);
+  if (!canonicalMethod) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Método Last.fm não permitido pelo proxy (use artist.getTopTags ou album.getTopTags).',
+    };
+  }
+
+  const sanitized = new URLSearchParams();
+  sanitized.set('method', canonicalMethod);
+  const collected = [];
+
+  for (const [rawKey, rawVal] of incomingSearchParams.entries()) {
+    if (SECRET_PARAM_RE.test(rawKey)) continue;
+    const canonical = ALLOWED_LASTFM_PARAMS.get(String(rawKey).toLowerCase());
+    if (!canonical) continue;
+    const val = String(rawVal || '').trim();
+    if (!val) continue;
+    collected.push([canonical, val]);
+  }
+
+  collected.sort(([a], [b]) => a.localeCompare(b));
+  for (const [k, v] of collected) {
+    sanitized.set(k, v);
+  }
+  sanitized.set('format', 'json');
+
+  const hasArtist = sanitized.has('artist');
+  const hasAlbum = sanitized.has('album');
+  const hasMbid = sanitized.has('mbid');
+
+  if (canonicalMethod === 'artist.getTopTags' && !hasArtist && !hasMbid) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Informe artist ou mbid para artist.getTopTags.',
+    };
+  }
+  if (canonicalMethod === 'album.getTopTags' && !hasMbid && !(hasArtist && hasAlbum)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Informe artist e album (ou mbid) para album.getTopTags.',
+    };
+  }
+
+  const cacheUrl = `${LASTFM_UPSTREAM_BASE}?${sanitized.toString()}`;
+  const upstreamParams = new URLSearchParams(sanitized);
+  upstreamParams.set('api_key', lastfmApiKey);
+  const upstreamUrl = `${LASTFM_UPSTREAM_BASE}?${upstreamParams.toString()}`;
+
+  return {
+    ok: true,
+    status: 200,
+    method: canonicalMethod,
+    ttlSeconds: DETAIL_CACHE_TTL_SECONDS,
+    cacheUrl,
+    upstreamUrl,
+  };
+}
+
+export function validateRawgPath(rawPathname = '', paramsPath = null) {
+  const pathname = String(rawPathname || '');
+  const lowerRaw = pathname.toLowerCase();
+  if (
+    lowerRaw.includes('..') ||
+    lowerRaw.includes('%2e') ||
+    lowerRaw.includes('%2f') ||
+    lowerRaw.includes('%5c') ||
+    lowerRaw.includes('\\') ||
+    lowerRaw.includes('@')
+  ) {
+    return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
+  }
+
+  const strippedPrefix = pathname.replace(/^\/api\/rawg\/?/i, '');
+  if (!strippedPrefix || strippedPrefix.includes('//')) {
+    return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
+  }
+
+  let segments;
+  if (Array.isArray(paramsPath) && paramsPath.length > 0) {
+    segments = paramsPath.map((s) => String(s || '').trim());
+  } else if (typeof paramsPath === 'string' && paramsPath.trim()) {
+    segments = paramsPath.split('/').map((s) => s.trim());
+  } else {
+    segments = strippedPrefix.split('/').map((s) => s.trim());
+  }
+
+  if (segments.length === 0 || segments.some((seg) => !seg)) {
+    return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
+  }
+
+  const [head, second] = segments;
+  if (head === 'games' && segments.length === 1) {
+    return {
+      allowed: true,
+      kind: 'search',
+      ttlSeconds: SEARCH_CACHE_TTL_SECONDS,
+      cleanPath: 'games',
+    };
+  }
+
+  if (head === 'games' && segments.length === 2 && SAFE_RAWG_ID_RE.test(second)) {
+    return {
+      allowed: true,
+      kind: 'detail',
+      ttlSeconds: DETAIL_CACHE_TTL_SECONDS,
+      cleanPath: `games/${second}`,
+    };
+  }
+
+  return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
+}
+
+export function buildSanitizedRawgUrls(cleanPath, incomingSearchParams, rawgApiKey) {
+  const sanitized = new URLSearchParams();
+  if (cleanPath === 'games' && incomingSearchParams) {
+    const collected = [];
+    for (const [rawKey, rawVal] of incomingSearchParams.entries()) {
+      if (SECRET_PARAM_RE.test(rawKey)) continue;
+      const canonical = ALLOWED_RAWG_SEARCH_PARAMS.get(String(rawKey).toLowerCase());
+      if (!canonical) continue;
+      const val = String(rawVal || '').trim();
+      if (!val) continue;
+      collected.push([canonical, val]);
+    }
+    collected.sort(([a], [b]) => a.localeCompare(b));
+    for (const [k, v] of collected) {
+      sanitized.set(k, v);
+    }
+  }
+
+  const cacheQuery = sanitized.toString();
+  const cacheUrl = `${RAWG_UPSTREAM_BASE}/${cleanPath}${cacheQuery ? `?${cacheQuery}` : ''}`;
+
+  const upstreamParams = new URLSearchParams(sanitized);
+  upstreamParams.set('key', rawgApiKey);
+  const upstreamUrl = `${RAWG_UPSTREAM_BASE}/${cleanPath}?${upstreamParams.toString()}`;
+
+  return { cacheUrl, upstreamUrl };
 }
 
 export function resolveDefaultCache(cacheOverride = null) {

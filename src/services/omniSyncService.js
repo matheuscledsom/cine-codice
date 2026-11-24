@@ -304,11 +304,47 @@ export function mapLocalWorkToCatalogRow(
       track_count: trackCount,
       ratingSource: work.ratingSource ?? null,
       reviewCriteria: work.reviewCriteria ?? null,
+      reviewCriteria5: work.reviewCriteria5 ?? null,
+      ratingManualOverride: Boolean(work.ratingManualOverride),
+      lifeWork: Boolean(work.lifeWork || Number(work.gameRating11) >= 11),
+      franchiseTier: ['mainline', 'spinoff', 'companion', 'unclassified'].includes(
+        String(work.franchiseTier || '').trim().toLowerCase()
+      )
+        ? String(work.franchiseTier).trim().toLowerCase()
+        : '',
+      editionOf: (() => {
+        const clean = String(work.editionOf ?? work.progress_data?.editionOf ?? '').trim();
+        return clean && clean !== String(work.id || '') ? clean : null;
+      })(),
+      releasedEpisodesCount:
+        Number(work.releasedEpisodesCount) > 0
+          ? Math.floor(Number(work.releasedEpisodesCount))
+          : null,
+      releasedEpisodesSource: String(work.releasedEpisodesSource || '').trim() || null,
+      releasedEpisodesFetchedAt: work.releasedEpisodesFetchedAt || null,
       verdict: work.verdict ?? null,
       externalRatings: cleanExternalRatings,
       atmosphere: Array.isArray(work.atmosphere) ? work.atmosphere : [],
       tropes: Array.isArray(work.tropes) ? work.tropes : [],
       subgenres: Array.isArray(work.subgenres) ? work.subgenres : [],
+      excludeFromDiscography: Boolean(
+        work.excludeFromDiscography ?? work.progress_data?.excludeFromDiscography
+      ),
+      rawgId: Number(work.rawgId || work.ids?.rawg) > 0 ? Math.floor(Number(work.rawgId || work.ids?.rawg)) : null,
+      rawgPlaytimeHours:
+        Number(work.rawgPlaytimeHours) > 0
+          ? Math.round(Number(work.rawgPlaytimeHours) * 10) / 10
+          : null,
+      rawgPlaytimeSource: String(work.rawgPlaytimeSource || '').trim() || null,
+      manualCampaignHours:
+        Number(work.manualCampaignHours) > 0
+          ? Math.round(Number(work.manualCampaignHours) * 10) / 10
+          : null,
+      completion100Hours:
+        Number(work.completion100Hours) > 0
+          ? Math.round(Number(work.completion100Hours) * 10) / 10
+          : null,
+      completion100Source: String(work.completion100Source || '').trim() || null,
       franchiseName: String(work.franchiseName || '').trim(),
       belongsToCollection: work.belongsToCollection || null,
       franchiseRelations: Array.isArray(work.franchiseRelations)
@@ -488,6 +524,37 @@ export function mapCatalogRowToLocalWork(row = {}) {
         : Math.max(0, Math.min(100, Math.round(Number(row.rating)))),
     ratingSource: pd.ratingSource ?? (row.rating !== null && row.rating !== undefined ? 'manual' : null),
     reviewCriteria: pd.reviewCriteria ?? null,
+    reviewCriteria5: pd.reviewCriteria5 ?? null,
+    ratingManualOverride: Boolean(pd.ratingManualOverride),
+    lifeWork: Boolean(pd.lifeWork || Number(pd.game_rating_11) >= 11),
+    franchiseTier: ['mainline', 'spinoff', 'companion', 'unclassified'].includes(
+      String(pd.franchiseTier || '').trim().toLowerCase()
+    )
+      ? String(pd.franchiseTier).trim().toLowerCase()
+      : '',
+    editionOf: String(pd.editionOf || '').trim() || null,
+    releasedEpisodesCount:
+      Number(pd.releasedEpisodesCount) > 0
+        ? Math.floor(Number(pd.releasedEpisodesCount))
+        : null,
+    releasedEpisodesSource: String(pd.releasedEpisodesSource || '').trim() || null,
+    releasedEpisodesFetchedAt: pd.releasedEpisodesFetchedAt || null,
+    excludeFromDiscography: Boolean(pd.excludeFromDiscography),
+    rawgId: Number(pd.rawgId || extIds.rawg) > 0 ? Math.floor(Number(pd.rawgId || extIds.rawg)) : null,
+    rawgPlaytimeHours:
+      Number(pd.rawgPlaytimeHours) > 0
+        ? Math.round(Number(pd.rawgPlaytimeHours) * 10) / 10
+        : null,
+    rawgPlaytimeSource: String(pd.rawgPlaytimeSource || '').trim() || null,
+    manualCampaignHours:
+      Number(pd.manualCampaignHours) > 0
+        ? Math.round(Number(pd.manualCampaignHours) * 10) / 10
+        : null,
+    completion100Hours:
+      Number(pd.completion100Hours) > 0
+        ? Math.round(Number(pd.completion100Hours) * 10) / 10
+        : null,
+    completion100Source: String(pd.completion100Source || '').trim() || null,
     verdict: pd.verdict ?? null,
     externalRatings,
     ids: {

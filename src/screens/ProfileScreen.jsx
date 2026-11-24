@@ -1,10 +1,13 @@
 import {
+  Activity,
   Award,
   BarChart2,
   BookOpen,
   Camera,
+  Database,
   Film,
   Gamepad2,
+  GitBranch,
   Layers,
   Music,
   Palette,
@@ -17,21 +20,38 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AiProvidersPanel } from '../components/AiProvidersPanel';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { BackupReminderBanner } from '../components/BackupReminderBanner';
-import { BadgesGallery } from '../components/BadgesGallery';
 import { CoverArt } from '../components/CoverArt';
-import { PostDetailModal } from '../components/PostDetailModal';
 import {
   AVATAR_EMBLEM_COMPONENTS,
   ProfileEditModal,
 } from '../components/ProfileEditModal';
-import { ProfileSettingsDrawer } from '../components/ProfileSettingsDrawer';
-import { ReaderPassportWidget } from '../components/ReaderPassportWidget';
-import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
-import { ThemeModal } from '../components/ThemeModal';
-import { TitlesBadgesModal } from '../components/TitlesBadgesModal';
+
+const AiProvidersPanel = lazy(() =>
+  import('../components/AiProvidersPanel').then((m) => ({ default: m.AiProvidersPanel }))
+);
+const BadgesGallery = lazy(() =>
+  import('../components/BadgesGallery').then((m) => ({ default: m.BadgesGallery }))
+);
+const PostDetailModal = lazy(() =>
+  import('../components/PostDetailModal').then((m) => ({ default: m.PostDetailModal }))
+);
+const ProfileSettingsDrawer = lazy(() =>
+  import('../components/ProfileSettingsDrawer').then((m) => ({ default: m.ProfileSettingsDrawer }))
+);
+const ReaderPassportWidget = lazy(() =>
+  import('../components/ReaderPassportWidget').then((m) => ({ default: m.ReaderPassportWidget }))
+);
+const ReleaseHistoryModal = lazy(() =>
+  import('../components/ReleaseHistoryModal').then((m) => ({ default: m.ReleaseHistoryModal }))
+);
+const ThemeModal = lazy(() =>
+  import('../components/ThemeModal').then((m) => ({ default: m.ThemeModal }))
+);
+const TitlesBadgesModal = lazy(() =>
+  import('../components/TitlesBadgesModal').then((m) => ({ default: m.TitlesBadgesModal }))
+);
 import {
   OMNIPRISM_DOMAINS,
   domainConfig,
@@ -132,6 +152,7 @@ export function ProfileScreen({
   }, [activeDomain]);
   const [shelfLimit, setShelfLimit] = useState(PAGE_SIZE);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState(null);
   const [themeModalOpen, setThemeModalOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [titlesModalOpen, setTitlesModalOpen] = useState(false);
@@ -543,7 +564,10 @@ export function ProfileScreen({
               <button
                 ref={settingsBtnRef}
                 type="button"
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => {
+                  setSettingsInitialTab(null);
+                  setSettingsOpen(true);
+                }}
                 aria-label="Configurações"
                 aria-expanded={settingsOpen}
                 title="Configurações"
@@ -563,7 +587,7 @@ export function ProfileScreen({
           <div className="min-w-0 space-y-1">
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
               <h1
-                className="min-w-0 truncate text-xl font-bold text-ink"
+                className="font-editorial min-w-0 truncate text-2xl font-bold text-ink"
                 style={{ letterSpacing: '-0.02em', lineHeight: 1.15 }}
               >
                 {profile?.displayName || profileCfg.displayName || 'Meu arquivo'}
@@ -571,14 +595,12 @@ export function ProfileScreen({
             </div>
 
             {gamificationEnabled && titleEvaluation.resolvedActiveBadge?.name && (
-              <div className="pt-0.5">
-                <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-[11px] font-medium text-accent">
-                  <Award className="h-3 w-3 shrink-0" strokeWidth={1.5} />
-                  <span className="truncate">
-                    {titleEvaluation.resolvedActiveBadge.name}
-                  </span>
+              <p className="inline-flex max-w-full items-center gap-1 text-xs font-medium text-muted">
+                <Award className="h-3.5 w-3.5 shrink-0 text-muted" strokeWidth={1.5} />
+                <span className="truncate">
+                  {titleEvaluation.resolvedActiveBadge.name}
                 </span>
-              </div>
+              </p>
             )}
 
             {profile?.bio && (
@@ -588,19 +610,16 @@ export function ProfileScreen({
             )}
           </div>
 
-          {/* VITRINE "FAVORITOS DA VIDA" POR DOMÍNIO (Abas Filmes, Livros, Games, Música) */}
+          {/* VITRINE "FAVORITOS DA VIDA" POR DOMÍNIO (Hierarquia limpa sem card dentro de card) */}
           <section
             aria-label={favoritesVocab.favoritesTitle}
-            className="rounded-2xl border border-line bg-card p-4 space-y-3"
+            className="border-t border-line pt-4 space-y-3"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5">
-                <Award className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                <h2 className="text-xs font-bold uppercase tracking-wider text-ink">
-                  {favoritesVocab.favoritesTitle}
-                </h2>
-              </div>
-              <span className="text-[11px] tabular-nums text-subtle">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
+                {favoritesVocab.favoritesTitle}
+              </h2>
+              <span className="text-xs tabular-nums text-subtle">
                 {top4Slots.filter((s) => Boolean(s.work)).length}/4 fixados
               </span>
             </div>
@@ -620,10 +639,10 @@ export function ProfileScreen({
                     role="tab"
                     aria-selected={isFavTabActive}
                     onClick={() => setFavoritesDomain(dom.id)}
-                    className={`min-h-[38px] rounded-xl border px-2 py-1.5 text-xs font-semibold transition-colors ${
+                    className={`min-h-[44px] rounded-[6px] border px-2 py-1.5 text-xs font-semibold transition-colors ${
                       isFavTabActive
                         ? 'border-accent bg-accent text-accent-ink'
-                        : 'border-line bg-app text-muted hover:border-accent hover:text-ink'
+                        : 'border-line bg-card text-muted hover:text-ink'
                     }`}
                   >
                     {domVocab.favoritesTabLabel}
@@ -632,37 +651,35 @@ export function ProfileScreen({
               })}
             </div>
 
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {top4Slots.map(({ slot, work }) =>
                 work ? (
                   <div
                     key={`top4-slot-${slot}`}
-                    className="group relative flex flex-col justify-between rounded-xl border border-line bg-app p-1.5 transition-colors hover:border-accent"
+                    className="group flex flex-col justify-between"
                   >
                     <button
                       type="button"
                       onClick={() => onSelectItem?.(work)}
-                      className="relative aspect-[2/3] w-full overflow-hidden rounded-lg text-left"
+                      className="relative w-full overflow-hidden rounded-[6px] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                     >
                       <CoverArt
                         item={work}
                         compact
-                        className="h-full w-full object-cover"
+                        className={`${favoritesDomain === 'music' ? 'aspect-square' : 'aspect-[2/3]'} w-full rounded-[6px] object-cover`}
                       />
-                      <span className="absolute left-1.5 top-1.5 rounded-full border border-accent/60 bg-black/80 px-2 py-0.5 text-[10px] font-bold tabular-nums text-accent">
-                        #{slot}
-                      </span>
                     </button>
 
-                    <div className="mt-1.5 flex items-center justify-between gap-1 px-0.5">
-                      <p className="min-w-0 flex-1 truncate text-[11px] font-semibold text-ink">
+                    <div className="mt-1.5 flex items-center justify-between gap-1">
+                      <p className="font-editorial min-w-0 flex-1 truncate text-xs font-semibold text-ink">
+                        <span className="mr-1 font-sans text-[11px] tabular-nums text-subtle">#{slot}</span>
                         {work.title}
                       </p>
                       <button
                         type="button"
                         onClick={() => setPickerSlot(slot)}
                         aria-label={`Trocar favorito #${slot}`}
-                        className="min-h-[32px] shrink-0 rounded-md px-1.5 text-[10px] font-medium text-accent hover:bg-card"
+                        className="min-h-[44px] shrink-0 px-1.5 text-xs font-medium text-muted hover:text-ink"
                       >
                         Trocar
                       </button>
@@ -673,16 +690,14 @@ export function ProfileScreen({
                     key={`top4-slot-${slot}`}
                     type="button"
                     onClick={() => setPickerSlot(slot)}
-                    className="flex aspect-[2/3] min-h-[44px] w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-line bg-app p-3 text-center transition-colors hover:border-accent hover:text-accent"
+                    className={`flex ${favoritesDomain === 'music' ? 'aspect-square' : 'aspect-[2/3]'} min-h-[44px] w-full flex-col items-center justify-center gap-1.5 rounded-[6px] border border-line bg-card p-3 text-center transition-colors hover:border-muted`}
                   >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-card text-accent">
-                      <Plus className="h-4 w-4" strokeWidth={1.5} />
-                    </div>
-                    <span className="text-xs font-semibold tabular-nums text-ink">
-                      + Escolher favorito
+                    <Plus className="h-4 w-4 text-muted" strokeWidth={1.5} />
+                    <span className="text-xs font-medium text-ink">
+                      Escolher favorito
                     </span>
-                    <span className="text-[10px] tabular-nums text-subtle">
-                      Posição #{slot}
+                    <span className="text-[11px] tabular-nums text-subtle">
+                      #{slot}
                     </span>
                   </button>
                 )
@@ -868,6 +883,59 @@ export function ProfileScreen({
               })}
             </div>
           </section>
+
+          {/* Central de Backup, Novidades da Versão e Diagnóstico — v2.4.0 Fase 5 */}
+          <div
+            aria-label="Ferramentas do perfil"
+            className="grid grid-cols-1 gap-2 sm:grid-cols-3"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenBackupModal) onOpenBackupModal();
+                else onExportBackup?.();
+              }}
+              data-testid="profile-backup-center-btn"
+              className="flex min-h-[44px] items-center justify-between gap-2 rounded-[6px] border border-line bg-card px-3.5 py-2.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent"
+            >
+              <span className="inline-flex items-center gap-2">
+                <Database className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                <span>Central de Backup</span>
+              </span>
+              <span className="text-[11px] text-subtle">.ccodex / .json</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setReleaseModalOpen(true)}
+              data-testid="profile-release-notes-btn"
+              className="flex min-h-[44px] items-center justify-between gap-2 rounded-[6px] border border-line bg-card px-3.5 py-2.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent"
+            >
+              <span className="inline-flex items-center gap-2">
+                <GitBranch className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                <span>Novidades da versão</span>
+              </span>
+              <span className="text-[11px] tabular-nums text-subtle">
+                {CODICE_RELEASE.label}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setSettingsInitialTab('diagnostics');
+                setSettingsOpen(true);
+              }}
+              data-testid="profile-diagnostics-btn"
+              className="flex min-h-[44px] items-center justify-between gap-2 rounded-[6px] border border-line bg-card px-3.5 py-2.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent"
+            >
+              <span className="inline-flex items-center gap-2">
+                <Activity className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                <span>Diagnóstico</span>
+              </span>
+              <span className="text-[11px] text-subtle">Local</span>
+            </button>
+          </div>
 
           {/* ATIVIDADE RECENTE */}
           {recentActivityWorks.length > 0 && (
@@ -1074,27 +1142,21 @@ export function ProfileScreen({
             </div>
 
             {personalFeed.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-line bg-card px-4 py-8 text-center space-y-2">
-                <Sparkles className="mx-auto h-5 w-5 text-accent" strokeWidth={1.5} />
-                <p className="text-xs font-medium text-ink">
-                  Suas avaliações, registros e destaques aparecerão aqui automaticamente
-                </p>
-                <p className="text-[11px] text-subtle">
-                  Catalogue obras, avalie títulos ou salve citações na ficha de cada obra.
-                </p>
-              </div>
+              <p className="border-y border-line py-6 text-sm text-muted">
+                Nenhuma avaliação ou nota registrada ainda.
+              </p>
             ) : (
-              <div className="space-y-2.5">
+              <div className="divide-y divide-line border-y border-line">
                 {personalFeed.map((entry) => (
                   <article
                     key={entry.id}
-                    className="flex items-start gap-3 rounded-2xl border border-line bg-card p-3.5 transition-colors hover:border-accent/50"
+                    className="flex items-start gap-3 py-3.5"
                   >
                     {entry.work && (
                       <button
                         type="button"
                         onClick={() => onSelectItem?.(entry.work)}
-                        className="aspect-[2/3] w-14 shrink-0 overflow-hidden rounded-lg border border-line"
+                        className="aspect-[2/3] w-14 shrink-0 overflow-hidden rounded-[6px]"
                       >
                         <CoverArt
                           item={entry.work}
@@ -1215,61 +1277,63 @@ export function ProfileScreen({
 
         {/* ABA 3: INSÍGNIAS DO ESPECTADOR */}
         {resolvedActiveTab === 'badges' && (
-          <div className="px-4 sm:px-6 pt-4 space-y-4">
-            <ReaderPassportWidget
-              items={items}
-              posts={posts}
-              streakCount={streakCount}
-            />
+          <Suspense fallback={null}>
+            <div className="px-4 sm:px-6 pt-4 space-y-4">
+              <ReaderPassportWidget
+                items={items}
+                posts={posts}
+                streakCount={streakCount}
+              />
 
-            {!gamificationEnabled ? (
-              <p className="rounded-2xl border border-line bg-card py-6 text-center text-xs text-muted">
-                {calmMode
-                  ? 'Modo Calmo ativo: XP e contadores numéricos permanecem ocultos.'
-                  : 'Gamificação desativada nas configurações do perfil.'}
-              </p>
-            ) : (
-              <>
-                <div className="rounded-2xl border border-line bg-card p-3.5 space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="inline-flex items-center gap-1.5 font-semibold text-ink">
-                      <span className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-0.5 text-[11px] font-bold text-accent-ink tabular-nums">
-                        <Zap className="h-3 w-3" strokeWidth={1.5} />
-                        {profileCfg.levelPrefix} {statsData.level}
+              {!gamificationEnabled ? (
+                <p className="rounded-[6px] border border-line bg-card py-6 text-center text-xs text-muted">
+                  {calmMode
+                    ? 'Modo Calmo ativo: XP e contadores numéricos permanecem ocultos.'
+                    : 'Gamificação desativada nas configurações do perfil.'}
+                </p>
+              ) : (
+                <>
+                  <div className="rounded-[6px] border border-line bg-card p-3.5 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="inline-flex items-center gap-1.5 font-semibold text-ink">
+                        <span className="inline-flex items-center gap-1 rounded-[6px] bg-accent px-2 py-0.5 text-[11px] font-bold text-accent-ink tabular-nums">
+                          <Zap className="h-3 w-3" strokeWidth={1.5} />
+                          {profileCfg.levelPrefix} {statsData.level}
+                        </span>
+                        <span className="text-muted font-medium">
+                          {titleEvaluation.unlockedCount}/{titleEvaluation.totalCount} insígnias
+                        </span>
                       </span>
-                      <span className="text-muted font-medium">
-                        {titleEvaluation.unlockedCount}/{titleEvaluation.totalCount} insígnias
+                      <span className="text-[11px] text-subtle tabular-nums">
+                        {statsData.currentLevelXp}/{statsData.xpPerLevel} XP
                       </span>
-                    </span>
-                    <span className="text-[11px] text-subtle tabular-nums">
-                      {statsData.currentLevelXp}/{statsData.xpPerLevel} XP
-                    </span>
-                  </div>
-                  <div
-                    role="progressbar"
-                    aria-label="Progresso de XP do espectador"
-                    aria-valuemin={0}
-                    aria-valuemax={statsData.xpPerLevel}
-                    aria-valuenow={statsData.currentLevelXp}
-                    className="h-1 w-full overflow-hidden rounded-full bg-line"
-                  >
+                    </div>
                     <div
-                      className="h-full bg-accent transition-all duration-300"
-                      style={{ width: `${Math.max(4, statsData.xpPct)}%` }}
-                    />
+                      role="progressbar"
+                      aria-label="Progresso de XP do espectador"
+                      aria-valuemin={0}
+                      aria-valuemax={statsData.xpPerLevel}
+                      aria-valuenow={statsData.currentLevelXp}
+                      className="h-1 w-full overflow-hidden rounded-full bg-line"
+                    >
+                      <div
+                        className="h-full bg-accent transition-all duration-300"
+                        style={{ width: `${Math.max(4, statsData.xpPct)}%` }}
+                      />
+                    </div>
                   </div>
-                </div>
 
-                <BadgesGallery
-                  evaluation={titleEvaluation}
-                  onSelectAutoMode={() =>
-                    onUpdateProfile?.({ activeTitleBadge: 'auto' })
-                  }
-                  onPinTitleBadge={handlePinTitleBadge}
-                />
-              </>
-            )}
-          </div>
+                  <BadgesGallery
+                    evaluation={titleEvaluation}
+                    onSelectAutoMode={() =>
+                      onUpdateProfile?.({ activeTitleBadge: 'auto' })
+                    }
+                    onPinTitleBadge={handlePinTitleBadge}
+                  />
+                </>
+              )}
+            </div>
+          </Suspense>
         )}
       </section>
 
@@ -1359,64 +1423,76 @@ export function ProfileScreen({
         </div>
       )}
 
-      <ProfileSettingsDrawer
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        returnFocusRef={settingsBtnRef}
-        profile={profile}
-        cloudState={cloudState}
-        soundOn={soundOn}
-        onToggleSound={() => {
-          const next = !soundOn;
-          setSoundEnabled(next);
-          setSoundOn(next);
-          if (next) playTactileSound('tap');
-        }}
-        onOpenCloudModal={onOpenCloudModal}
-        onUpdateProfile={onUpdateProfile}
-        onOpenThemeStudio={() => {
-          if (onOpenThemeStudio) {
-            onOpenThemeStudio();
-          } else {
-            setThemeModalOpen(true);
-          }
-        }}
-        themeProps={themeProps}
-        onReopenOnboarding={onReopenOnboarding}
-        onOpenGeminiSettings={onOpenGeminiSettings}
-        onExportBackup={onExportBackup}
-        onExportCsv={onExportCsv}
-        onExportMarkdown={onExportBibtex}
-        onImportBackupClick={() => fileInputRef.current?.click()}
-        onOpenBackupModal={onOpenBackupModal}
-        onOpenImportCatalog={onOpenImportCatalog}
-        onOpenShortcuts={onOpenShortcuts}
-        onOpenAboutCredits={onOpenAboutCredits}
-        aiPanelSlot={
-          <AiProvidersPanel
-            keys={resolvedAiConfig.keys}
-            preferences={resolvedAiConfig.preferences}
-            onSaveKey={(providerId, val) => {
-              const saved = resolvedAiConfig.saveProviderKey(providerId, val);
-              if (providerId === 'gemini') onSaveGeminiKey?.(saved);
-              return saved;
+      <Suspense fallback={null}>
+        {settingsOpen && (
+          <ProfileSettingsDrawer
+            isOpen={settingsOpen}
+            onClose={() => {
+              setSettingsOpen(false);
+              setSettingsInitialTab(null);
             }}
-            onClearKey={(providerId) => {
-              resolvedAiConfig.clearProviderKey(providerId);
-              if (providerId === 'gemini') onSaveGeminiKey?.('');
+            returnFocusRef={settingsBtnRef}
+            items={items}
+            initialTab={settingsInitialTab}
+            profile={profile}
+            cloudState={cloudState}
+            onOpenReleaseNotes={() => setReleaseModalOpen(true)}
+            soundOn={soundOn}
+            onToggleSound={() => {
+              const next = !soundOn;
+              setSoundEnabled(next);
+              setSoundOn(next);
+              if (next) playTactileSound('tap');
             }}
-            onUpdatePreferences={(next) => resolvedAiConfig.updatePreferences(next)}
+            onOpenCloudModal={onOpenCloudModal}
+            onUpdateProfile={onUpdateProfile}
+            onOpenThemeStudio={() => {
+              if (onOpenThemeStudio) {
+                onOpenThemeStudio();
+              } else {
+                setThemeModalOpen(true);
+              }
+            }}
+            themeProps={themeProps}
+            onReopenOnboarding={onReopenOnboarding}
+            onOpenGeminiSettings={onOpenGeminiSettings}
+            onExportBackup={onExportBackup}
+            onExportCsv={onExportCsv}
+            onExportMarkdown={onExportBibtex}
+            onImportBackupClick={() => fileInputRef.current?.click()}
+            onOpenBackupModal={onOpenBackupModal}
+            onOpenImportCatalog={onOpenImportCatalog}
+            onOpenShortcuts={onOpenShortcuts}
+            onOpenAboutCredits={onOpenAboutCredits}
+            aiPanelSlot={
+              <Suspense fallback={null}>
+                <AiProvidersPanel
+                  keys={resolvedAiConfig.keys}
+                  preferences={resolvedAiConfig.preferences}
+                  onSaveKey={(providerId, val) => {
+                    const saved = resolvedAiConfig.saveProviderKey(providerId, val);
+                    if (providerId === 'gemini') onSaveGeminiKey?.(saved);
+                    return saved;
+                  }}
+                  onClearKey={(providerId) => {
+                    resolvedAiConfig.clearProviderKey(providerId);
+                    if (providerId === 'gemini') onSaveGeminiKey?.('');
+                  }}
+                  onUpdatePreferences={(next) => resolvedAiConfig.updatePreferences(next)}
+                />
+              </Suspense>
+            }
           />
-        }
-      />
+        )}
 
-      {!onOpenThemeStudio && (
-        <ThemeModal
-          isOpen={themeModalOpen}
-          onClose={() => setThemeModalOpen(false)}
-          {...themeProps}
-        />
-      )}
+        {!onOpenThemeStudio && themeModalOpen && (
+          <ThemeModal
+            isOpen={themeModalOpen}
+            onClose={() => setThemeModalOpen(false)}
+            {...themeProps}
+          />
+        )}
+      </Suspense>
 
       <ProfileEditModal
         isOpen={editModalOpen}
@@ -1425,27 +1501,33 @@ export function ProfileScreen({
         onSave={onUpdateProfile}
       />
 
-      <TitlesBadgesModal
-        isOpen={titlesModalOpen}
-        onClose={() => setTitlesModalOpen(false)}
-        evaluation={titleEvaluation}
-        onSelectAutoMode={() => {
-          onUpdateProfile?.({ activeTitleBadge: 'auto' });
-          setTitlesModalOpen(false);
-        }}
-        onPinTitleBadge={handlePinTitleBadge}
-      />
+      <Suspense fallback={null}>
+        {titlesModalOpen && (
+          <TitlesBadgesModal
+            isOpen={titlesModalOpen}
+            onClose={() => setTitlesModalOpen(false)}
+            evaluation={titleEvaluation}
+            onSelectAutoMode={() => {
+              onUpdateProfile?.({ activeTitleBadge: 'auto' });
+              setTitlesModalOpen(false);
+            }}
+            onPinTitleBadge={handlePinTitleBadge}
+          />
+        )}
 
-      <PostDetailModal
-        post={selectedPost}
-        profile={profile}
-        linkedItem={selectedPostLinkedItem}
-        onClose={() => setSelectedPostId(null)}
-        onSelectItem={onSelectItem}
-        onDeletePost={onDeletePost}
-        onAddComment={onAddPostComment}
-        onDeleteComment={onDeletePostComment}
-      />
+        {selectedPost && (
+          <PostDetailModal
+            post={selectedPost}
+            profile={profile}
+            linkedItem={selectedPostLinkedItem}
+            onClose={() => setSelectedPostId(null)}
+            onSelectItem={onSelectItem}
+            onDeletePost={onDeletePost}
+            onAddComment={onAddPostComment}
+            onDeleteComment={onDeletePostComment}
+          />
+        )}
+      </Suspense>
 
       <footer className="flex flex-wrap items-center justify-center gap-3 pt-2 text-center">
         <button
@@ -1468,10 +1550,14 @@ export function ProfileScreen({
         )}
       </footer>
 
-      <ReleaseHistoryModal
-        isOpen={releaseModalOpen}
-        onClose={() => setReleaseModalOpen(false)}
-      />
+      {releaseModalOpen && (
+        <Suspense fallback={null}>
+          <ReleaseHistoryModal
+            isOpen={releaseModalOpen}
+            onClose={() => setReleaseModalOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

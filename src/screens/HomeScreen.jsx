@@ -8,13 +8,28 @@ import {
   Sparkles,
   Star,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useMemo, useRef, useState } from 'react';
 import { BackupReminderBanner } from '../components/BackupReminderBanner';
 import { CoverArt } from '../components/CoverArt';
 import { DomainSwitcherBar } from '../components/DomainSwitcherBar';
 import { InstallAppBanner } from '../components/InstallAppBanner';
-import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
-import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
+
+const OfflineBookPickerModal = lazy(() =>
+  import('../components/OfflineBookPickerModal').then((m) => ({
+    default: m.OfflineBookPickerModal,
+  }))
+);
+const OracleWidget = lazy(() =>
+  import('../components/OracleWidget').then((m) => ({
+    default: m.OracleWidget,
+  }))
+);
+const ReleaseHistoryModal = lazy(() =>
+  import('../components/ReleaseHistoryModal').then((m) => ({
+    default: m.ReleaseHistoryModal,
+  }))
+);
+import { StarRatingDisplay } from '../components/StarRatingPicker';
 import {
   domainConfig,
   getDomainVocabulary,
@@ -38,6 +53,7 @@ export function HomeScreen({
   profile = null,
   loading = false,
   themeMode = 'dark',
+  geminiKey = '',
   backupReminder = null,
   onSaveBackupNow,
   onDismissBackupReminder,
@@ -46,6 +62,7 @@ export function HomeScreen({
   onSelectItem,
   onNavigateList,
   onNavigateAdd,
+  onOpenGeminiSettings,
 }) {
   const { showToast } = useToast();
 
@@ -231,18 +248,18 @@ export function HomeScreen({
           <section aria-label="Em andamento" className="space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <h1 className="text-sm font-semibold tracking-tight text-ink">
+                <h1 className="font-editorial text-xl font-semibold tracking-tight text-ink">
                   Em andamento
                 </h1>
-                <span className="rounded-full border border-line bg-card px-2 py-0.5 text-[11px] font-semibold tabular-nums text-muted">
-                  {inProgressEntries.length}
+                <span className="text-xs font-medium tabular-nums text-muted">
+                  ({inProgressEntries.length})
                 </span>
               </div>
               {onNavigateList && (
                 <button
                   type="button"
                   onClick={onNavigateList}
-                  className="inline-flex min-h-[44px] items-center gap-1 px-2 text-xs font-medium text-accent hover:opacity-80"
+                  className="inline-flex min-h-[44px] items-center gap-1 px-2 text-xs font-medium text-muted hover:text-ink"
                 >
                   <span>Catálogo</span>
                   <ArrowRight className="h-3.5 w-3.5" strokeWidth={1.5} />
@@ -251,9 +268,9 @@ export function HomeScreen({
             </div>
 
             {inProgressEntries.length === 0 ? (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-line bg-card px-4 py-3 text-xs text-muted">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-y border-line py-4 text-xs text-muted">
                 <span>
-                  Nada em andamento agora. Comece um título da fila ou busque algo novo.
+                  {activeVocab.emptyDescription || 'Nada em andamento agora.'}
                 </span>
                 <button
                   type="button"
@@ -263,10 +280,10 @@ export function HomeScreen({
                       homeFilterDomain === 'all' ? activeDomain : homeFilterDomain
                     )
                   }
-                  className="inline-flex min-h-[38px] items-center gap-1 rounded-[4px] border border-accent/40 bg-accent/10 px-3 text-xs font-semibold text-accent hover:bg-accent/20"
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] bg-accent px-4 text-xs font-semibold text-accent-ink hover:opacity-90"
                 >
                   <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  <span>Catalogar</span>
+                  <span>{activeVocab.emptyCta || 'Catalogar'}</span>
                 </button>
               </div>
             ) : (
@@ -286,32 +303,32 @@ export function HomeScreen({
                   const nextEpTitle =
                     domain === 'cinema' ? resolveHeroNextEpisodeTitle(work) : '';
                   const isBusy = advancingWorkId === work.id;
+                  const isMusic = domain === 'music';
 
                   return (
                     <article
                       key={entry.id}
-                      className="flex flex-col justify-between gap-3 rounded-[6px] border border-line bg-card p-3 transition-colors hover:border-accent/50"
+                      className="flex flex-col justify-between gap-3 rounded-[6px] border border-line bg-card p-3.5"
                     >
                       <div className="flex items-start gap-3">
                         <button
                           type="button"
                           onClick={() => onSelectItem?.(work)}
                           aria-label={`Abrir ficha de ${work.title}`}
-                          className="w-16 shrink-0 overflow-hidden rounded-[4px] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                          className={`${isMusic ? 'w-16' : 'w-16'} shrink-0 overflow-hidden rounded-[6px] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent`}
                         >
                           <CoverArt
                             item={work}
                             compact
-                            className="aspect-[2/3] w-full rounded-[4px] object-cover"
+                            className={`${isMusic ? 'aspect-square' : 'aspect-[2/3]'} w-full rounded-[6px] object-cover`}
                           />
                         </button>
 
                         <div className="min-w-0 flex-1 space-y-1">
-                          <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-semibold">
-                            <span className="rounded-[4px] border border-line bg-app px-1.5 py-0.5 text-muted">
-                              {domainMeta.tabLabel || domainMeta.shortLabel}
-                            </span>
-                            <span className="text-accent">{statusLabel}</span>
+                          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
+                            <span>{domainMeta.tabLabel || domainMeta.shortLabel}</span>
+                            <span aria-hidden="true">·</span>
+                            <span>{statusLabel}</span>
                           </div>
 
                           <button
@@ -319,36 +336,35 @@ export function HomeScreen({
                             onClick={() => onSelectItem?.(work)}
                             className="block w-full text-left"
                           >
-                            <h2 className="line-clamp-2 text-sm font-semibold leading-snug text-ink hover:text-accent">
+                            <h2 className="font-editorial line-clamp-2 text-base font-semibold leading-snug text-ink hover:text-accent">
                               {titles.primary}
                             </h2>
                           </button>
 
                           {(work.creator || work.director || work.author) && (
-                            <p className="truncate text-[11px] text-muted">
+                            <p className="truncate text-xs text-muted">
                               {work.creator || work.director || work.author}
                             </p>
                           )}
 
-                          <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px] tabular-nums text-muted">
+                          <div className="flex items-center justify-between gap-2 pt-0.5 text-xs tabular-nums text-muted">
                             <span className="truncate">
                               {metricLabel}
                               {nextEpTitle ? ` · ${nextEpTitle}` : ''}
                             </span>
                             {hasKnownTotal && typeof progressPct === 'number' && (
-                              <span className="shrink-0 font-semibold text-accent">
+                              <span className="shrink-0 font-semibold text-ink">
                                 {progressPct}%
                               </span>
                             )}
                           </div>
 
                           {hasKnownTotal && typeof progressPct === 'number' && (
-                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+                            <div className="h-1 w-full overflow-hidden rounded-full bg-line">
                               <div
-                                className="h-full transition-all duration-150"
+                                className="h-full bg-accent transition-all duration-150"
                                 style={{
                                   width: `${Math.min(100, progressPct)}%`,
-                                  backgroundColor: 'var(--accent-color)',
                                 }}
                               />
                             </div>
@@ -367,10 +383,10 @@ export function HomeScreen({
                                 allowCompletion: true,
                               })
                             }
-                            className={`inline-flex min-h-[40px] items-center justify-center gap-1 rounded-[4px] px-3 text-xs font-semibold tabular-nums transition-opacity disabled:opacity-60 ${
+                            className={`inline-flex min-h-[44px] items-center justify-center gap-1 rounded-[6px] px-3 text-xs font-semibold tabular-nums transition-opacity disabled:opacity-60 ${
                               idx === 0
                                 ? 'bg-accent text-accent-ink hover:opacity-90'
-                                : 'border border-accent/40 bg-accent/15 text-accent hover:bg-accent/25'
+                                : 'border border-line bg-app text-ink hover:border-muted'
                             }`}
                           >
                             <Plus className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
@@ -380,7 +396,7 @@ export function HomeScreen({
                         <button
                           type="button"
                           onClick={() => onSelectItem?.(work)}
-                          className="ml-auto inline-flex min-h-[40px] items-center rounded-[4px] border border-line bg-app px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
+                          className="ml-auto inline-flex min-h-[44px] items-center rounded-[6px] px-3 text-xs font-medium text-muted hover:text-ink"
                         >
                           Ficha
                         </button>
@@ -476,23 +492,24 @@ export function HomeScreen({
 
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 {nextInQueueEntries.map((entry) => {
-                  const { work, domainMeta, queueLabel } = entry;
+                  const { work, domain, domainMeta, queueLabel } = entry;
                   const titles = getDisplayTitles(work, 'bilingual');
+                  const isMusic = domain === 'music';
                   return (
                     <div
                       key={entry.id}
-                      className="flex items-center gap-3 rounded-[6px] border border-line bg-card p-2.5 transition-colors hover:border-accent/50"
+                      className="flex items-center gap-3 rounded-[6px] border border-line bg-card p-2.5"
                     >
                       <button
                         type="button"
                         onClick={() => onSelectItem?.(work)}
                         aria-label={`Abrir ficha de ${work.title}`}
-                        className="w-12 shrink-0 overflow-hidden rounded-[4px]"
+                        className="w-12 shrink-0 overflow-hidden rounded-[6px]"
                       >
                         <CoverArt
                           item={work}
                           compact
-                          className="aspect-[2/3] w-full rounded-[4px] object-cover"
+                          className={`${isMusic ? 'aspect-square' : 'aspect-[2/3]'} w-full rounded-[6px] object-cover`}
                         />
                       </button>
 
@@ -501,17 +518,14 @@ export function HomeScreen({
                         onClick={() => onSelectItem?.(work)}
                         className="min-w-0 flex-1 text-left"
                       >
-                        <div className="flex items-center gap-1.5 text-[10px] font-semibold">
-                          <span className="rounded-[4px] border border-line bg-app px-1.5 py-0.5 text-muted">
-                            {domainMeta.tabLabel || domainMeta.shortLabel}
-                          </span>
-                          <span className="text-subtle">{queueLabel}</span>
-                        </div>
-                        <p className="mt-0.5 truncate text-xs font-semibold text-ink hover:text-accent">
+                        <p className="text-[11px] text-subtle">
+                          {domainMeta.tabLabel || domainMeta.shortLabel} · {queueLabel}
+                        </p>
+                        <p className="font-editorial mt-0.5 truncate text-sm font-semibold text-ink hover:text-accent">
                           {titles.primary}
                         </p>
                         {(work.creator || work.director || work.author || work.releaseYear) && (
-                          <p className="truncate text-[11px] text-muted">
+                          <p className="truncate text-[11px] tabular-nums text-muted">
                             {[work.creator || work.director || work.author, work.releaseYear]
                               .filter(Boolean)
                               .join(' · ')}
@@ -523,7 +537,7 @@ export function HomeScreen({
                         <button
                           type="button"
                           onClick={() => onStartPickedWork(work)}
-                          className="inline-flex min-h-[40px] shrink-0 items-center gap-1 rounded-[4px] border border-accent/40 bg-accent/10 px-3 text-xs font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+                          className="inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[6px] border border-line bg-app px-3 text-xs font-semibold text-ink hover:border-muted"
                         >
                           <Play className="h-3.5 w-3.5" strokeWidth={1.5} />
                           <span>Começar</span>
@@ -541,7 +555,7 @@ export function HomeScreen({
             <section aria-label="Concluídos recentemente" className="space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-accent" strokeWidth={1.5} />
+                  <CheckCircle2 className="h-4 w-4 text-muted" strokeWidth={1.5} />
                   <h2 className="text-sm font-semibold tracking-tight text-ink">
                     Concluídos recentemente
                   </h2>
@@ -551,43 +565,39 @@ export function HomeScreen({
                 </span>
               </div>
 
-              <div className="flex gap-2.5 overflow-x-auto pb-1 no-scrollbar">
+              <div className="flex gap-3 overflow-x-auto pb-1 no-scrollbar">
                 {recentlyCompletedEntries.map((entry) => {
                   const {
                     work,
+                    domain,
                     domainMeta,
                     completedLabel,
                     completedDate,
-                    confirmedRating,
                   } = entry;
                   const titles = getDisplayTitles(work, 'bilingual');
+                  const isMusic = domain === 'music';
                   return (
                     <button
                       key={entry.id}
                       type="button"
                       onClick={() => onSelectItem?.(work)}
-                      className="group flex w-36 shrink-0 flex-col justify-between rounded-[6px] border border-line bg-card p-2 text-left transition-colors hover:border-accent/50"
+                      className="group flex w-36 shrink-0 flex-col justify-between text-left"
                     >
-                      <div className="relative aspect-[2/3] w-full overflow-hidden rounded-[4px]">
+                      <div className="relative w-full overflow-hidden rounded-[6px]">
                         <CoverArt
                           item={work}
                           compact
-                          className="h-full w-full object-cover"
+                          className={`${isMusic ? 'aspect-square' : 'aspect-[2/3]'} w-full rounded-[6px] object-cover`}
                         />
-                        {confirmedRating !== null && (
-                          <span className="absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded-[4px] border border-line bg-black/80 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white">
-                            <Star className="h-2.5 w-2.5 fill-current text-accent" strokeWidth={1.5} />
-                            <span>{confirmedRating}</span>
-                          </span>
-                        )}
                       </div>
                       <div className="mt-2 space-y-0.5">
-                        <span className="text-[10px] font-semibold text-accent">
+                        <span className="text-[10px] text-subtle">
                           {domainMeta.tabLabel || domainMeta.shortLabel} · {completedLabel}
                         </span>
-                        <p className="truncate text-xs font-semibold text-ink group-hover:text-accent">
+                        <p className="font-editorial truncate text-sm font-semibold text-ink group-hover:text-accent">
                           {titles.primary}
                         </p>
+                        <StarRatingDisplay work={work} size="sm" showNumeric />
                         {completedDate && (
                           <p className="text-[10px] tabular-nums text-subtle">
                             {completedDate}
@@ -600,6 +610,17 @@ export function HomeScreen({
               </div>
             </section>
           )}
+          {/* Curador (OracleWidget) adaptado ao domínio ativo — v2.4.0 Fase 5 */}
+          <Suspense fallback={null}>
+            <OracleWidget
+              items={items}
+              activeDomain={homeFilterDomain === 'all' ? activeDomain : homeFilterDomain}
+              profile={profile}
+              geminiKey={geminiKey}
+              onSelectItem={onSelectItem}
+              onOpenGeminiSettings={onOpenGeminiSettings}
+            />
+          </Suspense>
         </>
       )}
 
@@ -614,20 +635,26 @@ export function HomeScreen({
         </button>
       </footer>
 
-      <ReleaseHistoryModal
-        isOpen={releaseModalOpen}
-        onClose={() => setReleaseModalOpen(false)}
-      />
+      <Suspense fallback={null}>
+        {releaseModalOpen && (
+          <ReleaseHistoryModal
+            isOpen={releaseModalOpen}
+            onClose={() => setReleaseModalOpen(false)}
+          />
+        )}
 
-      <OfflineBookPickerModal
-        isOpen={rouletteOpen}
-        onClose={() => setRouletteOpen(false)}
-        items={items}
-        domain={homeFilterDomain}
-        readerDna={profile?.readerDna || null}
-        onStartReading={onStartPickedWork}
-        onSelectItem={onSelectItem}
-      />
+        {rouletteOpen && (
+          <OfflineBookPickerModal
+            isOpen={rouletteOpen}
+            onClose={() => setRouletteOpen(false)}
+            items={items}
+            domain={homeFilterDomain}
+            readerDna={profile?.readerDna || null}
+            onStartReading={onStartPickedWork}
+            onSelectItem={onSelectItem}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

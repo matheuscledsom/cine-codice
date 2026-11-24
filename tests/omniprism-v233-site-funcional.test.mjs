@@ -209,7 +209,7 @@ describe('OmniPrism v2.3.3 — 1. CSP (public/_headers) e cobertura de hosts fet
       `Hosts chamados por fetch em src/ ausentes no connect-src de public/_headers: ${missing.join('; ')}`
     );
 
-    // Confirma os 7 hosts adicionados na v2.3.3
+    // Confirma os hosts de catalogo (v2.3.3 + v2.5.0 Last.fm e RAWG)
     const expectedAdded = [
       'itunes.apple.com',
       'musicbrainz.org',
@@ -218,6 +218,8 @@ describe('OmniPrism v2.3.3 — 1. CSP (public/_headers) e cobertura de hosts fet
       'www.cheapshark.com',
       'www.freetogame.com',
       'coverartarchive.org',
+      'ws.audioscrobbler.com',
+      'api.rawg.io',
     ];
     for (const host of expectedAdded) {
       assert.equal(
@@ -337,6 +339,8 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
       providers: {
         tmdb: { configured: true },
         omdb: { configured: true },
+        lastfm: { configured: false },
+        rawg: { configured: false },
       },
     });
 
@@ -354,6 +358,8 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
       providers: {
         tmdb: { configured: true },
         omdb: { configured: false },
+        lastfm: { configured: false },
+        rawg: { configured: false },
       },
     });
   });
@@ -380,13 +386,15 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
       return makeJsonResponse({ error: 'not found' }, 404);
     };
 
-    // Rotas proibidas no TMDB -> 403
+    // Rotas proibidas no TMDB -> 403 (discover sem with_keywords e collection sem id numerico seguem bloqueados)
     for (const forbiddenPath of [
       ['configuration'],
       ['account', '1'],
       ['discover', 'movie'],
+      ['discover', 'tv'],
       ['search', 'person'],
-      ['collection', '10'],
+      ['collection', 'invalid'],
+      ['keyword', 'abc'],
     ]) {
       const blocked = await handleTmdbProxyRequest(
         {
@@ -1017,19 +1025,21 @@ describe('OmniPrism v2.3.3 — 4. Segurança dos dados (sync não destrutivo e b
 });
 
 describe('OmniPrism v2.3.3 — 5. Versão oficial', () => {
-  it('atualiza package.json, src/config/versioning.js (sem Lumière) e CHANGELOG.md para 2.3.3', () => {
+  it('mantém versão atual (2.4.0) sem Lumière e preserva histórico 2.3.3 em package.json, versioning.js e CHANGELOG.md', () => {
     const pkg = JSON.parse(readText('package.json'));
     assert.equal(pkg.name, 'omniprism');
-    assert.equal(pkg.version, '2.3.3');
+    assert.equal(pkg.version, '2.4.0');
 
-    assert.equal(CODICE_RELEASE.version, '2.3.3');
-    assert.equal(CODICE_RELEASE.label, 'v2.3.3');
+    assert.equal(CODICE_RELEASE.version, '2.4.0');
+    assert.equal(CODICE_RELEASE.label, 'v2.4.0');
     assert.equal(CODICE_RELEASE.label.includes('Lumière'), false);
     assert.equal(CODICE_RELEASE.codename, '');
-    assert.equal(RELEASE_HISTORY[0].version, '2.3.3');
-    assert.equal(RELEASE_HISTORY[0].label, 'v2.3.3');
+    assert.equal(RELEASE_HISTORY[0].version, '2.4.0');
+    assert.equal(RELEASE_HISTORY[0].label, 'v2.4.0');
+    assert.ok(RELEASE_HISTORY.some((r) => r.version === '2.3.3' && r.label === 'v2.3.3'));
 
     const changelog = readText('CHANGELOG.md');
+    assert.match(changelog, /## \[v2\.4\.0\]/);
     assert.match(changelog, /## \[v2\.3\.3\]/);
   });
 });

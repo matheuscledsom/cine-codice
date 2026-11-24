@@ -298,13 +298,55 @@ export function buildCodiceDatabase({
         Number.isFinite(Number(rawItem.gameRating11))
           ? Math.max(0, Math.min(11, Math.round(Number(rawItem.gameRating11) * 10) / 10))
           : null,
+      lifeWork: Boolean(rawItem.lifeWork || Number(rawItem.gameRating11) >= 11),
+      ratingManualOverride: Boolean(rawItem.ratingManualOverride),
+      reviewCriteria5:
+        rawItem.reviewCriteria5 && typeof rawItem.reviewCriteria5 === 'object'
+          ? rawItem.reviewCriteria5
+          : null,
+      franchiseTier: ['mainline', 'spinoff', 'companion', 'unclassified'].includes(
+        String(rawItem.franchiseTier || '').trim().toLowerCase()
+      )
+        ? String(rawItem.franchiseTier).trim().toLowerCase()
+        : '',
+      editionOf: (() => {
+        const clean = String(rawItem.editionOf ?? rawItem.progress_data?.editionOf ?? '').trim();
+        return clean && clean !== String(rawItem.id || '') ? clean : null;
+      })(),
+      releasedEpisodesCount:
+        Number(rawItem.releasedEpisodesCount) > 0
+          ? Math.floor(Number(rawItem.releasedEpisodesCount))
+          : null,
+      releasedEpisodesSource: String(rawItem.releasedEpisodesSource || '').trim() || null,
+      releasedEpisodesFetchedAt: rawItem.releasedEpisodesFetchedAt || null,
       masterpieceJustification: String(rawItem.masterpieceJustification || '').trim().slice(0, 400),
       hoursPlayed: Math.max(0, Number(rawItem.hoursPlayed) || 0),
       completionType: String(rawItem.completionType || '').trim(),
       storeOrLauncher: String(rawItem.storeOrLauncher || '').trim(),
       buildOrCharacter: String(rawItem.buildOrCharacter || '').trim(),
+      rawgId: Number(rawItem.rawgId) > 0 ? Math.floor(Number(rawItem.rawgId)) : null,
+      rawgPlaytimeHours:
+        Number(rawItem.rawgPlaytimeHours) > 0
+          ? Math.round(Number(rawItem.rawgPlaytimeHours) * 10) / 10
+          : null,
+      rawgPlaytimeSource: String(rawItem.rawgPlaytimeSource || '').trim() || null,
+      manualCampaignHours:
+        Number(rawItem.manualCampaignHours) > 0
+          ? Math.round(Number(rawItem.manualCampaignHours) * 10) / 10
+          : null,
+      completion100Hours:
+        Number(rawItem.completion100Hours) > 0
+          ? Math.round(Number(rawItem.completion100Hours) * 10) / 10
+          : null,
+      completion100Source: String(rawItem.completion100Source || '').trim() || null,
       // Música
       albumName: String(rawItem.albumName || '').trim(),
+      excludeFromDiscography: Boolean(
+        rawItem.excludeFromDiscography ?? rawItem.progress_data?.excludeFromDiscography
+      ),
+      subgenres: Array.isArray(rawItem.subgenres)
+        ? rawItem.subgenres.map((s) => String(s || '').trim()).filter(Boolean)
+        : [],
       durationMs: Number(rawItem.durationMs) > 0 ? Math.round(Number(rawItem.durationMs)) : null,
       trackRating10:
         rawItem.trackRating10 !== null &&
