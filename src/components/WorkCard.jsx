@@ -96,12 +96,12 @@ export const WorkCard = memo(function WorkCard({
         aria-pressed={selectionMode ? selected : undefined}
         className="text-left focus:outline-none"
       >
-        <div className="relative overflow-hidden rounded-[4px]">
+        <div className="relative overflow-hidden rounded-[6px]">
           <CoverArt
             item={item}
             compact
             priority={priority}
-            className={`aspect-[2/3] w-full rounded-[4px] transition-transform duration-150 group-hover:scale-[1.02] group-hover:border-accent/60 ${
+            className={`${domain === 'music' ? 'aspect-square' : 'aspect-[2/3]'} w-full rounded-[6px] transition-transform duration-150 group-hover:scale-[1.02] group-hover:border-accent/60 ${
               selected ? 'ring-2 ring-accent' : ''
             }`}
           />

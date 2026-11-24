@@ -8,13 +8,22 @@ import {
   Sparkles,
   Star,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useMemo, useRef, useState } from 'react';
 import { BackupReminderBanner } from '../components/BackupReminderBanner';
 import { CoverArt } from '../components/CoverArt';
 import { DomainSwitcherBar } from '../components/DomainSwitcherBar';
 import { InstallAppBanner } from '../components/InstallAppBanner';
-import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
-import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
+
+const OfflineBookPickerModal = lazy(() =>
+  import('../components/OfflineBookPickerModal').then((m) => ({
+    default: m.OfflineBookPickerModal,
+  }))
+);
+const ReleaseHistoryModal = lazy(() =>
+  import('../components/ReleaseHistoryModal').then((m) => ({
+    default: m.ReleaseHistoryModal,
+  }))
+);
 import {
   domainConfig,
   getDomainVocabulary,
@@ -614,20 +623,26 @@ export function HomeScreen({
         </button>
       </footer>
 
-      <ReleaseHistoryModal
-        isOpen={releaseModalOpen}
-        onClose={() => setReleaseModalOpen(false)}
-      />
+      <Suspense fallback={null}>
+        {releaseModalOpen && (
+          <ReleaseHistoryModal
+            isOpen={releaseModalOpen}
+            onClose={() => setReleaseModalOpen(false)}
+          />
+        )}
 
-      <OfflineBookPickerModal
-        isOpen={rouletteOpen}
-        onClose={() => setRouletteOpen(false)}
-        items={items}
-        domain={homeFilterDomain}
-        readerDna={profile?.readerDna || null}
-        onStartReading={onStartPickedWork}
-        onSelectItem={onSelectItem}
-      />
+        {rouletteOpen && (
+          <OfflineBookPickerModal
+            isOpen={rouletteOpen}
+            onClose={() => setRouletteOpen(false)}
+            items={items}
+            domain={homeFilterDomain}
+            readerDna={profile?.readerDna || null}
+            onStartReading={onStartPickedWork}
+            onSelectItem={onSelectItem}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

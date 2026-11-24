@@ -28,7 +28,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BOOK_FORMATS,
   GAME_COMPLETION_TYPES,
@@ -86,14 +86,23 @@ import { downloadWorkMarkdown } from '../utils/markdownExport';
 import { playTactileSound } from '../utils/soundEffects';
 import { CollectionCreatorBar } from './CollectionCreatorBar';
 import { CoverArt } from './CoverArt';
-import { EpisodeListTab } from './EpisodeListTab';
-import { ExternalRatingsPanel } from './ExternalRatingsPanel';
-import { FranchiseRadarPanel } from './FranchiseRadarPanel';
-import { QuotesVaultTab } from './QuotesVaultTab';
 import { SmartCatalogButton } from './SmartCatalogButton';
 import { StatusBadge } from './StatusBadge';
 import { TechnicalAtmosphereSection } from './TechnicalAtmosphereSection';
 import { WorkTypeSelector } from './WorkTypeSelector';
+
+const EpisodeListTab = lazy(() =>
+  import('./EpisodeListTab').then((m) => ({ default: m.EpisodeListTab }))
+);
+const ExternalRatingsPanel = lazy(() =>
+  import('./ExternalRatingsPanel').then((m) => ({ default: m.ExternalRatingsPanel }))
+);
+const FranchiseRadarPanel = lazy(() =>
+  import('./FranchiseRadarPanel').then((m) => ({ default: m.FranchiseRadarPanel }))
+);
+const QuotesVaultTab = lazy(() =>
+  import('./QuotesVaultTab').then((m) => ({ default: m.QuotesVaultTab }))
+);
 
 const QUICK_PERSONAL_SCORES = [60, 70, 75, 80, 85, 90, 95, 100];
 
@@ -1269,23 +1278,25 @@ export function WorkDetailPage({
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <div className="rounded-2xl border border-line bg-card p-4">
                 {workDomain === 'cinema' ? (
-                  <ExternalRatingsPanel
-                    item={item}
-                    loading={ratingsLoading}
-                    failedSources={ratingsMeta.failedSources}
-                    omdbMissingKey={ratingsMeta.omdbMissingKey}
-                    isOfflineCache={ratingsMeta.isOfflineCache}
-                    cacheDateLabel={ratingsMeta.cacheDateLabel}
-                    hasAttempted={ratingsMeta.hasAttempted}
-                    onRetryRefresh={() => {
-                      autoEnrichedIdsRef.current.add(item.id);
-                      runEnrichmentForWork(item, { forceRefresh: true });
-                    }}
-                    onOpenApiSettings={() => {
-                      onClose?.();
-                      onOpenGeminiSettings?.();
-                    }}
-                  />
+                  <Suspense fallback={<div className="h-24 animate-pulse rounded-[6px] bg-app" />}>
+                    <ExternalRatingsPanel
+                      item={item}
+                      loading={ratingsLoading}
+                      failedSources={ratingsMeta.failedSources}
+                      omdbMissingKey={ratingsMeta.omdbMissingKey}
+                      isOfflineCache={ratingsMeta.isOfflineCache}
+                      cacheDateLabel={ratingsMeta.cacheDateLabel}
+                      hasAttempted={ratingsMeta.hasAttempted}
+                      onRetryRefresh={() => {
+                        autoEnrichedIdsRef.current.add(item.id);
+                        runEnrichmentForWork(item, { forceRefresh: true });
+                      }}
+                      onOpenApiSettings={() => {
+                        onClose?.();
+                        onOpenGeminiSettings?.();
+                      }}
+                    />
+                  </Suspense>
                 ) : (
                   <div className="space-y-3 p-1">
                     <div className="flex items-center justify-between">
@@ -1820,15 +1831,17 @@ export function WorkDetailPage({
 
             {/* Radar de Franquia, Sagas & Universo (Cinema) */}
             {workDomain === 'cinema' && (
-              <FranchiseRadarPanel
-                item={item}
-                allItems={allItems}
-                franchise={franchise}
-                onSelectItem={onSelectItem}
-                onQuickCatalogItem={onQuickCatalogItem}
-                onUpdateItem={onUpdateItem}
-                onShowToast={showToast}
-              />
+              <Suspense fallback={null}>
+                <FranchiseRadarPanel
+                  item={item}
+                  allItems={allItems}
+                  franchise={franchise}
+                  onSelectItem={onSelectItem}
+                  onQuickCatalogItem={onQuickCatalogItem}
+                  onUpdateItem={onUpdateItem}
+                  onShowToast={showToast}
+                />
+              </Suspense>
             )}
           </div>
         )}
@@ -2344,12 +2357,14 @@ export function WorkDetailPage({
                   </div>
                 </section>
 
-                <EpisodeListTab
-                  item={item}
-                  tmdbKey={tmdbKey}
-                  omdbKey={omdbKey}
-                  onUpdateItem={onUpdateItem}
-                />
+                <Suspense fallback={<div className="h-32 animate-pulse rounded-[6px] bg-card" />}>
+                  <EpisodeListTab
+                    item={item}
+                    tmdbKey={tmdbKey}
+                    omdbKey={omdbKey}
+                    onUpdateItem={onUpdateItem}
+                  />
+                </Suspense>
               </>
             ) : (
               <section className="rounded-2xl border border-line bg-card p-5 space-y-4">
@@ -2404,10 +2419,12 @@ export function WorkDetailPage({
 
         {/* ABA 3 — CENAS & DIÁRIO DA OBRA */}
         {activeTab === 'diary' && (
-          <QuotesVaultTab
-            item={item}
-            onUpdate={(updates) => onUpdateItem(item.id, updates)}
-          />
+          <Suspense fallback={<div className="h-32 animate-pulse rounded-[6px] bg-card" />}>
+            <QuotesVaultTab
+              item={item}
+              onUpdate={(updates) => onUpdateItem(item.id, updates)}
+            />
+          </Suspense>
         )}
 
         {/* Compatibilidade SOCIAL_ENABLED legado (desativado por padrão) */}

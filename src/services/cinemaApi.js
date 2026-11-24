@@ -1528,6 +1528,7 @@ export async function searchCinemaMedia(
     supabaseClient = null,
     forceProxy = null,
     isDev = undefined,
+    onPartialResults = null,
   } = {}
 ) {
   const cleanQuery = String(query || '').trim();
@@ -1589,9 +1590,48 @@ export async function searchCinemaMedia(
     internetArchive: () => searchInternetArchiveMovies(cleanQuery, { signal, fetchImpl, timeoutMs }),
   };
 
+  const filterCinemaByType = (rawList) =>
+    filter === 'all'
+      ? rawList
+      : rawList.filter((item) => {
+          if (filter === 'anime') return item.workType === 'anime';
+          if (filter === 'series') return item.workType === 'series' || item.workType === 'anime';
+          return item.workType === 'movie';
+        });
+
   const runners = activeSources
     .filter((id) => typeof sourceFetchers[id] === 'function')
     .map((id) => ({ id, promise: sourceFetchers[id]() }));
+
+  if (typeof onPartialResults === 'function' && runners.length > 0) {
+    const streamedCollected = [];
+    const streamedSources = new Set();
+    let remaining = runners.length;
+
+    runners.forEach((runner) => {
+      runner.promise
+        .then((items) => {
+          remaining = Math.max(0, remaining - 1);
+          if (signal?.aborted) return;
+          if (Array.isArray(items) && items.length > 0) {
+            streamedCollected.push(...items);
+            streamedSources.add(runner.id);
+            const partialResults = deduplicateCinemaResults(
+              filterCinemaByType(streamedCollected)
+            );
+            onPartialResults({
+              results: partialResults,
+              usedSources: Array.from(streamedSources),
+              pendingCount: remaining,
+              partial: remaining > 0,
+            });
+          }
+        })
+        .catch(() => {
+          remaining = Math.max(0, remaining - 1);
+        });
+    });
+  }
 
   const settled = await Promise.allSettled(runners.map((r) => r.promise));
 
@@ -1607,14 +1647,7 @@ export async function searchCinemaMedia(
     }
   });
 
-  const filteredByType =
-    filter === 'all'
-      ? collected
-      : collected.filter((item) => {
-          if (filter === 'anime') return item.workType === 'anime';
-          if (filter === 'series') return item.workType === 'series' || item.workType === 'anime';
-          return item.workType === 'movie';
-        });
+  const filteredByType = filterCinemaByType(collected);
 
   const deduplicated = deduplicateCinemaResults(filteredByType);
   const allFailed = runners.length > 0 && failedSources.length === runners.length;

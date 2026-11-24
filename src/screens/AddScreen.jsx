@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Clock,
   FileSpreadsheet,
   Film,
   Gamepad2,
@@ -61,6 +62,14 @@ import {
   searchWorksByDomain,
 } from '../services/multiDomainSearchService';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
+import {
+  SEARCH_DEBOUNCE_MS,
+  clearRecentSearches,
+  readRecentSearches,
+  recordRecentSearch,
+  removeRecentSearch,
+  searchLocalCatalogWorks,
+} from '../lib/searchHelpers';
 import { createUuid } from '../services/codiceDatabase';
 import {
   formatFlexibleProgressMetric,
@@ -84,7 +93,6 @@ const QUICK_SCORES_100 = [60, 70, 75, 80, 85, 90, 95, 100];
 
 const SEARCH_FILTER_STORAGE_KEY = 'cine_codice_add_search_filter_v1';
 const MIN_SEARCH_QUERY_LENGTH = 3;
-const SEARCH_DEBOUNCE_MS = 300;
 
 function createMonogram(title) {
   const words = String(title || '')
@@ -182,7 +190,25 @@ export function AddScreen({
       : []
   );
   const [isLoading, setIsLoading] = useState(false);
+  const [isStreamingMore, setIsStreamingMore] = useState(false);
+  const [recentSearches, setRecentSearches] = useState(() =>
+    readRecentSearches(activeDomain)
+  );
   const [enrichingCandidate, setEnrichingCandidate] = useState(false);
+
+  useEffect(() => {
+    setRecentSearches(readRecentSearches(effectiveDomain));
+  }, [effectiveDomain]);
+
+  const localMatches = useMemo(
+    () =>
+      searchLocalCatalogWorks(items, query, {
+        domain: effectiveDomain,
+        mediaTypeFilter: searchFilter,
+        limit: 6,
+      }),
+    [items, query, effectiveDomain, searchFilter]
+  );
 
   const enrichAbortRef = useRef(null);
   const drawerOpenTokenRef = useRef(0);
@@ -412,14 +438,27 @@ export function AddScreen({
         const controller = new AbortController();
         searchAbortRef.current = controller;
         setIsLoading(true);
+        setIsStreamingMore(false);
         setPartialFailure(false);
         setFailedSourcesCount(0);
         setAllFailed(false);
+        setRecentSearches(recordRecentSearch(targetDomain, cleanQuery));
 
         try {
           const response = await searchWorksByDomain(targetDomain, cleanQuery, {
             signal: controller.signal,
             mediaTypeFilter: filter,
+            onPartialResults: (partialPayload) => {
+              if (controller.signal.aborted) return;
+              if (Array.isArray(partialPayload?.results) && partialPayload.results.length > 0) {
+                setResults(partialPayload.results);
+                setIsLoading(false);
+                setIsStreamingMore(Boolean(partialPayload.partial));
+                if (partialPayload.sourceStatusHint) {
+                  setSourceStatusHint(String(partialPayload.sourceStatusHint));
+                }
+              }
+            },
           });
           if (controller.signal.aborted) return;
 
@@ -438,6 +477,7 @@ export function AddScreen({
         } finally {
           if (!controller.signal.aborted) {
             setIsLoading(false);
+            setIsStreamingMore(false);
           }
         }
         return;
@@ -447,6 +487,7 @@ export function AddScreen({
         const mockList = searchMockCinema(cleanQuery, filter);
         setResults(mockList);
         setIsLoading(false);
+        setIsStreamingMore(false);
         setPartialFailure(false);
         setFailedSourcesCount(0);
         setAllFailed(false);
@@ -469,11 +510,14 @@ export function AddScreen({
       if (cleanQuery.toLowerCase() === '#ovodepascoa67') {
         setResults([]);
         setIsLoading(false);
+        setIsStreamingMore(false);
         setPartialFailure(false);
         setFailedSourcesCount(0);
         setAllFailed(false);
         return;
       }
+
+      setRecentSearches(recordRecentSearch('cinema', cleanQuery));
 
       if (!skipCache) {
         const cached = getCachedCinemaSearch(cleanQuery, filter, sources);
@@ -483,6 +527,7 @@ export function AddScreen({
           setFailedSourcesCount(Number(cached.failedCount) || 0);
           setAllFailed(false);
           setIsLoading(false);
+          setIsStreamingMore(false);
           return;
         }
       }
@@ -490,6 +535,7 @@ export function AddScreen({
       const controller = new AbortController();
       searchAbortRef.current = controller;
       setIsLoading(true);
+      setIsStreamingMore(false);
       setPartialFailure(false);
       setFailedSourcesCount(0);
       setAllFailed(false);
@@ -502,6 +548,14 @@ export function AddScreen({
           tmdbApiKey: tmdbKey,
           signal: controller.signal,
           skipCache,
+          onPartialResults: (partialPayload) => {
+            if (controller.signal.aborted) return;
+            if (Array.isArray(partialPayload?.results) && partialPayload.results.length > 0) {
+              setResults(partialPayload.results);
+              setIsLoading(false);
+              setIsStreamingMore(Boolean(partialPayload.partial));
+            }
+          },
         });
         if (controller.signal.aborted) return;
 
@@ -517,6 +571,7 @@ export function AddScreen({
       } finally {
         if (!controller.signal.aborted) {
           setIsLoading(false);
+          setIsStreamingMore(false);
         }
       }
     },
@@ -1205,6 +1260,50 @@ export function AddScreen({
         })}
       </div>
 
+      {/* Histórico local de buscas recentes quando query está vazia */}
+      {!query.trim() && recentSearches.length > 0 && (
+        <div
+          className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar"
+          data-testid="recent-searches-strip"
+        >
+          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-subtle">
+            <Clock className="h-3 w-3" strokeWidth={1.5} />
+            Recentes:
+          </span>
+          {recentSearches.map((term) => (
+            <div
+              key={term}
+              className="inline-flex shrink-0 items-center rounded-[6px] border border-line bg-card"
+            >
+              <button
+                type="button"
+                onClick={() => setQuery(term)}
+                className="min-h-[44px] px-2.5 text-xs font-medium text-ink hover:text-accent"
+              >
+                {term}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setRecentSearches(removeRecentSearch(effectiveDomain, term))
+                }
+                className="inline-flex min-h-[44px] min-w-[32px] items-center justify-center pr-1.5 text-subtle hover:text-ink"
+                aria-label={`Remover busca recente ${term}`}
+              >
+                <X className="h-3 w-3" strokeWidth={1.5} />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setRecentSearches(clearRecentSearches(effectiveDomain))}
+            className="min-h-[44px] shrink-0 px-2 text-[11px] font-medium text-subtle hover:text-ink"
+          >
+            Limpar
+          </button>
+        </div>
+      )}
+
       {/* Sugestões rápidas quando query está vazia */}
       {!query.trim() && (
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
@@ -1221,11 +1320,69 @@ export function AddScreen({
                 updateSearchFilter(sug.filter || 'all', effectiveDomain);
                 setQuery(sug.query);
               }}
-              className="min-h-[36px] shrink-0 rounded-[4px] border border-line bg-card px-2.5 text-[11px] font-medium text-muted hover:border-accent hover:text-ink"
+              className="min-h-[44px] shrink-0 rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-muted hover:text-ink"
             >
               {sug.label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* Busca local primeiro (instantânea antes da rede responder) */}
+      {query.trim().length >= 2 && localMatches.length > 0 && (
+        <section
+          className="space-y-2 border-b border-line pb-3"
+          data-testid="local-search-results"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
+              No seu catálogo ({localMatches.length})
+            </h2>
+            <span className="text-[11px] text-subtle">Resultado instantâneo</span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {localMatches.map((localItem) => {
+              const stCfg = getStatusConfigForDomain(localItem.status, effectiveDomain);
+              return (
+                <button
+                  key={localItem.id}
+                  type="button"
+                  onClick={() => onSelectExisting?.(localItem)}
+                  className="flex min-h-[56px] items-center gap-3 rounded-[6px] border border-line bg-card p-2 text-left transition-colors hover:border-accent"
+                >
+                  <CoverArt
+                    item={localItem}
+                    compact
+                    className={`w-10 shrink-0 ${effectiveDomain === 'music' ? 'aspect-square' : 'aspect-[2/3]'}`}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-editorial text-sm font-semibold text-ink">
+                      {localItem.title}
+                    </p>
+                    <p className="truncate text-[11px] text-muted tabular-numerals">
+                      {[localItem.creator || localItem.director, localItem.releaseYear, stCfg?.label]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-[11px] font-medium text-accent">
+                    Abrir
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {isStreamingMore && (
+        <div
+          role="status"
+          className="flex items-center gap-2 text-[11px] text-muted"
+          data-testid="streaming-sources-indicator"
+        >
+          <RefreshCw className="h-3.5 w-3.5 animate-spin text-accent" strokeWidth={1.5} />
+          <span>Atualizando com resultados de fontes adicionais...</span>
         </div>
       )}
 

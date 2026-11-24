@@ -685,7 +685,7 @@ function enrichPortugueseBooksWithOriginals(ptCandidates = [], globalCandidates 
  */
 export async function searchReadingWorks(
   query,
-  { signal, fetchImpl, mediaTypeFilter = 'all' } = {}
+  { signal, fetchImpl, mediaTypeFilter = 'all', onPartialResults = null } = {}
 ) {
   const cleanQuery = String(query || '').trim();
   if (!cleanQuery) return { ok: true, results: [], offline: false, partialFailure: false, usedSources: [] };
@@ -700,10 +700,82 @@ export async function searchReadingWorks(
   const gbPtUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&langRestrict=pt&maxResults=12`;
   const gbGlobalUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&maxResults=8`;
 
+  const olPtPromise = fetchJsonSafe(olPtUrl, { signal, fetchImpl });
+  const gbPtPromise = fetchJsonSafe(gbPtUrl, { signal, fetchImpl });
+  const gbGlobalPromise = fetchJsonSafe(gbGlobalUrl, { signal, fetchImpl });
+
+  if (typeof onPartialResults === 'function') {
+    const streamPt = [];
+    const streamGlobal = [];
+    const streamSources = new Set();
+    let pending = 3;
+    const emitReadingPartial = () => {
+      if (signal?.aborted) return;
+      const enriched = enrichPortugueseBooksWithOriginals(streamPt, streamGlobal);
+      const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
+      const filteredG = streamGlobal.filter(
+        (g) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(g.title || ''))
+      );
+      const pool = enriched.length >= 6 ? enriched : [...enriched, ...filteredG];
+      if (pool.length === 0) return;
+      const dedupedPartial = deduplicateDomainCandidates(pool).map((item) => {
+        const clean = { ...item };
+        delete clean._fromPtQuery;
+        return clean;
+      });
+      const rankedPartial = rankReadingCandidates(dedupedPartial, cleanQuery).slice(0, 18);
+      const srcArr = Array.from(streamSources);
+      onPartialResults({
+        results: rankedPartial,
+        usedSources: srcArr,
+        pendingCount: pending,
+        partial: pending > 0,
+        sourceStatusHint: srcArr.length > 0 ? `Fontes: ${srcArr.join(' · ')}` : '',
+      });
+    };
+
+    olPtPromise
+      .then((val) => {
+        pending = Math.max(0, pending - 1);
+        if (Array.isArray(val?.docs)) {
+          streamSources.add('Open Library');
+          streamPt.push(...parseOpenLibraryDocs(val.docs, { mediaTypeFilter, isPortugueseQuery: true }));
+          emitReadingPartial();
+        }
+      })
+      .catch(() => {
+        pending = Math.max(0, pending - 1);
+      });
+    gbPtPromise
+      .then((val) => {
+        pending = Math.max(0, pending - 1);
+        if (Array.isArray(val?.items)) {
+          streamSources.add('Google Books');
+          streamPt.push(...parseGoogleBooksItems(val.items, { mediaTypeFilter, isPortugueseQuery: true }));
+          emitReadingPartial();
+        }
+      })
+      .catch(() => {
+        pending = Math.max(0, pending - 1);
+      });
+    gbGlobalPromise
+      .then((val) => {
+        pending = Math.max(0, pending - 1);
+        if (Array.isArray(val?.items)) {
+          streamSources.add('Google Books');
+          streamGlobal.push(...parseGoogleBooksItems(val.items, { mediaTypeFilter, isPortugueseQuery: false }));
+          emitReadingPartial();
+        }
+      })
+      .catch(() => {
+        pending = Math.max(0, pending - 1);
+      });
+  }
+
   const [olPtRes, gbPtRes, gbGlobalRes] = await Promise.allSettled([
-    fetchJsonSafe(olPtUrl, { signal, fetchImpl }),
-    fetchJsonSafe(gbPtUrl, { signal, fetchImpl }),
-    fetchJsonSafe(gbGlobalUrl, { signal, fetchImpl }),
+    olPtPromise,
+    gbPtPromise,
+    gbGlobalPromise,
   ]);
 
   const ptCandidates = [];
@@ -981,7 +1053,7 @@ export function rankGamesCandidates(candidates = [], query = '', mediaTypeFilter
  */
 export async function searchGamesWorks(
   query,
-  { signal, fetchImpl, mediaTypeFilter = 'all' } = {}
+  { signal, fetchImpl, mediaTypeFilter = 'all', onPartialResults = null } = {}
 ) {
   const cleanQuery = String(query || '').trim();
   if (!cleanQuery) return { ok: true, results: [], offline: false, partialFailure: false, usedSources: [] };
@@ -994,19 +1066,135 @@ export async function searchGamesWorks(
   const wikidataSearchEnUrl = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encoded}&language=en&uselang=pt&limit=10&format=json&origin=*`;
   const freeToGameUrl = 'https://www.freetogame.com/api/games';
 
+  const resolvedType =
+    mediaTypeFilter !== 'all'
+      ? normalizeWorkTypeForDomain(mediaTypeFilter, 'games')
+      : 'game';
+
+  const csPromise = fetchJsonSafe(cheapSharkUrl, { signal, fetchImpl });
+  const wdPromise = fetchJsonSafe(wikidataSearchEnUrl, { signal, fetchImpl });
+  const ftgPromise = fetchJsonSafe(freeToGameUrl, { signal, fetchImpl });
+
+  if (typeof onPartialResults === 'function') {
+    const streamCandidates = [];
+    const streamSources = new Set();
+    let pending = 3;
+    const emitGamesPartial = () => {
+      if (signal?.aborted || streamCandidates.length === 0) return;
+      const partialDeduped = deduplicateDomainCandidates(streamCandidates);
+      const partialRanked = rankGamesCandidates(partialDeduped, cleanQuery, mediaTypeFilter).slice(0, 18);
+      const srcArr = Array.from(streamSources);
+      onPartialResults({
+        results: partialRanked,
+        usedSources: srcArr,
+        pendingCount: pending,
+        partial: pending > 0,
+        sourceStatusHint: srcArr.length > 0 ? `Fontes: ${srcArr.join(' · ')}` : '',
+      });
+    };
+
+    csPromise
+      .then((val) => {
+        pending = Math.max(0, pending - 1);
+        if (!Array.isArray(val)) return;
+        streamSources.add('CheapShark');
+        for (const g of val) {
+          const title = String(g.external || g.internalName || '').trim();
+          if (!title) continue;
+          const steamId = g.steamAppID ? String(g.steamAppID).trim() : null;
+          const coverUrl = steamId
+            ? `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${steamId}/library_600x900.jpg`
+            : normalizeHttpsUrl(g.thumb);
+          const editionType = detectGameEditionType({ title, workType: resolvedType });
+          streamCandidates.push({
+            id: `cs-${String(g.gameID || title)}`,
+            domain: 'games',
+            workType: editionType === 'DLC/Expansão' ? 'dlc' : resolvedType,
+            title,
+            creator: '',
+            director: '',
+            releaseYear: null,
+            coverUrl,
+            coverSources: [coverUrl, normalizeHttpsUrl(g.thumb)].filter(Boolean),
+            platforms: ['PC'],
+            platform: 'PC',
+            platformDisplayLabel: 'PC',
+            editionType,
+            hoursPlayed: 0,
+            completionType: 'História Principal',
+            storeOrLauncher: steamId ? 'Steam' : '',
+            buildOrCharacter: '',
+            genres: [],
+            ids: {
+              cheapshark: g.gameID || null,
+              ...(steamId ? { steam: steamId } : {}),
+            },
+            sourceBadge: steamId ? 'Steam / CheapShark' : 'CheapShark',
+            mergedSources: ['CheapShark'],
+          });
+        }
+        emitGamesPartial();
+      })
+      .catch(() => {
+        pending = Math.max(0, pending - 1);
+      });
+
+    ftgPromise
+      .then((val) => {
+        pending = Math.max(0, pending - 1);
+        if (!Array.isArray(val)) return;
+        const qLower = cleanQuery.toLowerCase();
+        const matches = val
+          .filter((g) => String(g?.title || '').toLowerCase().includes(qLower))
+          .slice(0, 6);
+        if (matches.length === 0) return;
+        streamSources.add('FreeToGame');
+        for (const g of matches) {
+          const parsedPlatforms = String(g.platform || '')
+            .split(/[,/]/)
+            .map((p) => normalizePlatformLabel(p))
+            .filter(Boolean);
+          const uniquePlats = Array.from(new Set(parsedPlatforms));
+          streamCandidates.push({
+            id: `ftg-${g.id}`,
+            domain: 'games',
+            workType: resolvedType,
+            title: String(g.title || '').trim(),
+            creator: String(g.developer || g.publisher || '').trim(),
+            director: String(g.developer || g.publisher || '').trim(),
+            releaseYear: g.release_date ? Number(String(g.release_date).slice(0, 4)) || null : null,
+            coverUrl: normalizeHttpsUrl(g.thumbnail),
+            synopsis: String(g.short_description || '').trim(),
+            platforms: uniquePlats,
+            platform: uniquePlats[0] || '',
+            platformDisplayLabel: uniquePlats[0] || GAME_PLATFORM_UNSET_LABEL,
+            editionType: 'Original',
+            hoursPlayed: 0,
+            completionType: 'Multiplayer / Ranked',
+            storeOrLauncher: '',
+            buildOrCharacter: '',
+            genres: g.genre ? [String(g.genre)] : [],
+            ids: { freetogame: g.id },
+            sourceBadge: 'FreeToGame',
+            mergedSources: ['FreeToGame'],
+          });
+        }
+        emitGamesPartial();
+      })
+      .catch(() => {
+        pending = Math.max(0, pending - 1);
+      });
+  }
+
   const [csRes, wdRes, ftgRes] = await Promise.allSettled([
-    fetchJsonSafe(cheapSharkUrl, { signal, fetchImpl }),
-    fetchJsonSafe(wikidataSearchEnUrl, { signal, fetchImpl }),
-    fetchJsonSafe(freeToGameUrl, { signal, fetchImpl }),
+    csPromise,
+    wdPromise,
+    ftgPromise,
   ]);
 
   const candidates = [];
   const usedSources = [];
   let failedCount = 0;
-  const resolvedType =
-    mediaTypeFilter !== 'all'
-      ? normalizeWorkTypeForDomain(mediaTypeFilter, 'games')
-      : 'game';
 
   // 1. Wikidata com enriquecimento de claims (P400 plataformas reais, P577 ano, P31/P4969/P144 Original vs Remake)
   if (wdRes.status === 'fulfilled' && Array.isArray(wdRes.value?.search)) {
@@ -1415,7 +1603,7 @@ function matchesMusicFilter(item, mediaTypeFilter) {
  */
 export async function searchMusicWorks(
   query,
-  { signal, fetchImpl, mediaTypeFilter = 'all' } = {}
+  { signal, fetchImpl, mediaTypeFilter = 'all', onPartialResults = null } = {}
 ) {
   const cleanQuery = String(query || '').trim();
   if (!cleanQuery) {
@@ -1456,18 +1644,149 @@ export async function searchMusicWorks(
         ? `https://musicbrainz.org/ws/2/artist?query=${encoded}&fmt=json&limit=10`
         : `https://musicbrainz.org/ws/2/release-group?query=${encoded}&fmt=json&limit=10`;
 
-  const tasks = [
-    fetchJsonSafe(itunesSongUrl, { signal, fetchImpl }),
-    fetchJsonSafe(itunesAlbumUrl, { signal, fetchImpl }),
-    fetchJsonSafe(mbEndpoint, {
-      signal,
-      fetchImpl,
-      headers: { Accept: 'application/json' },
-      timeoutMs: MUSICBRAINZ_TIMEOUT_MS,
-    }),
-  ];
-  if (itunesArtistUrl) {
-    tasks.push(fetchJsonSafe(itunesArtistUrl, { signal, fetchImpl }));
+  const songPromise = fetchJsonSafe(itunesSongUrl, { signal, fetchImpl });
+  const albumPromise = fetchJsonSafe(itunesAlbumUrl, { signal, fetchImpl });
+  const mbPromise = fetchJsonSafe(mbEndpoint, {
+    signal,
+    fetchImpl,
+    headers: { Accept: 'application/json' },
+    timeoutMs: MUSICBRAINZ_TIMEOUT_MS,
+  });
+  const artistPromise = itunesArtistUrl
+    ? fetchJsonSafe(itunesArtistUrl, { signal, fetchImpl })
+    : null;
+
+  if (typeof onPartialResults === 'function') {
+    const streamCandidates = [];
+    const streamSources = new Set();
+    let pending = artistPromise ? 4 : 3;
+
+    const emitMusicPartial = () => {
+      if (signal?.aborted || streamCandidates.length === 0) return;
+      const dedupedPartial = deduplicateDomainCandidates(streamCandidates);
+      const filteredPartial =
+        mediaTypeFilter !== 'all'
+          ? dedupedPartial.filter((item) => matchesMusicFilter(item, mediaTypeFilter))
+          : dedupedPartial;
+      const rankedPartial = rankMusicCandidates(
+        filteredPartial.length > 0 ? filteredPartial : dedupedPartial,
+        cleanQuery,
+        mediaTypeFilter
+      ).slice(0, 18);
+      const srcArr = Array.from(streamSources);
+      onPartialResults({
+        results: rankedPartial,
+        usedSources: srcArr,
+        pendingCount: pending,
+        partial: pending > 0,
+        sourceStatusHint: srcArr.length > 0 ? `Fonte: ${srcArr.join(' · ')}` : '',
+      });
+    };
+
+    songPromise
+      .then((val) => {
+        pending = Math.max(0, pending - 1);
+        if (!Array.isArray(val?.results)) return;
+        streamSources.add('iTunes');
+        for (const tr of val.results) {
+          const trackName = String(tr.trackName || '').trim();
+          if (!trackName) continue;
+          const artist = String(tr.artistName || '').trim();
+          const albumName = String(tr.collectionName || '').trim();
+          const rawArt = String(tr.artworkUrl100 || '').trim();
+          const highResArt = rawArt
+            ? normalizeHttpsUrl(rawArt.replace(/100x100bb/i, '600x600bb'))
+            : null;
+          const primaryGenre = String(tr.primaryGenreName || '').trim();
+          const isLive = LIVE_HINT_REGEX.test(`${trackName} ${albumName}`);
+          const durationMs = Number(tr.trackTimeMillis) > 0 ? Number(tr.trackTimeMillis) : null;
+          streamCandidates.push({
+            id: `itunes-track-${tr.trackId || `${artist}-${trackName}`}`,
+            domain: 'music',
+            workType: 'track',
+            title: trackName,
+            creator: artist,
+            director: artist,
+            artist,
+            albumName,
+            durationMs,
+            durationLabel: formatTrackDuration(durationMs),
+            releaseYear: tr.releaseDate ? Number(String(tr.releaseDate).slice(0, 4)) || null : null,
+            coverUrl: highResArt,
+            genres: primaryGenre ? [primaryGenre] : [],
+            subgenre: primaryGenre,
+            releaseFormat: isLive ? 'Ao Vivo' : 'Faixa Individual',
+            favoriteTrack: trackName,
+            listenCount: 0,
+            tracks: [{ number: Number(tr.trackNumber) || 1, title: trackName, durationMs }],
+            trackCount: 1,
+            ids: {
+              itunesTrack: tr.trackId || null,
+              itunes: tr.collectionId || null,
+              itunesArtist: tr.artistId || null,
+            },
+            sourceBadge: 'iTunes',
+            mergedSources: ['iTunes'],
+          });
+        }
+        emitMusicPartial();
+      })
+      .catch(() => {
+        pending = Math.max(0, pending - 1);
+      });
+
+    albumPromise
+      .then((val) => {
+        pending = Math.max(0, pending - 1);
+        if (!Array.isArray(val?.results)) return;
+        streamSources.add('iTunes');
+        for (const alb of val.results) {
+          const title = String(alb.collectionName || alb.trackName || '').trim();
+          if (!title) continue;
+          const artist = String(alb.artistName || '').trim();
+          const rawArt = String(alb.artworkUrl100 || '').trim();
+          const highResArt = rawArt
+            ? normalizeHttpsUrl(rawArt.replace(/100x100bb/i, '600x600bb'))
+            : null;
+          const isLive = LIVE_HINT_REGEX.test(title);
+          const isSingleOrEp =
+            / - (Single|EP)$/i.test(title) ||
+            (Number(alb.trackCount) > 0 && Number(alb.trackCount) <= 5);
+          const inferredType = isLive ? 'live_show' : isSingleOrEp ? 'ep_single' : 'album';
+          const primaryGenre = String(alb.primaryGenreName || '').trim();
+          streamCandidates.push({
+            id: `itunes-${alb.collectionId || title}`,
+            domain: 'music',
+            workType: inferredType,
+            title,
+            creator: artist,
+            director: artist,
+            artist,
+            albumName: title,
+            releaseYear: alb.releaseDate ? Number(String(alb.releaseDate).slice(0, 4)) || null : null,
+            coverUrl: highResArt,
+            genres: primaryGenre ? [primaryGenre] : [],
+            subgenre: primaryGenre,
+            releaseFormat: isLive ? 'Ao Vivo' : 'Álbum de Estúdio',
+            favoriteTrack: '',
+            listenCount: 0,
+            tracks: [],
+            trackCount: Number(alb.trackCount) || null,
+            ids: { itunes: alb.collectionId || null, itunesArtist: alb.artistId || null },
+            sourceBadge: 'iTunes',
+            mergedSources: ['iTunes'],
+          });
+        }
+        emitMusicPartial();
+      })
+      .catch(() => {
+        pending = Math.max(0, pending - 1);
+      });
+  }
+
+  const tasks = [songPromise, albumPromise, mbPromise];
+  if (artistPromise) {
+    tasks.push(artistPromise);
   }
 
   const [songRes, albumRes, mbRes, artistRes] = await Promise.allSettled(tasks);

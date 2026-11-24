@@ -4,6 +4,7 @@ import { getAllEpisodeEvaluations, importEpisodeEvaluations } from './api/cacheD
 import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { OmniLogo } from './components/OmniLogo';
+import { PwaUpdateBanner } from './components/PwaUpdateBanner';
 import { SkeletonScreen } from './components/SkeletonScreen';
 import {
   domainConfig,
@@ -242,6 +243,7 @@ export function App() {
   const [globalRouletteOpen, setGlobalRouletteOpen] = useState(false);
   const [aboutCreditsOpen, setAboutCreditsOpen] = useState(false);
   const [cloudModalOpen, setCloudModalOpen] = useState(false);
+  const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
   const [cloudSyncState, setCloudSyncState] = useState(() => ({
     configured: getSupabaseConfig().isConfigured,
     authenticated: false,
@@ -771,6 +773,7 @@ export function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const onSwUpdate = () => {
+      setPwaUpdateAvailable(true);
       showToast({
         message: 'Nova versão disponível — Atualizar',
         type: 'info',
@@ -2360,6 +2363,15 @@ export function App() {
 
           {perfDebugEnabled && <PerfOverlay />}
         </Suspense>
+
+        <PwaUpdateBanner
+          visible={pwaUpdateAvailable}
+          onUpdate={() => {
+            setPwaUpdateAvailable(false);
+            window.__codiceApplySwUpdate?.();
+          }}
+          onDismiss={() => setPwaUpdateAvailable(false)}
+        />
       </div>
     </div>
   );

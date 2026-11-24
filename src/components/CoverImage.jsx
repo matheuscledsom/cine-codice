@@ -1,5 +1,5 @@
-import { Clapperboard, Film, Tv } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { BookOpen, Clapperboard, Film, Gamepad2, Music, Tv } from 'lucide-react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { isFlagEnabled } from '../config/flags';
 import { buildGeneratedPosterDataUri } from '../graphics/posterGenerator';
 import { getCachedThumbnail, optimizeCoverThumbnail } from '../services/imagePipeline';
@@ -8,7 +8,36 @@ const WORK_ICONS = {
   movie: Film,
   series: Tv,
   anime: Clapperboard,
+  book: BookOpen,
+  manga: BookOpen,
+  academic: BookOpen,
+  technical: BookOpen,
+  game: Gamepad2,
+  dlc: Gamepad2,
+  modpack: Gamepad2,
+  album: Music,
+  track: Music,
+  ep_single: Music,
+  live_show: Music,
+  discography: Music,
+  concert: Music,
 };
+
+const SQUARE_WORK_TYPES = new Set([
+  'album',
+  'track',
+  'ep_single',
+  'live_show',
+  'discography',
+  'concert',
+]);
+
+export function resolveCoverAspectClass({ domain = null, workType = 'movie', aspectRatio = null } = {}) {
+  if (aspectRatio === '1:1') return 'aspect-square';
+  if (aspectRatio === '2:3') return 'aspect-[2/3]';
+  if (domain === 'music' || SQUARE_WORK_TYPES.has(workType)) return 'aspect-square';
+  return 'aspect-[2/3]';
+}
 
 export function sanitizeHttpsCoverUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return null;
@@ -22,12 +51,14 @@ export function sanitizeHttpsCoverUrl(rawUrl) {
     .replace(/\?$/, '');
 }
 
-export function CoverImage({
+export const CoverImage = memo(function CoverImage({
   sources = [],
   title = '',
   author = '',
   director = '',
+  domain = null,
   workType = 'movie',
+  aspectRatio = null,
   releaseYear = '',
   genre = '',
   className = '',
@@ -91,9 +122,12 @@ export function CoverImage({
     setActiveIndex((prev) => prev + 1);
   };
 
+  const aspectClass = resolveCoverAspectClass({ domain, workType, aspectRatio });
+  const isSquare = aspectClass === 'aspect-square';
+
   return (
     <div
-      className={`relative aspect-[2/3] overflow-hidden rounded-[4px] border-2 border-line bg-elevated select-none ${className}`}
+      className={`relative ${aspectClass} overflow-hidden rounded-[6px] border border-line bg-elevated select-none ${className}`}
     >
       {hasPendingExternalSource ? (
         <div
@@ -148,7 +182,9 @@ export function CoverImage({
           <img
             key={effectiveSrc}
             src={effectiveSrc}
-            alt={title || 'Pôster da obra'}
+            alt={title || 'Capa da obra'}
+            width={isSquare ? 300 : 200}
+            height={300}
             loading={priority ? 'eager' : 'lazy'}
             decoding="async"
             fetchPriority={priority ? 'high' : 'low'}
@@ -182,4 +218,4 @@ export function CoverImage({
       )}
     </div>
   );
-}
+});

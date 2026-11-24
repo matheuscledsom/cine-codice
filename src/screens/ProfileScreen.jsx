@@ -17,21 +17,38 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AiProvidersPanel } from '../components/AiProvidersPanel';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { BackupReminderBanner } from '../components/BackupReminderBanner';
-import { BadgesGallery } from '../components/BadgesGallery';
 import { CoverArt } from '../components/CoverArt';
-import { PostDetailModal } from '../components/PostDetailModal';
 import {
   AVATAR_EMBLEM_COMPONENTS,
   ProfileEditModal,
 } from '../components/ProfileEditModal';
-import { ProfileSettingsDrawer } from '../components/ProfileSettingsDrawer';
-import { ReaderPassportWidget } from '../components/ReaderPassportWidget';
-import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
-import { ThemeModal } from '../components/ThemeModal';
-import { TitlesBadgesModal } from '../components/TitlesBadgesModal';
+
+const AiProvidersPanel = lazy(() =>
+  import('../components/AiProvidersPanel').then((m) => ({ default: m.AiProvidersPanel }))
+);
+const BadgesGallery = lazy(() =>
+  import('../components/BadgesGallery').then((m) => ({ default: m.BadgesGallery }))
+);
+const PostDetailModal = lazy(() =>
+  import('../components/PostDetailModal').then((m) => ({ default: m.PostDetailModal }))
+);
+const ProfileSettingsDrawer = lazy(() =>
+  import('../components/ProfileSettingsDrawer').then((m) => ({ default: m.ProfileSettingsDrawer }))
+);
+const ReaderPassportWidget = lazy(() =>
+  import('../components/ReaderPassportWidget').then((m) => ({ default: m.ReaderPassportWidget }))
+);
+const ReleaseHistoryModal = lazy(() =>
+  import('../components/ReleaseHistoryModal').then((m) => ({ default: m.ReleaseHistoryModal }))
+);
+const ThemeModal = lazy(() =>
+  import('../components/ThemeModal').then((m) => ({ default: m.ThemeModal }))
+);
+const TitlesBadgesModal = lazy(() =>
+  import('../components/TitlesBadgesModal').then((m) => ({ default: m.TitlesBadgesModal }))
+);
 import {
   OMNIPRISM_DOMAINS,
   domainConfig,
@@ -1215,61 +1232,63 @@ export function ProfileScreen({
 
         {/* ABA 3: INSÍGNIAS DO ESPECTADOR */}
         {resolvedActiveTab === 'badges' && (
-          <div className="px-4 sm:px-6 pt-4 space-y-4">
-            <ReaderPassportWidget
-              items={items}
-              posts={posts}
-              streakCount={streakCount}
-            />
+          <Suspense fallback={null}>
+            <div className="px-4 sm:px-6 pt-4 space-y-4">
+              <ReaderPassportWidget
+                items={items}
+                posts={posts}
+                streakCount={streakCount}
+              />
 
-            {!gamificationEnabled ? (
-              <p className="rounded-2xl border border-line bg-card py-6 text-center text-xs text-muted">
-                {calmMode
-                  ? 'Modo Calmo ativo: XP e contadores numéricos permanecem ocultos.'
-                  : 'Gamificação desativada nas configurações do perfil.'}
-              </p>
-            ) : (
-              <>
-                <div className="rounded-2xl border border-line bg-card p-3.5 space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="inline-flex items-center gap-1.5 font-semibold text-ink">
-                      <span className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-0.5 text-[11px] font-bold text-accent-ink tabular-nums">
-                        <Zap className="h-3 w-3" strokeWidth={1.5} />
-                        {profileCfg.levelPrefix} {statsData.level}
+              {!gamificationEnabled ? (
+                <p className="rounded-[6px] border border-line bg-card py-6 text-center text-xs text-muted">
+                  {calmMode
+                    ? 'Modo Calmo ativo: XP e contadores numéricos permanecem ocultos.'
+                    : 'Gamificação desativada nas configurações do perfil.'}
+                </p>
+              ) : (
+                <>
+                  <div className="rounded-[6px] border border-line bg-card p-3.5 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="inline-flex items-center gap-1.5 font-semibold text-ink">
+                        <span className="inline-flex items-center gap-1 rounded-[6px] bg-accent px-2 py-0.5 text-[11px] font-bold text-accent-ink tabular-nums">
+                          <Zap className="h-3 w-3" strokeWidth={1.5} />
+                          {profileCfg.levelPrefix} {statsData.level}
+                        </span>
+                        <span className="text-muted font-medium">
+                          {titleEvaluation.unlockedCount}/{titleEvaluation.totalCount} insígnias
+                        </span>
                       </span>
-                      <span className="text-muted font-medium">
-                        {titleEvaluation.unlockedCount}/{titleEvaluation.totalCount} insígnias
+                      <span className="text-[11px] text-subtle tabular-nums">
+                        {statsData.currentLevelXp}/{statsData.xpPerLevel} XP
                       </span>
-                    </span>
-                    <span className="text-[11px] text-subtle tabular-nums">
-                      {statsData.currentLevelXp}/{statsData.xpPerLevel} XP
-                    </span>
-                  </div>
-                  <div
-                    role="progressbar"
-                    aria-label="Progresso de XP do espectador"
-                    aria-valuemin={0}
-                    aria-valuemax={statsData.xpPerLevel}
-                    aria-valuenow={statsData.currentLevelXp}
-                    className="h-1 w-full overflow-hidden rounded-full bg-line"
-                  >
+                    </div>
                     <div
-                      className="h-full bg-accent transition-all duration-300"
-                      style={{ width: `${Math.max(4, statsData.xpPct)}%` }}
-                    />
+                      role="progressbar"
+                      aria-label="Progresso de XP do espectador"
+                      aria-valuemin={0}
+                      aria-valuemax={statsData.xpPerLevel}
+                      aria-valuenow={statsData.currentLevelXp}
+                      className="h-1 w-full overflow-hidden rounded-full bg-line"
+                    >
+                      <div
+                        className="h-full bg-accent transition-all duration-300"
+                        style={{ width: `${Math.max(4, statsData.xpPct)}%` }}
+                      />
+                    </div>
                   </div>
-                </div>
 
-                <BadgesGallery
-                  evaluation={titleEvaluation}
-                  onSelectAutoMode={() =>
-                    onUpdateProfile?.({ activeTitleBadge: 'auto' })
-                  }
-                  onPinTitleBadge={handlePinTitleBadge}
-                />
-              </>
-            )}
-          </div>
+                  <BadgesGallery
+                    evaluation={titleEvaluation}
+                    onSelectAutoMode={() =>
+                      onUpdateProfile?.({ activeTitleBadge: 'auto' })
+                    }
+                    onPinTitleBadge={handlePinTitleBadge}
+                  />
+                </>
+              )}
+            </div>
+          </Suspense>
         )}
       </section>
 
@@ -1359,64 +1378,70 @@ export function ProfileScreen({
         </div>
       )}
 
-      <ProfileSettingsDrawer
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        returnFocusRef={settingsBtnRef}
-        profile={profile}
-        cloudState={cloudState}
-        soundOn={soundOn}
-        onToggleSound={() => {
-          const next = !soundOn;
-          setSoundEnabled(next);
-          setSoundOn(next);
-          if (next) playTactileSound('tap');
-        }}
-        onOpenCloudModal={onOpenCloudModal}
-        onUpdateProfile={onUpdateProfile}
-        onOpenThemeStudio={() => {
-          if (onOpenThemeStudio) {
-            onOpenThemeStudio();
-          } else {
-            setThemeModalOpen(true);
-          }
-        }}
-        themeProps={themeProps}
-        onReopenOnboarding={onReopenOnboarding}
-        onOpenGeminiSettings={onOpenGeminiSettings}
-        onExportBackup={onExportBackup}
-        onExportCsv={onExportCsv}
-        onExportMarkdown={onExportBibtex}
-        onImportBackupClick={() => fileInputRef.current?.click()}
-        onOpenBackupModal={onOpenBackupModal}
-        onOpenImportCatalog={onOpenImportCatalog}
-        onOpenShortcuts={onOpenShortcuts}
-        onOpenAboutCredits={onOpenAboutCredits}
-        aiPanelSlot={
-          <AiProvidersPanel
-            keys={resolvedAiConfig.keys}
-            preferences={resolvedAiConfig.preferences}
-            onSaveKey={(providerId, val) => {
-              const saved = resolvedAiConfig.saveProviderKey(providerId, val);
-              if (providerId === 'gemini') onSaveGeminiKey?.(saved);
-              return saved;
+      <Suspense fallback={null}>
+        {settingsOpen && (
+          <ProfileSettingsDrawer
+            isOpen={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            returnFocusRef={settingsBtnRef}
+            profile={profile}
+            cloudState={cloudState}
+            soundOn={soundOn}
+            onToggleSound={() => {
+              const next = !soundOn;
+              setSoundEnabled(next);
+              setSoundOn(next);
+              if (next) playTactileSound('tap');
             }}
-            onClearKey={(providerId) => {
-              resolvedAiConfig.clearProviderKey(providerId);
-              if (providerId === 'gemini') onSaveGeminiKey?.('');
+            onOpenCloudModal={onOpenCloudModal}
+            onUpdateProfile={onUpdateProfile}
+            onOpenThemeStudio={() => {
+              if (onOpenThemeStudio) {
+                onOpenThemeStudio();
+              } else {
+                setThemeModalOpen(true);
+              }
             }}
-            onUpdatePreferences={(next) => resolvedAiConfig.updatePreferences(next)}
+            themeProps={themeProps}
+            onReopenOnboarding={onReopenOnboarding}
+            onOpenGeminiSettings={onOpenGeminiSettings}
+            onExportBackup={onExportBackup}
+            onExportCsv={onExportCsv}
+            onExportMarkdown={onExportBibtex}
+            onImportBackupClick={() => fileInputRef.current?.click()}
+            onOpenBackupModal={onOpenBackupModal}
+            onOpenImportCatalog={onOpenImportCatalog}
+            onOpenShortcuts={onOpenShortcuts}
+            onOpenAboutCredits={onOpenAboutCredits}
+            aiPanelSlot={
+              <Suspense fallback={null}>
+                <AiProvidersPanel
+                  keys={resolvedAiConfig.keys}
+                  preferences={resolvedAiConfig.preferences}
+                  onSaveKey={(providerId, val) => {
+                    const saved = resolvedAiConfig.saveProviderKey(providerId, val);
+                    if (providerId === 'gemini') onSaveGeminiKey?.(saved);
+                    return saved;
+                  }}
+                  onClearKey={(providerId) => {
+                    resolvedAiConfig.clearProviderKey(providerId);
+                    if (providerId === 'gemini') onSaveGeminiKey?.('');
+                  }}
+                  onUpdatePreferences={(next) => resolvedAiConfig.updatePreferences(next)}
+                />
+              </Suspense>
+            }
           />
-        }
-      />
+        )}
 
-      {!onOpenThemeStudio && (
-        <ThemeModal
-          isOpen={themeModalOpen}
-          onClose={() => setThemeModalOpen(false)}
-          {...themeProps}
-        />
-      )}
+        {!onOpenThemeStudio && themeModalOpen && (
+          <ThemeModal
+            isOpen={themeModalOpen}
+            onClose={() => setThemeModalOpen(false)}
+            {...themeProps}
+          />
+        )}
+      </Suspense>
 
       <ProfileEditModal
         isOpen={editModalOpen}
@@ -1425,27 +1450,33 @@ export function ProfileScreen({
         onSave={onUpdateProfile}
       />
 
-      <TitlesBadgesModal
-        isOpen={titlesModalOpen}
-        onClose={() => setTitlesModalOpen(false)}
-        evaluation={titleEvaluation}
-        onSelectAutoMode={() => {
-          onUpdateProfile?.({ activeTitleBadge: 'auto' });
-          setTitlesModalOpen(false);
-        }}
-        onPinTitleBadge={handlePinTitleBadge}
-      />
+      <Suspense fallback={null}>
+        {titlesModalOpen && (
+          <TitlesBadgesModal
+            isOpen={titlesModalOpen}
+            onClose={() => setTitlesModalOpen(false)}
+            evaluation={titleEvaluation}
+            onSelectAutoMode={() => {
+              onUpdateProfile?.({ activeTitleBadge: 'auto' });
+              setTitlesModalOpen(false);
+            }}
+            onPinTitleBadge={handlePinTitleBadge}
+          />
+        )}
 
-      <PostDetailModal
-        post={selectedPost}
-        profile={profile}
-        linkedItem={selectedPostLinkedItem}
-        onClose={() => setSelectedPostId(null)}
-        onSelectItem={onSelectItem}
-        onDeletePost={onDeletePost}
-        onAddComment={onAddPostComment}
-        onDeleteComment={onDeletePostComment}
-      />
+        {selectedPost && (
+          <PostDetailModal
+            post={selectedPost}
+            profile={profile}
+            linkedItem={selectedPostLinkedItem}
+            onClose={() => setSelectedPostId(null)}
+            onSelectItem={onSelectItem}
+            onDeletePost={onDeletePost}
+            onAddComment={onAddPostComment}
+            onDeleteComment={onDeletePostComment}
+          />
+        )}
+      </Suspense>
 
       <footer className="flex flex-wrap items-center justify-center gap-3 pt-2 text-center">
         <button
@@ -1468,10 +1499,14 @@ export function ProfileScreen({
         )}
       </footer>
 
-      <ReleaseHistoryModal
-        isOpen={releaseModalOpen}
-        onClose={() => setReleaseModalOpen(false)}
-      />
+      {releaseModalOpen && (
+        <Suspense fallback={null}>
+          <ReleaseHistoryModal
+            isOpen={releaseModalOpen}
+            onClose={() => setReleaseModalOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

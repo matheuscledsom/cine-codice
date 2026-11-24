@@ -20,7 +20,10 @@ import {
   X,
 } from 'lucide-react';
 import {
+  Suspense,
+  lazy,
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -30,10 +33,19 @@ import {
 import { CollectionCreatorBar } from '../components/CollectionCreatorBar';
 import { CoverArt } from '../components/CoverArt';
 import { DomainSwitcherBar } from '../components/DomainSwitcherBar';
-import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
 import { ResponsiveSheet } from '../components/ResponsiveSheet';
 import { StatusBadge } from '../components/StatusBadge';
 import { WorkCard } from '../components/WorkCard';
+import {
+  CATALOG_PAGE_BATCH_SIZE,
+  computeCatalogVisibleSlice,
+} from '../lib/catalogPagination';
+
+const OfflineBookPickerModal = lazy(() =>
+  import('../components/OfflineBookPickerModal').then((m) => ({
+    default: m.OfflineBookPickerModal,
+  }))
+);
 import {
   OMNIPRISM_DOMAINS,
   domainConfig,
@@ -80,7 +92,7 @@ const VIEW_MODES = [
   { id: 'shelf', label: 'Estante', icon: Library },
 ];
 
-const LIST_WINDOW_BATCH = 60;
+const LIST_WINDOW_BATCH = CATALOG_PAGE_BATCH_SIZE;
 export { formatCatalogCardFormatBadge };
 
 function loadSavedTitleMode() {
@@ -461,15 +473,12 @@ export function ListScreen({
     layoutMode,
   ]);
 
-  const visibleItems = useMemo(
-    () =>
-      filteredAndSortedItems.length > visibleLimit
-        ? filteredAndSortedItems.slice(0, visibleLimit)
-        : filteredAndSortedItems,
+  const paginationSlice = useMemo(
+    () => computeCatalogVisibleSlice(filteredAndSortedItems, visibleLimit),
     [filteredAndSortedItems, visibleLimit]
   );
-
-  const hasMoreVisible = visibleItems.length < filteredAndSortedItems.length;
+  const visibleItems = paginationSlice.visibleItems;
+  const hasMoreVisible = paginationSlice.hasMore;
 
   useEffect(() => {
     setSelectedIds((prev) =>
@@ -495,7 +504,7 @@ export function ListScreen({
     return () => observer.disconnect();
   }, [hasMoreVisible]);
 
-  const toggleSelectedId = (workId) => {
+  const toggleSelectedId = useCallback((workId) => {
     const targetId = String(workId || '');
     if (!targetId) return;
     setSelectedIds((prev) =>
@@ -503,26 +512,32 @@ export function ListScreen({
         ? prev.filter((id) => id !== targetId)
         : [...prev, targetId]
     );
-  };
+  }, []);
 
-  const handleWorkCardClick = (item) => {
-    if (!item) return;
-    if (selectionMode) {
-      toggleSelectedId(item.id);
-      return;
-    }
-    onSelectItem(item);
-  };
+  const handleWorkCardClick = useCallback(
+    (item) => {
+      if (!item) return;
+      if (selectionMode) {
+        toggleSelectedId(item.id);
+        return;
+      }
+      onSelectItem(item);
+    },
+    [selectionMode, toggleSelectedId, onSelectItem]
+  );
 
-  const handleLongPressWork = (item) => {
-    if (!item) return;
-    if (!selectionMode) {
-      setSelectionMode(true);
-      setSelectedIds([String(item.id)]);
-    } else {
-      toggleSelectedId(item.id);
-    }
-  };
+  const handleLongPressWork = useCallback(
+    (item) => {
+      if (!item) return;
+      if (!selectionMode) {
+        setSelectionMode(true);
+        setSelectedIds([String(item.id)]);
+      } else {
+        toggleSelectedId(item.id);
+      }
+    },
+    [selectionMode, toggleSelectedId]
+  );
 
   const toggleSelectAllVisible = () => {
     const visibleIdSet = visibleItems.map((i) => String(i.id));
@@ -1687,15 +1702,19 @@ export function ListScreen({
         </div>
       </ResponsiveSheet>
 
-      <OfflineBookPickerModal
-        isOpen={rouletteOpen}
-        onClose={() => setRouletteOpen(false)}
-        items={items}
-        domain={selectedDomain}
-        readerDna={profile?.readerDna || null}
-        onStartReading={onStartPickedWork}
-        onSelectItem={onSelectItem}
-      />
+      {rouletteOpen && (
+        <Suspense fallback={null}>
+          <OfflineBookPickerModal
+            isOpen={rouletteOpen}
+            onClose={() => setRouletteOpen(false)}
+            items={items}
+            domain={selectedDomain}
+            readerDna={profile?.readerDna || null}
+            onStartReading={onStartPickedWork}
+            onSelectItem={onSelectItem}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
