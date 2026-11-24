@@ -1,9 +1,10 @@
-import { Clapperboard, ImageDown, Sparkles, X } from 'lucide-react';
+import { ImageDown, Sparkles, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { domainConfig } from '../config/domainConfig';
+import { VectorIcon } from './VectorIcon';
+import { domainConfig, getDomainMeta } from '../config/domainConfig';
 import { buildWrappedSummary } from '../utils/wrappedStats';
 
-export async function generateWrappedCardPng(summary, readerName = 'Espectador Códice') {
+export async function generateWrappedCardPng(summary, readerName = 'Curador OmniPrism') {
   if (typeof document === 'undefined' || !summary) return false;
   const rootStyle = getComputedStyle(document.documentElement);
   const bgApp = rootStyle.getPropertyValue('--bg-app').trim() || '#09090B';
@@ -38,11 +39,11 @@ export async function generateWrappedCardPng(summary, readerName = 'Espectador C
   const LEFT = 132;
   ctx.fillStyle = accentColor;
   ctx.font = `700 22px ${fontFamily}`;
-  ctx.fillText(`CINE WRAPPED · LUMIÈRE`, LEFT, 152);
+  ctx.fillText(summary.brandTitle || 'OMNI WRAPPED · OMNIPRISM', LEFT, 152);
 
   ctx.fillStyle = textPrimary;
-  ctx.font = `700 54px ${fontFamily}`;
-  ctx.fillText(summary.periodLabel, LEFT, 224);
+  ctx.font = `700 48px ${fontFamily}`;
+  ctx.fillText(String(summary.periodLabel || '').slice(0, 34), LEFT, 224);
 
   ctx.fillStyle = textMuted;
   ctx.font = `400 26px ${fontFamily}`;
@@ -52,17 +53,17 @@ export async function generateWrappedCardPng(summary, readerName = 'Espectador C
   ctx.fillRect(LEFT, 312, WIDTH - LEFT * 2, 2);
 
   const metrics = [
-    { label: 'OBRAS CONCLUÍDAS', value: String(summary.completedCount) },
+    { label: summary.completedLabel || 'OBRAS CONCLUÍDAS', value: String(summary.completedCount) },
     {
-      label: 'TEMPO & EPISÓDIOS',
-      value: `${summary.hoursWatched}h · ${summary.episodesWatched} eps`,
+      label: summary.primaryMetricLabel || 'DESTAQUE QUANTITATIVO',
+      value: summary.primaryMetricValue || `${summary.hoursWatched}h`,
     },
-    { label: 'GÊNERO PRINCIPAL', value: summary.topGenre },
-    { label: 'DIREÇÃO / ESTÚDIO EM DESTAQUE', value: summary.topCreator },
+    { label: summary.genreLabel || 'GÊNERO PRINCIPAL', value: summary.topGenre },
+    { label: summary.creatorLabel || 'CRIADOR EM DESTAQUE', value: summary.topCreator },
     { label: 'CONSTÂNCIA', value: `${summary.streakCount} dias` },
     {
-      label: 'NOTA MÉDIA',
-      value: summary.avgRating !== null ? `${summary.avgRating}/100` : 'Sem notas',
+      label: summary.domain === 'games' ? 'NOTA MÉDIA (0–11)' : 'NOTA MÉDIA',
+      value: summary.avgRatingDisplay || (summary.avgRating !== null ? `${summary.avgRating}/100` : 'Sem notas'),
     },
   ];
 
@@ -83,14 +84,15 @@ export async function generateWrappedCardPng(summary, readerName = 'Espectador C
 
   ctx.fillStyle = accentColor;
   ctx.font = `600 20px ${fontFamily}`;
-  ctx.fillText('DESTAQUE DA TEMPORADA', LEFT, HEIGHT - 208);
+  ctx.fillText('DESTAQUE DO CATÁLOGO', LEFT, HEIGHT - 208);
 
   ctx.fillStyle = textPrimary;
   ctx.font = `700 38px ${fontFamily}`;
   ctx.fillText(String(summary.topWorkTitle).slice(0, 38), LEFT, HEIGHT - 154);
 
   return new Promise((resolve) => {
-    const filename = `cine-codice-wrapped-${domainConfig.currentYear}.png`;
+    const filename =
+      summary.fileSlug || `omniprism-wrapped-${domainConfig.currentYear}.png`;
     if (canvas.toBlob) {
       canvas.toBlob((blob) => {
         if (!blob) {
@@ -119,9 +121,15 @@ export function WrappedModal({
   items = [],
   profile = null,
   streakCount = 0,
+  activeDomain = 'cinema',
+  scope = 'domain',
 }) {
   const [period, setPeriod] = useState('year');
+  const [wrappedScope, setWrappedScope] = useState(scope);
   const [exporting, setExporting] = useState(false);
+
+  const effectiveDomain = wrappedScope === 'global' ? 'global' : activeDomain;
+  const domainMeta = effectiveDomain === 'global' ? null : getDomainMeta(effectiveDomain);
 
   const summary = useMemo(
     () =>
@@ -129,8 +137,9 @@ export function WrappedModal({
         items,
         streakCount,
         period,
+        domain: effectiveDomain,
       }),
-    [items, streakCount, period]
+    [items, streakCount, period, effectiveDomain]
   );
 
   if (!isOpen) return null;
@@ -140,7 +149,7 @@ export function WrappedModal({
     try {
       await generateWrappedCardPng(
         summary,
-        profile?.displayName || profile?.handle || 'Espectador Códice'
+        profile?.displayName || profile?.handle || 'Curador OmniPrism'
       );
     } finally {
       setExporting(false);
@@ -151,7 +160,7 @@ export function WrappedModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Cine Wrapped — Retrospectiva Audiovisual"
+      aria-label="Omni Wrapped — Retrospectiva OmniPrism"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4"
       onClick={onClose}
     >
@@ -163,36 +172,62 @@ export function WrappedModal({
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-accent" strokeWidth={1.5} />
             <div>
-              <h2 className="text-sm font-semibold">Cine Wrapped · Lumière</h2>
-              <p className="text-[11px] text-subtle">Retrospectiva de cinema offline</p>
+              <h2 className="text-sm font-semibold">
+                Omni Wrapped · {domainMeta ? domainMeta.shortLabel : 'Global'}
+              </h2>
+              <p className="text-[11px] text-subtle">
+                Retrospectiva offline · {summary.domainLabel}
+              </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Fechar Cine Wrapped"
+            aria-label="Fechar Omni Wrapped"
             className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[4px] border border-line text-muted hover:text-ink"
           >
             <X className="h-4 w-4" strokeWidth={1.5} />
           </button>
         </div>
 
-        <div className="grid grid-cols-2 rounded-[4px] border border-line bg-app p-0.5">
-          {[
-            { id: 'year', label: `Ano ${domainConfig.currentYear}` },
-            { id: 'all', label: 'Todo o catálogo' },
-          ].map((opt) => (
-            <button
-              key={opt.id}
-              type="button"
-              onClick={() => setPeriod(opt.id)}
-              className={`min-h-[38px] rounded-[2px] text-xs font-medium transition-colors ${
-                period === opt.id ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div className="grid grid-cols-2 gap-1.5">
+          <div className="grid grid-cols-2 rounded-[4px] border border-line bg-app p-0.5">
+            {[
+              { id: 'domain', label: getDomainMeta(activeDomain).shortLabel },
+              { id: 'global', label: 'Global' },
+            ].map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setWrappedScope(opt.id)}
+                className={`min-h-[36px] rounded-[2px] text-[11px] font-medium transition-colors ${
+                  wrappedScope === opt.id
+                    ? 'bg-accent text-accent-ink'
+                    : 'text-muted hover:text-ink'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 rounded-[4px] border border-line bg-app p-0.5">
+            {[
+              { id: 'year', label: `Ano ${domainConfig.currentYear}` },
+              { id: 'all', label: 'Tudo' },
+            ].map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setPeriod(opt.id)}
+                className={`min-h-[36px] rounded-[2px] text-[11px] font-medium transition-colors ${
+                  period === opt.id ? 'bg-accent text-accent-ink' : 'text-muted hover:text-ink'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <article className="rounded-[6px] border-2 border-accent/60 bg-app p-4 space-y-3">
@@ -200,40 +235,56 @@ export function WrappedModal({
             <span className="text-[10px] font-semibold uppercase tracking-wider text-accent">
               {summary.periodLabel}
             </span>
-            <Clapperboard className="h-4 w-4 text-accent" strokeWidth={1.5} />
+            <VectorIcon
+              name={domainMeta?.icon || 'Sparkles'}
+              className="h-4 w-4 text-accent"
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-2.5">
             <div className="rounded-[4px] border border-line bg-card p-2.5">
-              <span className="block text-[10px] uppercase text-subtle">Concluídas</span>
+              <span className="block text-[10px] uppercase text-subtle">
+                {summary.completedLabel}
+              </span>
               <span className="text-lg font-semibold tabular-nums text-ink">
                 {summary.completedCount}
               </span>
             </div>
             <div className="rounded-[4px] border border-line bg-card p-2.5">
-              <span className="block text-[10px] uppercase text-subtle">Horas / Episódios</span>
-              <span className="text-lg font-semibold tabular-nums text-ink">
-                {summary.hoursWatched}h · {summary.episodesWatched} ep
+              <span className="block text-[10px] uppercase text-subtle">
+                {summary.primaryMetricLabel}
+              </span>
+              <span className="truncate block text-sm font-semibold tabular-nums text-ink">
+                {summary.primaryMetricValue}
               </span>
             </div>
             <div className="rounded-[4px] border border-line bg-card p-2.5">
-              <span className="block text-[10px] uppercase text-subtle">Gênero</span>
+              <span className="block text-[10px] uppercase text-subtle">
+                {summary.genreLabel}
+              </span>
               <span className="truncate block text-xs font-semibold text-ink">
                 {summary.topGenre}
               </span>
             </div>
             <div className="rounded-[4px] border border-line bg-card p-2.5">
-              <span className="block text-[10px] uppercase text-subtle">Direção / Estúdio</span>
+              <span className="block text-[10px] uppercase text-subtle">
+                {summary.creatorLabel}
+              </span>
               <span className="truncate block text-xs font-semibold text-ink">
                 {summary.topCreator}
               </span>
             </div>
           </div>
 
-          <div className="rounded-[4px] border border-line bg-card px-3 py-2">
-            <span className="block text-[10px] uppercase text-subtle">Destaque</span>
-            <span className="truncate block text-xs font-semibold text-ink">
-              {summary.topWorkTitle}
+          <div className="flex items-center justify-between gap-2 rounded-[4px] border border-line bg-card px-3 py-2">
+            <div className="min-w-0">
+              <span className="block text-[10px] uppercase text-subtle">Destaque</span>
+              <span className="truncate block text-xs font-semibold text-ink">
+                {summary.topWorkTitle}
+              </span>
+            </div>
+            <span className="shrink-0 text-xs font-semibold tabular-nums text-accent">
+              {summary.avgRatingDisplay}
             </span>
           </div>
         </article>
@@ -245,7 +296,7 @@ export function WrappedModal({
           className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-[4px] bg-accent px-4 text-xs font-semibold text-accent-ink hover:opacity-90 disabled:opacity-45"
         >
           <ImageDown className="h-4 w-4" strokeWidth={1.5} />
-          <span>{exporting ? 'Gerando cartão PNG...' : 'Exportar Cine Wrapped (1080×1350)'}</span>
+          <span>{exporting ? 'Gerando cartão PNG...' : 'Exportar Omni Wrapped (1080×1350)'}</span>
         </button>
       </div>
     </div>

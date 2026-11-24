@@ -24,7 +24,9 @@ import { WorkTypeSelector } from '../components/WorkTypeSelector';
 import {
   BOOK_FORMATS,
   GAME_COMPLETION_TYPES,
+  GAME_EDITION_TYPES,
   GAME_PLATFORMS,
+  GAME_PLATFORM_UNSET_LABEL,
   GAME_STORES_LAUNCHERS,
   MUSIC_RELEASE_FORMATS,
   domainConfig,
@@ -52,6 +54,7 @@ import {
 } from '../services/cinemaApi';
 import {
   fetchMusicReleaseTracks,
+  formatTrackDuration,
   getQuickSuggestionsForDomain,
   searchWorksByDomain,
 } from '../services/multiDomainSearchService';
@@ -222,6 +225,8 @@ export function AddScreen({
   const [failedSourcesCount, setFailedSourcesCount] = useState(0);
   const [allFailed, setAllFailed] = useState(false);
   const [offlineNotice, setOfflineNotice] = useState(false);
+  const [sourceStatusHint, setSourceStatusHint] = useState('');
+  const [gameCardOverrides, setGameCardOverrides] = useState({});
 
   const [draftItem, setDraftItem] = useState(null);
   const [manualOpen, setManualOpen] = useState(false);
@@ -261,11 +266,63 @@ export function AddScreen({
     return { byId, byTitle };
   }, [items]);
 
-  const findExisting = (candidate) =>
-    backlogLookup.byId.get(candidate.id) ||
-    backlogLookup.byTitle.get(candidate.title?.trim().toLowerCase()) ||
-    findDuplicateMatch(candidate, items) ||
-    null;
+  const findExisting = (candidate) => {
+    const byId = backlogLookup.byId.get(candidate.id);
+    if (byId) return byId;
+
+    const candDomain = normalizeDomainId(candidate?.domain || effectiveDomain);
+    // Em Games, permite catalogar Original e Remake/Remaster (ou anos diferentes) separadamente
+    if (candDomain === 'games') {
+      const candTitle = String(candidate?.title || '').trim().toLowerCase();
+      const candOverride = gameCardOverrides[candidate.id] || {};
+      const candEdition = String(
+        candOverride.editionType || candidate?.editionType || 'Original'
+      )
+        .trim()
+        .toLowerCase();
+      const candYear = Number(candidate?.releaseYear) || null;
+      return (
+        items.find((item) => {
+          if (!item || item.inBacklog === false) return false;
+          if (normalizeDomainId(item.domain) !== 'games') return false;
+          if (String(item.title || '').trim().toLowerCase() !== candTitle) return false;
+          const itemEdition = String(item.editionType || 'Original').trim().toLowerCase();
+          if (itemEdition !== candEdition) return false;
+          const itemYear = Number(item.releaseYear) || null;
+          if (candYear && itemYear && Math.abs(candYear - itemYear) >= 3) return false;
+          return true;
+        }) || null
+      );
+    }
+
+    // Em Música, separa faixa individual de álbum homônimo
+    if (candDomain === 'music') {
+      const candTitle = String(candidate?.title || '').trim().toLowerCase();
+      const candType = normalizeWorkTypeForDomain(candidate?.workType, 'music');
+      const candCreator = String(candidate?.creator || candidate?.artist || '')
+        .trim()
+        .toLowerCase();
+      return (
+        items.find((item) => {
+          if (!item || item.inBacklog === false) return false;
+          if (normalizeDomainId(item.domain) !== 'music') return false;
+          if (String(item.title || '').trim().toLowerCase() !== candTitle) return false;
+          if (normalizeWorkTypeForDomain(item.workType, 'music') !== candType) return false;
+          const itemCreator = String(item.creator || item.director || '')
+            .trim()
+            .toLowerCase();
+          if (candCreator && itemCreator && candCreator !== itemCreator) return false;
+          return true;
+        }) || null
+      );
+    }
+
+    return (
+      backlogLookup.byTitle.get(candidate.title?.trim().toLowerCase()) ||
+      findDuplicateMatch(candidate, items) ||
+      null
+    );
+  };
 
   const quickSuggestions = useMemo(
     () => getQuickSuggestionsForDomain(effectiveDomain),
@@ -302,6 +359,8 @@ export function AddScreen({
     setFailedSourcesCount(0);
     setAllFailed(false);
     setOfflineNotice(false);
+    setSourceStatusHint('');
+    setGameCardOverrides({});
     setResults(cleanNext === 'cinema' ? searchMockCinema('', 'all') : []);
     setSearchFilter('all');
     onSelectDomain?.(cleanNext);
@@ -370,6 +429,7 @@ export function AddScreen({
 
       if (targetDomain !== 'cinema') {
         setOfflineNotice(false);
+        setSourceStatusHint('');
         if (!cleanQuery || cleanQuery.length < 2) {
           setResults([]);
           setIsLoading(false);
@@ -397,6 +457,7 @@ export function AddScreen({
           setOfflineNotice(Boolean(response.offline));
           setPartialFailure(Boolean(response.partialFailure));
           setFailedSourcesCount(response.partialFailure ? 1 : 0);
+          setSourceStatusHint(String(response.sourceStatusHint || ''));
           setAllFailed(
             !response.offline && !response.ok && (response.results || []).length === 0
           );
@@ -605,10 +666,21 @@ export function AddScreen({
     const candDomain = normalizeDomainId(candidate?.domain || effectiveDomain);
 
     if (candDomain !== 'cinema') {
+      const cardOverride = gameCardOverrides[candidate?.id] || {};
       const normalizedType = normalizeWorkTypeForDomain(candidate?.workType, candDomain);
       const draftId = candidate?.id || createUuid();
-      const creatorName = String(candidate?.creator || candidate?.director || '').trim();
+      const creatorName = String(candidate?.creator || candidate?.director || candidate?.artist || '').trim();
       const genres = Array.isArray(candidate?.genres) ? candidate.genres.slice(0, 4) : [];
+      const resolvedPlatform =
+        candDomain === 'games'
+          ? String(
+              cardOverride.platform !== undefined ? cardOverride.platform : candidate?.platform || ''
+            ).trim()
+          : '';
+      const resolvedEdition =
+        candDomain === 'games'
+          ? String(cardOverride.editionType || candidate?.editionType || 'Original').trim()
+          : '';
       const baseDomainDraft = buildDraftWithStatus(
         {
           id: draftId,
@@ -634,22 +706,35 @@ export function AddScreen({
           rating: null,
           ratingSource: null,
           verdict: null,
+          language: String(candidate?.language || '').trim(),
           pagesRead: Number(candidate?.pagesRead) || 0,
           totalPages: Number(candidate?.totalPages) > 0 ? Number(candidate.totalPages) : null,
           chaptersRead: Number(candidate?.chaptersRead) || 0,
           isbnOrDoi: String(candidate?.isbnOrDoi || '').trim(),
           bookFormat: candidate?.bookFormat || BOOK_FORMATS[0],
           favoriteScene: String(candidate?.favoriteScene || '').trim(),
-          platform: candidate?.platform || GAME_PLATFORMS[0],
+          // Games: preserva plataformas reais da API sem assumir PC / Steam
+          platform: resolvedPlatform,
+          platforms: Array.isArray(candidate?.platforms) ? candidate.platforms : [],
+          editionType: resolvedEdition,
+          gameRating11: null,
+          masterpieceJustification: '',
           hoursPlayed: Number(candidate?.hoursPlayed) || 0,
           completionType: candidate?.completionType || GAME_COMPLETION_TYPES[0],
-          storeOrLauncher: candidate?.storeOrLauncher || GAME_STORES_LAUNCHERS[0],
+          storeOrLauncher: String(candidate?.storeOrLauncher || '').trim(),
           buildOrCharacter: String(candidate?.buildOrCharacter || '').trim(),
+          // Música: suporta faixa individual (albumName, durationMs, nota 0-10) e álbum completo
+          albumName: String(candidate?.albumName || '').trim(),
+          durationMs: Number(candidate?.durationMs) > 0 ? Number(candidate.durationMs) : null,
+          trackRating10: null,
           favoriteTrack: String(candidate?.favoriteTrack || '').trim(),
           subgenre: String(candidate?.subgenre || '').trim(),
-          releaseFormat: candidate?.releaseFormat || MUSIC_RELEASE_FORMATS[0],
+          releaseFormat:
+            candidate?.releaseFormat ||
+            (normalizedType === 'track' ? 'Faixa Individual' : MUSIC_RELEASE_FORMATS[0]),
           listenCount: Number(candidate?.listenCount) || 0,
           tracks: Array.isArray(candidate?.tracks) ? candidate.tracks : [],
+          trackCount: Number(candidate?.trackCount) || null,
           atmosphere: [],
           tropes: [],
           tags: [],
@@ -662,6 +747,8 @@ export function AddScreen({
 
       if (
         candDomain === 'music' &&
+        normalizedType !== 'track' &&
+        normalizedType !== 'discography' &&
         (!Array.isArray(baseDomainDraft.tracks) || baseDomainDraft.tracks.length === 0)
       ) {
         setEnrichingCandidate(true);
@@ -856,14 +943,22 @@ export function AddScreen({
           isbnOrDoi: '',
           bookFormat: BOOK_FORMATS[0],
           favoriteScene: '',
-          platform: GAME_PLATFORMS[0],
+          platform: '',
+          platforms: [],
+          editionType: GAME_EDITION_TYPES[0],
+          gameRating11: null,
+          masterpieceJustification: '',
           hoursPlayed: 0,
           completionType: GAME_COMPLETION_TYPES[0],
-          storeOrLauncher: GAME_STORES_LAUNCHERS[0],
+          storeOrLauncher: '',
           buildOrCharacter: '',
+          albumName: '',
+          durationMs: null,
+          trackRating10: null,
           favoriteTrack: '',
           subgenre: '',
-          releaseFormat: MUSIC_RELEASE_FORMATS[0],
+          releaseFormat:
+            defaultType === 'track' ? 'Faixa Individual' : MUSIC_RELEASE_FORMATS[0],
           listenCount: 0,
           tracks: [],
           genresText: '',
@@ -929,9 +1024,9 @@ export function AddScreen({
     effectiveDomain === 'reading'
       ? 'Buscar livros, mangás, autores ou ISBN...'
       : effectiveDomain === 'games'
-        ? 'Buscar jogos, DLCs, modpacks ou plataformas...'
+        ? 'Buscar jogos, remakes, DLCs ou plataformas...'
         : effectiveDomain === 'music'
-          ? 'Buscar álbuns, EPs, artistas ou discos...'
+          ? 'Buscar faixas, álbuns, EPs, artistas ou shows...'
           : add.searchPlaceholder;
 
   const domainApiHint =
@@ -1016,7 +1111,7 @@ export function AddScreen({
               onChange={(e) => setQuery(e.target.value)}
               placeholder={searchPlaceholder}
               aria-label={searchPlaceholder}
-              className="min-h-[46px] w-full rounded-[6px] border border-line bg-card py-2 pl-9 pr-9 text-sm text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+              className="min-h-[46px] w-full rounded-[6px] border border-line bg-card py-2 pl-9 pr-10 text-sm text-ink placeholder:text-subtle focus:border-accent focus:outline-none [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
             />
             {query && (
               <button
@@ -1255,10 +1350,18 @@ export function AddScreen({
         </div>
       ) : (
         <section aria-label={add.resultsLabel} className="space-y-2.5">
-          <div className="flex items-center justify-between text-[11px] text-subtle tabular-nums">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-subtle tabular-nums">
             <span>
               {query.trim() ? add.resultsLabel : add.suggestionsLabel} ({results.length})
             </span>
+            {effectiveDomain !== 'cinema' && sourceStatusHint && (
+              <span
+                data-testid="domain-source-hint"
+                className="rounded-[3px] border border-line bg-card px-2 py-0.5 text-[10px] font-medium text-muted"
+              >
+                {sourceStatusHint}
+              </span>
+            )}
           </div>
 
           <div className="space-y-2.5">
@@ -1267,20 +1370,45 @@ export function AddScreen({
               const titles = getDisplayTitles(candidate, 'bilingual');
               const candDomain = normalizeDomainId(candidate.domain || effectiveDomain);
               const workLabel = getWorkTypeLabel(candidate, candDomain);
+              const cardOverride = gameCardOverrides[candidate.id] || {};
+              const activeGamePlatform =
+                cardOverride.platform !== undefined
+                  ? cardOverride.platform
+                  : candidate.platform || '';
+              const activeGameEdition =
+                cardOverride.editionType || candidate.editionType || GAME_EDITION_TYPES[0];
+              const apiPlatforms = Array.isArray(candidate.platforms)
+                ? candidate.platforms.filter(Boolean)
+                : [];
               const domainMetric =
                 candDomain === 'reading'
                   ? candidate.totalPages
                     ? `${candidate.totalPages} págs`
                     : ''
                   : candDomain === 'games'
-                    ? [candidate.platform, candidate.storeOrLauncher].filter(Boolean).join(' · ')
+                    ? [
+                        apiPlatforms.length > 0
+                          ? apiPlatforms.slice(0, 3).join(' / ')
+                          : activeGamePlatform || GAME_PLATFORM_UNSET_LABEL,
+                        candidate.storeOrLauncher || '',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
                     : candDomain === 'music'
-                      ? [
-                          candidate.subgenre,
-                          candidate.trackCount ? `${candidate.trackCount} faixas` : '',
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')
+                      ? candidate.workType === 'track'
+                        ? [
+                            candidate.albumName ? `Álbum: ${candidate.albumName}` : '',
+                            candidate.durationLabel || formatTrackDuration(candidate.durationMs),
+                            candidate.subgenre,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
+                        : [
+                            candidate.subgenre,
+                            candidate.trackCount ? `${candidate.trackCount} faixas` : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
                       : isEpisodicWork(candidate)
                         ? candidate.totalEpisodes
                           ? `${candidate.totalEpisodes} eps`
@@ -1334,6 +1462,11 @@ export function AddScreen({
                       </div>
 
                       <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                        {candDomain === 'games' && (
+                          <span className="rounded-[3px] border border-accent/45 bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold text-accent">
+                            {activeGameEdition}
+                          </span>
+                        )}
                         {searchRatings.map((rb) => (
                           <span
                             key={rb.id}
@@ -1363,6 +1496,52 @@ export function AddScreen({
                       <p className="line-clamp-2 text-[11px] leading-snug text-subtle">
                         {candidate.synopsis}
                       </p>
+                    )}
+
+                    {candDomain === 'games' && (
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                        <select
+                          aria-label={`Plataforma jogada de ${candidate.title}`}
+                          value={activeGamePlatform}
+                          onChange={(e) =>
+                            setGameCardOverrides((curr) => ({
+                              ...curr,
+                              [candidate.id]: {
+                                ...(curr[candidate.id] || {}),
+                                platform: e.target.value,
+                              },
+                            }))
+                          }
+                          className="min-h-[32px] rounded-[4px] border border-line bg-app px-2 text-[10px] font-medium text-ink focus:border-accent focus:outline-none"
+                        >
+                          <option value="">{GAME_PLATFORM_UNSET_LABEL}</option>
+                          {Array.from(new Set([...apiPlatforms, ...GAME_PLATFORMS])).map((plat) => (
+                            <option key={plat} value={plat}>
+                              {plat}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          aria-label={`Tipo de edição de ${candidate.title}`}
+                          value={activeGameEdition}
+                          onChange={(e) =>
+                            setGameCardOverrides((curr) => ({
+                              ...curr,
+                              [candidate.id]: {
+                                ...(curr[candidate.id] || {}),
+                                editionType: e.target.value,
+                              },
+                            }))
+                          }
+                          className="min-h-[32px] rounded-[4px] border border-line bg-app px-2 text-[10px] font-medium text-ink focus:border-accent focus:outline-none"
+                        >
+                          {GAME_EDITION_TYPES.map((ed) => (
+                            <option key={ed} value={ed}>
+                              {ed}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     )}
 
                     <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
@@ -1446,6 +1625,13 @@ export function AddScreen({
                   <h2 className="mt-0.5 line-clamp-2 text-sm font-semibold text-ink">
                     {draftItem.title}
                   </h2>
+                  {draftItem.originalTitle &&
+                    draftItem.originalTitle.toLowerCase() !==
+                      String(draftItem.title || '').toLowerCase() && (
+                      <p className="truncate text-[10px] italic text-subtle">
+                        Original: {draftItem.originalTitle}
+                      </p>
+                    )}
                   <p className="mt-0.5 text-[11px] tabular-nums text-muted">
                     {[
                       draftItem.creator || draftItem.director || draftItem.studio,
@@ -1676,6 +1862,21 @@ export function AddScreen({
                 </div>
 
                 <label className="block">
+                  <span className="mb-1 block text-[11px] text-muted">
+                    Título Original (opcional)
+                  </span>
+                  <input
+                    type="text"
+                    value={draftItem.originalTitle || ''}
+                    onChange={(e) =>
+                      setDraftItem((curr) => ({ ...curr, originalTitle: e.target.value }))
+                    }
+                    placeholder="Ex: Die Verwandlung / Metamorphosis"
+                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                  />
+                </label>
+
+                <label className="block">
                   <span className="mb-1 block text-[11px] text-muted">ISBN / DOI</span>
                   <input
                     type="text"
@@ -1706,10 +1907,51 @@ export function AddScreen({
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
                   Dados de {draftDomainMeta.shortLabel}
                 </p>
+
                 <div>
-                  <span className="mb-1 block text-[11px] text-muted">Plataforma</span>
+                  <span className="mb-1 block text-[11px] text-muted">Tipo de Edição</span>
                   <div className="flex flex-wrap gap-1">
-                    {GAME_PLATFORMS.map((plat) => (
+                    {GAME_EDITION_TYPES.map((ed) => (
+                      <button
+                        key={ed}
+                        type="button"
+                        onClick={() => setDraftItem((curr) => ({ ...curr, editionType: ed }))}
+                        className={`min-h-[34px] rounded-[4px] border px-2 text-[11px] font-medium ${
+                          (draftItem.editionType || GAME_EDITION_TYPES[0]) === ed
+                            ? 'border-accent bg-accent/15 text-ink'
+                            : 'border-line bg-card text-muted'
+                        }`}
+                      >
+                        {ed}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-muted">Plataforma Jogada</span>
+                    {Array.isArray(draftItem.platforms) && draftItem.platforms.length > 0 && (
+                      <span className="text-[10px] text-subtle">
+                        API: {draftItem.platforms.join(', ')}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setDraftItem((curr) => ({ ...curr, platform: '' }))}
+                      className={`min-h-[34px] rounded-[4px] border px-2 text-[11px] font-medium ${
+                        !draftItem.platform
+                          ? 'border-accent bg-accent/15 text-ink'
+                          : 'border-line bg-card text-muted'
+                      }`}
+                    >
+                      A definir
+                    </button>
+                    {Array.from(
+                      new Set([...(draftItem.platforms || []), ...GAME_PLATFORMS])
+                    ).map((plat) => (
                       <button
                         key={plat}
                         type="button"
@@ -1746,7 +1988,7 @@ export function AddScreen({
                   <label className="block">
                     <span className="mb-1 block text-[11px] text-muted">Loja / Launcher</span>
                     <select
-                      value={draftItem.storeOrLauncher || GAME_STORES_LAUNCHERS[0]}
+                      value={draftItem.storeOrLauncher || ''}
                       onChange={(e) =>
                         setDraftItem((curr) => ({
                           ...curr,
@@ -1755,6 +1997,7 @@ export function AddScreen({
                       }
                       className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2 text-xs text-ink focus:border-accent focus:outline-none"
                     >
+                      <option value="">A definir</option>
                       {GAME_STORES_LAUNCHERS.map((st) => (
                         <option key={st} value={st}>
                           {st}
@@ -1784,6 +2027,65 @@ export function AddScreen({
                       </button>
                     ))}
                   </div>
+                </div>
+
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-muted">Nota (0 a 11 · 11 = Obra-Prima)</span>
+                    <span className="text-[11px] font-semibold tabular-nums text-accent">
+                      {draftItem.gameRating11 !== null && draftItem.gameRating11 !== undefined
+                        ? `${draftItem.gameRating11}/11`
+                        : 'Sem nota'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => {
+                      const active = draftItem.gameRating11 === n;
+                      return (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() =>
+                            setDraftItem((curr) => ({
+                              ...curr,
+                              gameRating11: curr.gameRating11 === n ? null : n,
+                              rating:
+                                curr.gameRating11 === n ? null : Math.min(100, Math.round(n * 10)),
+                              ratingSource: curr.gameRating11 === n ? null : 'manual',
+                            }))
+                          }
+                          className={`min-h-[32px] min-w-[32px] rounded-[4px] border px-1.5 text-[11px] font-semibold tabular-nums ${
+                            active
+                              ? 'border-accent bg-accent text-accent-ink'
+                              : n === 11
+                                ? 'border-accent/45 bg-accent/10 text-accent hover:bg-accent/20'
+                                : 'border-line bg-card text-muted hover:text-ink'
+                          }`}
+                        >
+                          {n}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {draftItem.gameRating11 === 11 && (
+                    <label className="mt-2 block">
+                      <span className="mb-1 block text-[11px] text-accent">
+                        Justificativa da Obra-Prima (Nota 11 · opcional)
+                      </span>
+                      <input
+                        type="text"
+                        value={draftItem.masterpieceJustification || ''}
+                        onChange={(e) =>
+                          setDraftItem((curr) => ({
+                            ...curr,
+                            masterpieceJustification: e.target.value,
+                          }))
+                        }
+                        placeholder="Por que este jogo é um marco excepcional da sua vida..."
+                        className="min-h-[40px] w-full rounded-[4px] border border-accent/50 bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                  )}
                 </div>
 
                 <label className="block">
@@ -1825,6 +2127,87 @@ export function AddScreen({
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
                   Dados de {draftDomainMeta.shortLabel}
                 </p>
+
+                {draftItem.workType === 'track' && (
+                  <div className="space-y-2.5 rounded-[5px] border border-accent/35 bg-card p-2.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
+                      Faixa Individual
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] text-muted">Álbum vinculado</span>
+                        <input
+                          type="text"
+                          value={draftItem.albumName || ''}
+                          onChange={(e) =>
+                            setDraftItem((curr) => ({ ...curr, albumName: e.target.value }))
+                          }
+                          placeholder="Ex: Metallica (Black Album)"
+                          className="min-h-[38px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] text-muted">Duração</span>
+                        <input
+                          type="text"
+                          value={
+                            draftItem.durationMs
+                              ? formatTrackDuration(draftItem.durationMs)
+                              : ''
+                          }
+                          onChange={(e) => {
+                            const raw = e.target.value.trim();
+                            const parts = raw.split(':').map(Number);
+                            const ms =
+                              parts.length === 2 && parts.every((n) => Number.isFinite(n) && n >= 0)
+                                ? (parts[0] * 60 + parts[1]) * 1000
+                                : null;
+                            setDraftItem((curr) => ({ ...curr, durationMs: ms }));
+                          }}
+                          placeholder="5:24"
+                          className="min-h-[38px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                    </div>
+                    <div>
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[11px] text-muted">Nota da Faixa (0–10)</span>
+                        <span className="text-[11px] font-semibold tabular-nums text-accent">
+                          {draftItem.trackRating10 !== null && draftItem.trackRating10 !== undefined
+                            ? `${draftItem.trackRating10}/10`
+                            : 'Sem nota'}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => {
+                          const active = draftItem.trackRating10 === n;
+                          return (
+                            <button
+                              key={n}
+                              type="button"
+                              onClick={() =>
+                                setDraftItem((curr) => ({
+                                  ...curr,
+                                  trackRating10: curr.trackRating10 === n ? null : n,
+                                  rating: curr.trackRating10 === n ? null : n * 10,
+                                  ratingSource: curr.trackRating10 === n ? null : 'manual',
+                                }))
+                              }
+                              className={`min-h-[32px] min-w-[32px] rounded-[4px] border px-1.5 text-[11px] font-semibold tabular-nums ${
+                                active
+                                  ? 'border-accent bg-accent text-accent-ink'
+                                  : 'border-line bg-app text-muted hover:text-ink'
+                              }`}
+                            >
+                              {n}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div>
                   <span className="mb-1 block text-[11px] text-muted">Formato de lançamento</span>
                   <div className="flex flex-wrap gap-1.5">
@@ -1877,49 +2260,58 @@ export function AddScreen({
                   </label>
                 </div>
 
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-muted">Faixa favorita</span>
-                  <input
-                    type="text"
-                    value={draftItem.favoriteTrack || ''}
-                    onChange={(e) =>
-                      setDraftItem((curr) => ({ ...curr, favoriteTrack: e.target.value }))
-                    }
-                    placeholder="Digite ou selecione abaixo..."
-                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
-
-                {Array.isArray(draftItem.tracks) && draftItem.tracks.length > 0 && (
-                  <div className="space-y-1">
-                    <span className="block text-[10px] font-semibold uppercase tracking-wider text-subtle">
-                      Tracklist ({draftItem.tracks.length} faixas — clique para favoritar)
-                    </span>
-                    <div className="max-h-32 overflow-y-auto space-y-1 rounded-[4px] border border-line bg-card p-1.5 no-scrollbar">
-                      {draftItem.tracks.map((tr, idx) => {
-                        const isFav = draftItem.favoriteTrack === tr.title;
-                        return (
-                          <button
-                            key={`${tr.number || idx}-${tr.title}`}
-                            type="button"
-                            onClick={() =>
-                              setDraftItem((curr) => ({ ...curr, favoriteTrack: tr.title }))
-                            }
-                            className={`flex w-full items-center justify-between rounded-[3px] px-2 py-1 text-left text-[11px] transition-colors ${
-                              isFav
-                                ? 'bg-accent/15 font-semibold text-accent'
-                                : 'text-ink hover:bg-app'
-                            }`}
-                          >
-                            <span className="truncate">
-                              {tr.number || idx + 1}. {tr.title}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
+                {draftItem.workType !== 'track' && (
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] text-muted">Faixa favorita</span>
+                    <input
+                      type="text"
+                      value={draftItem.favoriteTrack || ''}
+                      onChange={(e) =>
+                        setDraftItem((curr) => ({ ...curr, favoriteTrack: e.target.value }))
+                      }
+                      placeholder="Digite ou selecione abaixo..."
+                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
                 )}
+
+                {draftItem.workType !== 'track' &&
+                  Array.isArray(draftItem.tracks) &&
+                  draftItem.tracks.length > 0 && (
+                    <div className="space-y-1">
+                      <span className="block text-[10px] font-semibold uppercase tracking-wider text-subtle">
+                        Tracklist ({draftItem.tracks.length} faixas — clique para favoritar)
+                      </span>
+                      <div className="max-h-32 overflow-y-auto space-y-1 rounded-[4px] border border-line bg-card p-1.5 no-scrollbar">
+                        {draftItem.tracks.map((tr, idx) => {
+                          const isFav = draftItem.favoriteTrack === tr.title;
+                          return (
+                            <button
+                              key={`${tr.number || idx}-${tr.title}`}
+                              type="button"
+                              onClick={() =>
+                                setDraftItem((curr) => ({ ...curr, favoriteTrack: tr.title }))
+                              }
+                              className={`flex w-full items-center justify-between rounded-[3px] px-2 py-1 text-left text-[11px] transition-colors ${
+                                isFav
+                                  ? 'bg-accent/15 font-semibold text-accent'
+                                  : 'text-ink hover:bg-app'
+                              }`}
+                            >
+                              <span className="truncate">
+                                {tr.number || idx + 1}. {tr.title}
+                              </span>
+                              {tr.durationMs && (
+                                <span className="ml-2 shrink-0 text-[10px] tabular-nums text-subtle">
+                                  {formatTrackDuration(tr.durationMs)}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
               </div>
             )}
 
@@ -2194,6 +2586,20 @@ export function AddScreen({
                   </label>
                 </div>
                 <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">
+                    Título Original (opcional)
+                  </span>
+                  <input
+                    type="text"
+                    value={manualDraft.originalTitle || ''}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({ ...curr, originalTitle: e.target.value }))
+                    }
+                    placeholder="Ex: Die Verwandlung"
+                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                  />
+                </label>
+                <label className="block">
                   <span className="mb-1 block text-xs font-medium text-muted">ISBN / DOI</span>
                   <input
                     type="text"
@@ -2211,15 +2617,16 @@ export function AddScreen({
                 <div className="grid grid-cols-2 gap-2">
                   <label className="block">
                     <span className="mb-1 block text-xs font-medium text-muted">
-                      Plataforma
+                      Plataforma Jogada
                     </span>
                     <select
-                      value={manualDraft.platform || GAME_PLATFORMS[0]}
+                      value={manualDraft.platform || ''}
                       onChange={(e) =>
                         setManualDraft((curr) => ({ ...curr, platform: e.target.value }))
                       }
                       className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
                     >
+                      <option value="">{GAME_PLATFORM_UNSET_LABEL}</option>
                       {GAME_PLATFORMS.map((plat) => (
                         <option key={plat} value={plat}>
                           {plat}
@@ -2229,10 +2636,30 @@ export function AddScreen({
                   </label>
                   <label className="block">
                     <span className="mb-1 block text-xs font-medium text-muted">
+                      Tipo de Edição
+                    </span>
+                    <select
+                      value={manualDraft.editionType || GAME_EDITION_TYPES[0]}
+                      onChange={(e) =>
+                        setManualDraft((curr) => ({ ...curr, editionType: e.target.value }))
+                      }
+                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                    >
+                      {GAME_EDITION_TYPES.map((ed) => (
+                        <option key={ed} value={ed}>
+                          {ed}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-muted">
                       Loja / Launcher
                     </span>
                     <select
-                      value={manualDraft.storeOrLauncher || GAME_STORES_LAUNCHERS[0]}
+                      value={manualDraft.storeOrLauncher || ''}
                       onChange={(e) =>
                         setManualDraft((curr) => ({
                           ...curr,
@@ -2241,6 +2668,7 @@ export function AddScreen({
                       }
                       className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
                     >
+                      <option value="">A definir</option>
                       {GAME_STORES_LAUNCHERS.map((st) => (
                         <option key={st} value={st}>
                           {st}
@@ -2248,8 +2676,6 @@ export function AddScreen({
                       ))}
                     </select>
                   </label>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
                   <label className="block">
                     <span className="mb-1 block text-xs font-medium text-muted">
                       Conclusão
@@ -2271,6 +2697,8 @@ export function AddScreen({
                       ))}
                     </select>
                   </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
                   <label className="block">
                     <span className="mb-1 block text-xs font-medium text-muted">
                       Horas jogadas
@@ -2289,10 +2717,107 @@ export function AddScreen({
                       className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
                     />
                   </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-muted">
+                      Nota (0–11)
+                    </span>
+                    <select
+                      value={
+                        manualDraft.gameRating11 !== null &&
+                        manualDraft.gameRating11 !== undefined
+                          ? String(manualDraft.gameRating11)
+                          : ''
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value === '' ? null : Number(e.target.value);
+                        setManualDraft((curr) => ({
+                          ...curr,
+                          gameRating11: val,
+                          rating: val !== null ? Math.min(100, Math.round(val * 10)) : null,
+                          ratingSource: val !== null ? 'manual' : null,
+                        }));
+                      }}
+                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                    >
+                      <option value="">Sem nota</option>
+                      {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => (
+                        <option key={n} value={n}>
+                          {n === 11 ? '11 · Obra-Prima da Vida' : `${n}/11`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
+                {manualDraft.gameRating11 === 11 && (
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-accent">
+                      Justificativa da Nota 11 (opcional)
+                    </span>
+                    <input
+                      type="text"
+                      value={manualDraft.masterpieceJustification || ''}
+                      onChange={(e) =>
+                        setManualDraft((curr) => ({
+                          ...curr,
+                          masterpieceJustification: e.target.value,
+                        }))
+                      }
+                      placeholder="Por que é uma obra-prima excepcional da sua vida..."
+                      className="min-h-[40px] w-full rounded-[4px] border border-accent/50 bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                )}
               </div>
             ) : (
               <div className="space-y-2.5">
+                {manualDraft.workType === 'track' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        Álbum vinculado
+                      </span>
+                      <input
+                        type="text"
+                        value={manualDraft.albumName || ''}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({ ...curr, albumName: e.target.value }))
+                        }
+                        placeholder="Ex: Metallica (1991)"
+                        className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        Nota da Faixa (0–10)
+                      </span>
+                      <select
+                        value={
+                          manualDraft.trackRating10 !== null &&
+                          manualDraft.trackRating10 !== undefined
+                            ? String(manualDraft.trackRating10)
+                            : ''
+                        }
+                        onChange={(e) => {
+                          const val = e.target.value === '' ? null : Number(e.target.value);
+                          setManualDraft((curr) => ({
+                            ...curr,
+                            trackRating10: val,
+                            rating: val !== null ? Math.round(val * 10) : null,
+                            ratingSource: val !== null ? 'manual' : null,
+                          }));
+                        }}
+                        className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                      >
+                        <option value="">Sem nota</option>
+                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                          <option key={n} value={n}>
+                            {n}/10
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                   <label className="block">
                     <span className="mb-1 block text-xs font-medium text-muted">
@@ -2330,20 +2855,22 @@ export function AddScreen({
                     />
                   </label>
                 </div>
-                <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-muted">
-                    Faixa favorita
-                  </span>
-                  <input
-                    type="text"
-                    value={manualDraft.favoriteTrack || ''}
-                    onChange={(e) =>
-                      setManualDraft((curr) => ({ ...curr, favoriteTrack: e.target.value }))
-                    }
-                    placeholder="Opcional"
-                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
+                {manualDraft.workType !== 'track' && (
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-muted">
+                      Faixa favorita
+                    </span>
+                    <input
+                      type="text"
+                      value={manualDraft.favoriteTrack || ''}
+                      onChange={(e) =>
+                        setManualDraft((curr) => ({ ...curr, favoriteTrack: e.target.value }))
+                      }
+                      placeholder="Opcional"
+                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                )}
               </div>
             )}
 

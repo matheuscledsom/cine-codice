@@ -235,6 +235,7 @@ export function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [importCatalogOpen, setImportCatalogOpen] = useState(false);
   const [wrappedOpen, setWrappedOpen] = useState(false);
+  const [wrappedScope, setWrappedScope] = useState('domain');
   const [globalRouletteOpen, setGlobalRouletteOpen] = useState(false);
   const [aboutCreditsOpen, setAboutCreditsOpen] = useState(false);
   const [cloudModalOpen, setCloudModalOpen] = useState(false);
@@ -2036,10 +2037,16 @@ export function App() {
               {activeTab === 'stats' && (
                 <StatsScreen
                   items={items}
+                  activeDomain={activeDomain}
+                  onSelectDomain={handleSelectDomain}
+                  themeMode={mode}
                   readingSessions={readingSessions}
                   streakHistory={history}
                   dailyLogs={dailyLogs}
-                  onOpenWrapped={() => setWrappedOpen(true)}
+                  onOpenWrapped={(scopeArg) => {
+                    setWrappedScope(scopeArg === 'global' ? 'global' : 'domain');
+                    setWrappedOpen(true);
+                  }}
                 />
               )}
               {activeTab === 'add' && (
@@ -2355,6 +2362,8 @@ export function App() {
               items={items}
               profile={profile}
               streakCount={streakCount}
+              activeDomain={activeDomain}
+              scope={wrappedScope}
             />
           )}
 

@@ -1,4 +1,5 @@
 import {
+  GAME_PLATFORM_UNSET_LABEL,
   domainConfig,
   getWorkTypeLabel,
   inferDomainFromWork,
@@ -343,6 +344,119 @@ export function getSeasonEpisodeCount(item = {}, seasonNumber = 1) {
   return 12;
 }
 
+export function computeStrictCompletionProgress(item) {
+  if (!item) {
+    return { percent: null, isOpenProgress: true, label: 'Progresso aberto' };
+  }
+  if (item.status === 'completed') {
+    return { percent: 100, isOpenProgress: false, label: 'Concluído (100%)' };
+  }
+
+  const domain = inferDomainFromWork(item);
+
+  if (domain === 'reading') {
+    const pagesRead = Math.max(0, Number(item.pagesRead) || 0);
+    const totalPages = Number(item.totalPages) || 0;
+    const chaptersRead = Math.max(0, Number(item.chaptersRead) || 0);
+    if (totalPages > 0) {
+      const pct = Math.max(0, Math.min(100, Math.round((pagesRead / totalPages) * 100)));
+      return {
+        percent: pct,
+        isOpenProgress: false,
+        label: `Pág. ${pagesRead}/${totalPages} (${pct}%)`,
+      };
+    }
+    if (pagesRead > 0) {
+      return {
+        percent: null,
+        isOpenProgress: true,
+        label: `${pagesRead} págs · Progresso aberto`,
+      };
+    }
+    if (chaptersRead > 0) {
+      return {
+        percent: null,
+        isOpenProgress: true,
+        label: `${chaptersRead} cap. · Progresso aberto`,
+      };
+    }
+    return { percent: null, isOpenProgress: true, label: 'Progresso aberto' };
+  }
+
+  if (domain === 'games') {
+    const hours = Math.max(0, Number(item.hoursPlayed) || 0);
+    if (
+      item.progressPercent !== null &&
+      item.progressPercent !== undefined &&
+      item.progressPercent !== '' &&
+      Number.isFinite(Number(item.progressPercent)) &&
+      Number(item.progressPercent) > 0
+    ) {
+      const pct = roundProgressPct(item.progressPercent);
+      return { percent: pct, isOpenProgress: false, label: `${hours}h (${pct}%)` };
+    }
+    return {
+      percent: null,
+      isOpenProgress: true,
+      label: hours > 0 ? `${hours}h · Progresso aberto` : 'Progresso aberto',
+    };
+  }
+
+  if (domain === 'music') {
+    const listens = Math.max(0, Number(item.listenCount) || 0);
+    const totalTracks =
+      (Array.isArray(item.tracks) && item.tracks.length) || Number(item.trackCount) || 0;
+    if (totalTracks > 0 && listens > 0) {
+      return {
+        percent: null,
+        isOpenProgress: false,
+        label: `${listens} ${listens === 1 ? 'escuta' : 'escutas'} · ${totalTracks} faixas`,
+      };
+    }
+    return {
+      percent: null,
+      isOpenProgress: true,
+      label: listens > 0 ? `${listens} escutas · Progresso aberto` : 'Progresso aberto',
+    };
+  }
+
+  if (isEpisodicWork(item)) {
+    const totalEpisodes = Number(item.totalEpisodes) || 0;
+    const watchedCount = getWatchedEpisodesCount(item);
+    if (totalEpisodes > 0) {
+      const pct = calculateEpisodicProgress(item);
+      return {
+        percent: pct,
+        isOpenProgress: false,
+        label: `${watchedCount}/${totalEpisodes} eps (${pct}%)`,
+      };
+    }
+    return {
+      percent: null,
+      isOpenProgress: true,
+      label: `${watchedCount} eps · Progresso aberto`,
+    };
+  }
+
+  const totalSec =
+    Number(item.totalSeconds) ||
+    (Number(item.durationMinutes) > 0 ? Number(item.durationMinutes) * 60 : 0);
+  const currentSec = Math.max(0, Number(item.currentSeconds) || 0);
+  if (totalSec > 0) {
+    const pct = calculateMovieProgress(currentSec, totalSec);
+    return {
+      percent: pct,
+      isOpenProgress: false,
+      label: `${formatSecondsToHms(currentSec)} / ${formatSecondsToHms(totalSec)} (${pct}%)`,
+    };
+  }
+  return {
+    percent: null,
+    isOpenProgress: true,
+    label: currentSec > 0 ? `${formatSecondsToHms(currentSec)} · Progresso aberto` : 'Progresso aberto',
+  };
+}
+
 export function formatCatalogCardFormatBadge(item = {}) {
   const domain = inferDomainFromWork(item);
 
@@ -380,7 +494,8 @@ export function formatCatalogCardFormatBadge(item = {}) {
 
   if (domain === 'games') {
     const shortType = getWorkTypeLabel(item, 'games');
-    const platform = String(item?.platform || '').trim() || 'PC';
+    const platform = String(item?.platform || '').trim() || GAME_PLATFORM_UNSET_LABEL;
+    const edition = String(item?.editionType || '').trim();
     const hours = Math.max(0, Number(item?.hoursPlayed) || 0);
     const compRaw = String(item?.completionType || '').trim();
     const compShort = compRaw.includes('100%')
@@ -391,6 +506,7 @@ export function formatCatalogCardFormatBadge(item = {}) {
           ? 'Ranked'
           : compRaw || '';
     const parts = [platform];
+    if (edition && edition !== 'Original') parts.push(edition);
     if (hours > 0) parts.push(`${hours}h`);
     if (compShort) parts.push(compShort);
     return {
@@ -398,12 +514,28 @@ export function formatCatalogCardFormatBadge(item = {}) {
       workType: item?.workType || 'game',
       label: parts.join(' · '),
       shortType,
-      detail: compShort,
+      detail: compShort || edition,
     };
   }
 
   if (domain === 'music') {
     const shortType = getWorkTypeLabel(item, 'music');
+    if (item?.workType === 'track') {
+      const ms = Number(item?.durationMs);
+      let dur = '';
+      if (Number.isFinite(ms) && ms > 0) {
+        const sec = Math.round(ms / 1000);
+        dur = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+      }
+      const detail = dur || String(item?.albumName || '').trim() || '';
+      return {
+        domain,
+        workType: 'track',
+        label: detail ? `${shortType} · ${detail}` : shortType,
+        shortType,
+        detail,
+      };
+    }
     const favTrack = String(item?.favoriteTrack || '').trim();
     const subgenre = String(item?.subgenre || '').trim();
     const listens = Math.max(0, Number(item?.listenCount) || 0);
@@ -619,30 +751,39 @@ export function formatFlexibleProgressMetric(item) {
       return `Pág. ${pagesRead}/${totalPages} (${pct}%)`;
     }
     if (chaptersRead > 0) {
-      return `Cap. ${chaptersRead}`;
+      return `Cap. ${chaptersRead} · Progresso aberto`;
     }
     if (pagesRead > 0) {
-      return `${pagesRead} págs lidas`;
+      return `${pagesRead} págs · Progresso aberto`;
     }
     return item.bookFormat || 'Não iniciado';
   }
 
   if (domain === 'games') {
-    const platform = String(item.platform || '').trim();
+    const platform = String(item.platform || '').trim() || GAME_PLATFORM_UNSET_LABEL;
+    const edition = String(item.editionType || '').trim();
     const hours = Math.max(0, Number(item.hoursPlayed) || 0);
     const comp = String(item.completionType || '').trim();
-    const parts = [platform || 'PC', hours > 0 ? `${hours}h` : null, comp || null].filter(Boolean);
+    const parts = [
+      platform,
+      edition && edition !== 'Original' ? edition : null,
+      hours > 0 ? `${hours}h` : null,
+      comp || null,
+    ].filter(Boolean);
     return parts.join(' · ') || 'Não iniciado';
   }
 
   if (domain === 'music') {
+    const isTrack = item.workType === 'track';
+    const albumName = String(item.albumName || '').trim();
     const fav = String(item.favoriteTrack || '').trim();
     const listens = Math.max(0, Number(item.listenCount) || 0);
     const relFmt = String(item.releaseFormat || '').trim();
     const parts = [
-      fav ? `Faixa: ${fav}` : null,
+      isTrack && albumName ? `Álbum: ${albumName}` : null,
+      !isTrack && fav ? `Faixa: ${fav}` : null,
       listens > 0 ? `${listens} ${listens === 1 ? 'escuta' : 'escutas'}` : null,
-      !fav && relFmt ? relFmt : null,
+      !fav && !albumName && relFmt ? relFmt : null,
     ].filter(Boolean);
     return parts.join(' · ') || 'Na fila';
   }
@@ -655,7 +796,7 @@ export function formatFlexibleProgressMetric(item) {
     const pct = calculateWorkProgress(item);
     return eTot > 0
       ? `Temp. ${sCur}/${sTot} · Ep. ${eCur}/${eTot} (${pct}%)`
-      : `Temp. ${sCur}/${sTot} · Ep. ${eCur}`;
+      : `Temp. ${sCur}/${sTot} · Ep. ${eCur} · Progresso aberto`;
   }
 
   const totalSec =

@@ -32,7 +32,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BOOK_FORMATS,
   GAME_COMPLETION_TYPES,
+  GAME_EDITION_TYPES,
   GAME_PLATFORMS,
+  GAME_PLATFORM_UNSET_LABEL,
   GAME_STORES_LAUNCHERS,
   MUSIC_RELEASE_FORMATS,
   domainConfig,
@@ -498,7 +500,7 @@ export function WorkDetailPage({
       });
       playTactileSound('page');
       showToast({
-        message: `${item.title}: ${nextHours}h jogadas (${item.platform || 'PC'})`,
+        message: `${item.title}: ${nextHours}h jogadas (${item.platform || GAME_PLATFORM_UNSET_LABEL})`,
         type: 'success',
       });
       return;
@@ -872,7 +874,7 @@ export function WorkDetailPage({
                 <>
                   <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
                   <span>
-                    +1h jogada ({Number(item.hoursPlayed || 0)}h · {item.platform || 'PC'})
+                    +1h jogada ({Number(item.hoursPlayed || 0)}h · {item.platform || GAME_PLATFORM_UNSET_LABEL})
                   </span>
                 </>
               ) : workDomain === 'music' ? (
@@ -1173,7 +1175,13 @@ export function WorkDetailPage({
                         <div className="rounded-lg border border-line bg-app p-2.5">
                           <dt className="text-[10px] text-subtle">Plataforma</dt>
                           <dd className="mt-0.5 font-semibold text-ink">
-                            {item.platform || 'PC'}
+                            {item.platform || GAME_PLATFORM_UNSET_LABEL}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Edição</dt>
+                          <dd className="mt-0.5 font-semibold text-accent">
+                            {item.editionType || GAME_EDITION_TYPES[0]}
                           </dd>
                         </div>
                         <div className="rounded-lg border border-line bg-app p-2.5">
@@ -1188,12 +1196,22 @@ export function WorkDetailPage({
                             {item.completionType || 'História Principal'}
                           </dd>
                         </div>
-                        <div className="rounded-lg border border-line bg-app p-2.5">
+                        <div className="col-span-2 rounded-lg border border-line bg-app p-2.5">
                           <dt className="text-[10px] text-subtle">Launcher / Build</dt>
                           <dd className="mt-0.5 truncate font-semibold text-ink">
                             {[item.storeOrLauncher, item.buildOrCharacter].filter(Boolean).join(' · ') || '—'}
                           </dd>
                         </div>
+                        {item.masterpieceJustification && (
+                          <div className="col-span-2 rounded-lg border border-accent/40 bg-accent/10 p-2.5">
+                            <dt className="text-[10px] font-semibold text-accent">
+                              Justificativa · Nota 11 (Obra-Prima)
+                            </dt>
+                            <dd className="mt-0.5 text-xs text-ink">
+                              {item.masterpieceJustification}
+                            </dd>
+                          </div>
+                        )}
                       </dl>
                     )}
                     {workDomain === 'music' && (
@@ -1201,7 +1219,11 @@ export function WorkDetailPage({
                         <div className="rounded-lg border border-line bg-app p-2.5">
                           <dt className="text-[10px] text-subtle">Formato / Subgênero</dt>
                           <dd className="mt-0.5 truncate font-semibold text-ink">
-                            {[item.releaseFormat || 'Álbum de Estúdio', item.subgenre]
+                            {[
+                              item.releaseFormat ||
+                                (item.workType === 'track' ? 'Faixa Individual' : 'Álbum de Estúdio'),
+                              item.subgenre,
+                            ]
                               .filter(Boolean)
                               .join(' · ')}
                           </dd>
@@ -1212,12 +1234,21 @@ export function WorkDetailPage({
                             {Number(item.listenCount || 0)} escutas
                           </dd>
                         </div>
-                        <div className="col-span-2 rounded-lg border border-line bg-app p-2.5">
-                          <dt className="text-[10px] text-subtle">Faixa favorita</dt>
-                          <dd className="mt-0.5 truncate font-semibold text-accent">
-                            {item.favoriteTrack || 'Toque na aba Faixas & Escutas para escolher'}
-                          </dd>
-                        </div>
+                        {item.workType === 'track' ? (
+                          <div className="col-span-2 rounded-lg border border-line bg-app p-2.5">
+                            <dt className="text-[10px] text-subtle">Álbum vinculado</dt>
+                            <dd className="mt-0.5 truncate font-semibold text-accent">
+                              {item.albumName || 'Single / Faixa avulsa'}
+                            </dd>
+                          </div>
+                        ) : (
+                          <div className="col-span-2 rounded-lg border border-line bg-app p-2.5">
+                            <dt className="text-[10px] text-subtle">Faixa favorita</dt>
+                            <dd className="mt-0.5 truncate font-semibold text-accent">
+                              {item.favoriteTrack || 'Toque na aba Faixas & Escutas para escolher'}
+                            </dd>
+                          </div>
+                        )}
                       </dl>
                     )}
                   </div>
@@ -1234,54 +1265,134 @@ export function WorkDetailPage({
                       Sua Avaliação Pessoal
                     </h2>
                     <p className="mt-0.5 text-xs text-subtle">
-                      Toque para avaliar na escala 0–100
+                      {workDomain === 'games'
+                        ? 'Escala 0–11 (11 = obra-prima excepcional da vida)'
+                        : workDomain === 'music' && item.workType === 'track'
+                          ? 'Toque para avaliar a faixa na escala 0–10'
+                          : 'Toque para avaliar na escala 0–100'}
                     </p>
                   </div>
 
                   <div className="flex items-center gap-2">
                     <span className="text-2xl font-bold tabular-nums text-accent">
-                      {typeof item.rating === 'number' ? `${item.rating}/100` : '—'}
+                      {workDomain === 'games'
+                        ? item.gameRating11 !== null && item.gameRating11 !== undefined
+                          ? `${item.gameRating11}/11`
+                          : typeof item.rating === 'number'
+                            ? `${Math.round((item.rating / 10) * 10) / 10}/11`
+                            : '—'
+                        : workDomain === 'music' && item.workType === 'track'
+                          ? item.trackRating10 !== null && item.trackRating10 !== undefined
+                            ? `${item.trackRating10}/10`
+                            : typeof item.rating === 'number'
+                              ? `${Math.round((item.rating / 10) * 10) / 10}/10`
+                              : '—'
+                          : typeof item.rating === 'number'
+                            ? `${item.rating}/100`
+                            : '—'}
                     </span>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-1.5">
-                  {QUICK_PERSONAL_SCORES.map((score) => {
-                    const active = item.rating === score && item.ratingSource !== 'legacy-default';
-                    return (
-                      <button
-                        key={score}
-                        type="button"
-                        onClick={() => handleSetPersonalScore(score)}
-                        className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
-                          active
-                            ? 'border-accent bg-accent text-accent-ink'
-                            : 'border-line bg-app text-ink hover:border-accent'
-                        }`}
-                      >
-                        {score}
-                      </button>
-                    );
-                  })}
-                  {typeof item.rating === 'number' && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => handleSetPersonalScore(item.rating - 1)}
-                        className="min-h-[44px] rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-muted hover:border-accent hover:text-ink"
-                      >
-                        -1
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSetPersonalScore(item.rating + 1)}
-                        className="min-h-[44px] rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-muted hover:border-accent hover:text-ink"
-                      >
-                        +1
-                      </button>
-                    </>
-                  )}
-                </div>
+                {workDomain === 'games' ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((score11) => {
+                      const active = item.gameRating11 === score11;
+                      return (
+                        <button
+                          key={score11}
+                          type="button"
+                          onClick={() => {
+                            const mapped100 = Math.min(100, Math.round(score11 * 10));
+                            onUpdateItem(item.id, {
+                              gameRating11: score11,
+                              rating: mapped100,
+                              ratingSource: 'manual',
+                              verdict: score11 === 11 ? 'Obra-Prima' : getVerdictForScore(mapped100),
+                            });
+                            playTactileSound('page');
+                          }}
+                          className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
+                            active
+                              ? 'border-accent bg-accent text-accent-ink'
+                              : score11 === 11
+                                ? 'border-accent/55 bg-accent/10 text-accent hover:bg-accent/20'
+                                : 'border-line bg-app text-ink hover:border-accent'
+                          }`}
+                        >
+                          {score11 === 11 ? '11 · Vida' : score11}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : workDomain === 'music' && item.workType === 'track' ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((score10) => {
+                      const active = item.trackRating10 === score10;
+                      return (
+                        <button
+                          key={score10}
+                          type="button"
+                          onClick={() => {
+                            const mapped100 = score10 * 10;
+                            onUpdateItem(item.id, {
+                              trackRating10: score10,
+                              rating: mapped100,
+                              ratingSource: 'manual',
+                              verdict: getVerdictForScore(mapped100),
+                            });
+                            playTactileSound('page');
+                          }}
+                          className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
+                            active
+                              ? 'border-accent bg-accent text-accent-ink'
+                              : 'border-line bg-app text-ink hover:border-accent'
+                          }`}
+                        >
+                          {score10}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {QUICK_PERSONAL_SCORES.map((score) => {
+                      const active = item.rating === score && item.ratingSource !== 'legacy-default';
+                      return (
+                        <button
+                          key={score}
+                          type="button"
+                          onClick={() => handleSetPersonalScore(score)}
+                          className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
+                            active
+                              ? 'border-accent bg-accent text-accent-ink'
+                              : 'border-line bg-app text-ink hover:border-accent'
+                          }`}
+                        >
+                          {score}
+                        </button>
+                      );
+                    })}
+                    {typeof item.rating === 'number' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleSetPersonalScore(item.rating - 1)}
+                          className="min-h-[44px] rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-muted hover:border-accent hover:text-ink"
+                        >
+                          -1
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSetPersonalScore(item.rating + 1)}
+                          className="min-h-[44px] rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-muted hover:border-accent hover:text-ink"
+                        >
+                          +1
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
                   <button
@@ -1562,11 +1673,16 @@ export function WorkDetailPage({
                     <h2 className="text-sm font-semibold text-ink">
                       Plataforma &amp; Campanha ·{' '}
                       <span className="tabular-nums text-accent">
-                        {item.platform || 'PC'} · {Number(item.hoursPlayed || 0)}h
+                        {item.platform || GAME_PLATFORM_UNSET_LABEL} · {Number(item.hoursPlayed || 0)}h
                       </span>
                     </h2>
                     <p className="mt-0.5 text-xs text-muted">
-                      {[item.completionType || 'História Principal', item.storeOrLauncher, item.buildOrCharacter]
+                      {[
+                        item.editionType || GAME_EDITION_TYPES[0],
+                        item.completionType || 'História Principal',
+                        item.storeOrLauncher,
+                        item.buildOrCharacter,
+                      ]
                         .filter(Boolean)
                         .join(' · ')}
                     </p>
@@ -1612,21 +1728,54 @@ export function WorkDetailPage({
                 <div className="space-y-3 border-t border-line pt-4">
                   <div>
                     <span className="mb-1.5 block text-[11px] font-medium text-muted">
-                      Plataforma
+                      Plataforma Jogada
                     </span>
                     <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => onUpdateItem(item.id, { platform: '' })}
+                        className={`min-h-[36px] rounded-lg border px-2.5 text-xs font-medium transition-colors ${
+                          !item.platform
+                            ? 'border-accent bg-accent/15 text-accent'
+                            : 'border-line bg-app text-muted hover:text-ink'
+                        }`}
+                      >
+                        A definir
+                      </button>
                       {GAME_PLATFORMS.map((p) => (
                         <button
                           key={p}
                           type="button"
                           onClick={() => onUpdateItem(item.id, { platform: p })}
                           className={`min-h-[36px] rounded-lg border px-2.5 text-xs font-medium transition-colors ${
-                            (item.platform || GAME_PLATFORMS[0]) === p
+                            item.platform === p
                               ? 'border-accent bg-accent/15 text-accent'
                               : 'border-line bg-app text-muted hover:text-ink'
                           }`}
                         >
                           {p}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="mb-1.5 block text-[11px] font-medium text-muted">
+                      Tipo de Edição
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {GAME_EDITION_TYPES.map((ed) => (
+                        <button
+                          key={ed}
+                          type="button"
+                          onClick={() => onUpdateItem(item.id, { editionType: ed })}
+                          className={`min-h-[36px] rounded-lg border px-2.5 text-xs font-medium transition-colors ${
+                            (item.editionType || GAME_EDITION_TYPES[0]) === ed
+                              ? 'border-accent bg-accent/15 text-accent'
+                              : 'border-line bg-app text-muted hover:text-ink'
+                          }`}
+                        >
+                          {ed}
                         </button>
                       ))}
                     </div>
@@ -2161,13 +2310,14 @@ export function WorkDetailPage({
                 <>
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Plataforma
+                      Plataforma Jogada
                     </span>
                     <select
-                      value={item.platform || GAME_PLATFORMS[0]}
+                      value={item.platform || ''}
                       onChange={(e) => onUpdateItem(item.id, { platform: e.target.value })}
                       className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
                     >
+                      <option value="">{GAME_PLATFORM_UNSET_LABEL}</option>
                       {GAME_PLATFORMS.map((p) => (
                         <option key={p} value={p}>
                           {p}
@@ -2177,15 +2327,32 @@ export function WorkDetailPage({
                   </label>
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Tipo de Edição
+                    </span>
+                    <select
+                      value={item.editionType || GAME_EDITION_TYPES[0]}
+                      onChange={(e) => onUpdateItem(item.id, { editionType: e.target.value })}
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    >
+                      {GAME_EDITION_TYPES.map((ed) => (
+                        <option key={ed} value={ed}>
+                          {ed}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
                       Loja / Launcher
                     </span>
                     <select
-                      value={item.storeOrLauncher || GAME_STORES_LAUNCHERS[0]}
+                      value={item.storeOrLauncher || ''}
                       onChange={(e) =>
                         onUpdateItem(item.id, { storeOrLauncher: e.target.value })
                       }
                       className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
                     >
+                      <option value="">A definir</option>
                       {GAME_STORES_LAUNCHERS.map((st) => (
                         <option key={st} value={st}>
                           {st}
@@ -2228,7 +2395,7 @@ export function WorkDetailPage({
                       className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
                     />
                   </label>
-                  <label className="block sm:col-span-2">
+                  <label className="block">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
                       Build / Personagem / Time
                     </span>
@@ -2242,9 +2409,37 @@ export function WorkDetailPage({
                       className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
                     />
                   </label>
+                  <label className="block sm:col-span-2">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Justificativa da Nota 11 (Obra-Prima · opcional)
+                    </span>
+                    <input
+                      type="text"
+                      value={item.masterpieceJustification || ''}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, { masterpieceJustification: e.target.value })
+                      }
+                      placeholder="Por que este jogo é um marco excepcional da sua vida..."
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
                 </>
               ) : (
                 <>
+                  {item.workType === 'track' && (
+                    <label className="block sm:col-span-2">
+                      <span className="mb-1 block text-[11px] font-medium text-muted">
+                        Álbum vinculado
+                      </span>
+                      <input
+                        type="text"
+                        value={item.albumName || ''}
+                        onChange={(e) => onUpdateItem(item.id, { albumName: e.target.value })}
+                        placeholder="Nome do álbum original"
+                        className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                  )}
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
                       Formato do Lançamento

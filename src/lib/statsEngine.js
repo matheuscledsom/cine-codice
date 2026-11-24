@@ -45,7 +45,9 @@ export function computeSpectatorMetrics(items = []) {
     0
   );
 
-  const rated = backlogItems.filter((item) => isConfirmedUserRating(item));
+  const rated = backlogItems.filter(
+    (item) => isConfirmedUserRating(item) && Number(item[cardFields.rating]) > 0
+  );
   const avgRatingValue = rated.length
     ? Math.round(
         rated.reduce((sum, item) => sum + Number(item[cardFields.rating] || 0), 0) /
