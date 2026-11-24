@@ -21,8 +21,8 @@ export const WorkCard = memo(function WorkCard({
   onSelectItem,
   onLongPressItem,
 }) {
-  const status = getStatusConfig(item.status);
   const domain = inferDomainFromWork(item);
+  const status = getStatusConfig(item.status, domain);
   const itemPct = calculateWorkProgress(item);
   const formatBadge = formatCatalogCardFormatBadge(item);
   const pressTimerRef = useRef(null);
@@ -35,7 +35,7 @@ export const WorkCard = memo(function WorkCard({
     domain === 'games'
       ? [
           item.editionType && item.editionType !== 'Original' ? item.editionType : '',
-          item.storeOrLauncher || item.buildOrCharacter || '',
+          item.storeOrLauncher || '',
         ]
           .filter(Boolean)
           .join(' · ')

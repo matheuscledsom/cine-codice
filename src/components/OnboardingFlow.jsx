@@ -64,8 +64,8 @@ const TUTORIAL_AREAS = [
     icon: Film,
   },
   {
-    title: 'Bilhetes de Cinema 1080x1350',
-    desc: 'Salve diálogos marcantes com minutagem e gere cartões editoriais e Cine Wrapped PNG com seu tema.',
+    title: 'Cartões Editoriais 1080x1350',
+    desc: 'Salve citações marcantes e gere cartões editoriais e Omni Wrapped PNG com seu tema.',
     icon: Quote,
   },
   {

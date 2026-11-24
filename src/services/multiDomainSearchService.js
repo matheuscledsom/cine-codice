@@ -154,6 +154,7 @@ export function detectGameEditionType({
   workType = 'game',
   instanceQids = [],
   basedOn = false,
+  isDerivativeWork = false,
 } = {}) {
   const combined = `${title} ${description}`.toLowerCase();
   const qidSet = new Set(Array.isArray(instanceQids) ? instanceQids : []);
@@ -167,8 +168,8 @@ export function detectGameEditionType({
   if ([...qidSet].some((q) => WIKIDATA_REMAKE_QIDS.has(q)) || /\bremake\b/i.test(combined)) {
     return 'Remake';
   }
+  // Se a fonte textual disser explicitamente "remaster", mantém Remaster
   if (
-    [...qidSet].some((q) => WIKIDATA_REMASTER_QIDS.has(q)) ||
     /\b(remaster|remastered|hd collection|definitive edition|director'?s cut|anniversary edition)\b/i.test(
       combined
     )
@@ -178,10 +179,103 @@ export function detectGameEditionType({
   if (/\b(port|re-?release|relan[çc]amento)\b/i.test(combined)) {
     return 'Port';
   }
-  if (basedOn) {
+  // Relação de obra derivada na Wikidata (P4969 / P144) sem marcação explícita de remaster -> Remake
+  if (isDerivativeWork || basedOn) {
     return 'Remake';
   }
+  if ([...qidSet].some((q) => WIKIDATA_REMASTER_QIDS.has(q))) {
+    return 'Remaster';
+  }
   return GAME_EDITION_TYPES[0]; // 'Original'
+}
+
+const WIKIDATA_SHORT_DESC_REGEX =
+  /^(?:(?:remake|remaster|port|expans[ãa]o|dlc|sequ[êe]ncia|trilogia)\s+(?:de\s+)?)?(?:videojogo|jogo\s+eletr[ôo]nico|jogo\s+de\s+v[íi]deo|video\s?game|action-adventure\s+(?:video\s?)?game|role-playing\s+(?:video\s?)?game|platform\s+(?:video\s?)?game|\d{4}\s+(?:action-adventure\s+|role-playing\s+|survival\s+)?(?:video\s?)?game|filme|s[ée]rie|anime|livro|[áa]lbum)(?:\s+(?:de|da|do|para|em|por|by|for|from|in)\s+[^.!?]+)?\.?$/i;
+
+const NON_PT_GENRE_WORD_REGEX =
+  /\b(fiction|stories|short\s+story|literature|literary|criticism|juvenile|children|young\s+adult|comics|graphic\s+novels?|translations?|german|french|english|japanese|spanish|russian|philosophy|science|adventure|mystery|horror|fantasy|comedy|action|crime|psychological|classics?|history|biography|autobiography|poetry|essays?|general|books?|reading|novels?|life|social|political|religion|role-playing|platformer|shooter|strategy|simulation|racing|sports|fighting|puzzle|survival|stealth|open\s+world|soundtrack|alternative|electronic|classical|video\s?game|metamorphosis|deutsche|erz[äa]hlung|litt[ée]rature|bande\s+dessin[ée]e)\b/i;
+
+const FOREIGN_SYNOPSIS_STOPWORDS_REGEX =
+  /\b(the|and|with|that|this|from|have|which|their|into|about|story|when|who|after|his|her|they|been|were|would|der|die|das|und|ein|eine|von|mit|auf|für|les|des|dans|pour|avec|une|est|sont|qui)\b/gi;
+
+const PT_SYNOPSIS_STOPWORDS_REGEX =
+  /\b(que|com|uma|para|por|dos|das|n[ãa]o|mais|como|seu|sua|sobre|entre|pelo|pela|mas|quando|tamb[ée]m|onde|hist[óo]ria|vida|mundo|ap[óo]s|at[ée]|sem|nos|nas|aos|esta|este|esse|essa)\b/gi;
+
+export function isWikidataShortDescription(text = '') {
+  const clean = String(text || '').trim();
+  if (!clean) return false;
+  if (clean.length <= 95 && WIKIDATA_SHORT_DESC_REGEX.test(clean)) {
+    return true;
+  }
+  if (
+    clean.length <= 65 &&
+    /^(?:videojogo|jogo\s+eletr[ôo]nico|jogo\s+de\s+v[íi]deo|video\s?game|remake\s+de\s+videojogo)\b/i.test(
+      clean
+    ) &&
+    !/[.!?]\s+\S/.test(clean)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function hasPortugueseTitle(item = {}) {
+  const title = String(item?.title || '').trim();
+  if (!title || NON_LATIN_SCRIPT_REGEX.test(title)) return false;
+  if (isPortugueseCode(item?.language)) return true;
+  if (isLikelyPortugueseTitle(title)) return true;
+  const orig = String(item?.originalTitle || '').trim();
+  if (orig && normalizeText(orig) !== normalizeText(title) && !FOREIGN_NON_PT_HINT_REGEX.test(title)) {
+    return true;
+  }
+  return false;
+}
+
+export function isLikelyNonPortugueseGenre(genre = '') {
+  const clean = String(genre || '').trim();
+  if (!clean) return true;
+  if (NON_LATIN_SCRIPT_REGEX.test(clean)) return true;
+  if (PORTUGUESE_DIACRITIC_REGEX.test(clean)) return false;
+  if (NON_PT_GENRE_WORD_REGEX.test(clean)) return true;
+  return false;
+}
+
+export function isLikelyNonPortugueseSynopsis(text = '') {
+  const clean = String(text || '').trim();
+  if (!clean) return false;
+  if (NON_LATIN_SCRIPT_REGEX.test(clean)) return true;
+
+  const foreignHits = (clean.match(FOREIGN_SYNOPSIS_STOPWORDS_REGEX) || []).length;
+  const ptHits = (clean.match(PT_SYNOPSIS_STOPWORDS_REGEX) || []).length;
+  const ptDiacritics = (clean.match(/[ãõçáéíóúâêôà]/gi) || []).length;
+  const ptScore = ptHits * 2 + ptDiacritics;
+
+  if (foreignHits >= 2 && foreignHits > ptScore) {
+    return true;
+  }
+  return false;
+}
+
+export function getDisplayGenres(item = {}, { max = 3 } = {}) {
+  const raw = Array.isArray(item?.genres) ? item.genres : [];
+  const cleaned = Array.from(
+    new Set(raw.map((g) => String(g || '').trim()).filter(Boolean))
+  );
+  const ptTitle = hasPortugueseTitle(item);
+  const filtered = ptTitle
+    ? cleaned.filter((g) => !isLikelyNonPortugueseGenre(g))
+    : cleaned.filter((g) => !NON_LATIN_SCRIPT_REGEX.test(g));
+  return filtered.slice(0, Math.max(0, Number(max) || 3));
+}
+
+export function getDisplaySynopsis(item = {}) {
+  const raw = String(item?.synopsis || item?.overview || '').trim();
+  if (!raw) return '';
+  if (isWikidataShortDescription(raw)) return '';
+  if (hasPortugueseTitle(item) && isLikelyNonPortugueseSynopsis(raw)) {
+    return '';
+  }
+  return raw;
 }
 
 async function fetchJsonSafe(
@@ -747,7 +841,10 @@ function isLikelyGameEntity(entity, searchDesc = '') {
   );
 }
 
-function buildWikidataGameCandidate(entity, { fallbackSearch = null, labelMap = {}, resolvedType = 'game' } = {}) {
+function buildWikidataGameCandidate(
+  entity,
+  { fallbackSearch = null, labelMap = {}, resolvedType = 'game', isDerivativeWork = false } = {}
+) {
   const qid = entity?.id || fallbackSearch?.id;
   if (!qid) return null;
 
@@ -790,6 +887,7 @@ function buildWikidataGameCandidate(entity, { fallbackSearch = null, labelMap = 
     workType: isDlc ? 'dlc' : resolvedType,
     instanceQids,
     basedOn: basedOnQids.length > 0,
+    isDerivativeWork,
   });
 
   const developers = devQids
@@ -944,6 +1042,7 @@ export async function searchGamesWorks(
     if (entitiesMap) {
       const gameEntities = [];
       const derivativeQids = new Set();
+      const allDerivativeTargetQids = new Set();
       const extraLabelQids = new Set();
 
       for (const qid of primaryQids) {
@@ -954,8 +1053,12 @@ export async function searchGamesWorks(
         gameEntities.push({ entity: ent, hit });
 
         // Coleta obras derivadas (P4969) e obra original (P144) para encontrar Original <-> Remake/Remaster
+        const p4969Targets = extractWikidataClaimIds(ent, 'P4969');
+        for (const derivId of p4969Targets) {
+          allDerivativeTargetQids.add(derivId);
+        }
         for (const relId of [
-          ...extractWikidataClaimIds(ent, 'P4969'),
+          ...p4969Targets,
           ...extractWikidataClaimIds(ent, 'P144'),
         ]) {
           if (!entitiesMap[relId]) derivativeQids.add(relId);
@@ -982,6 +1085,9 @@ export async function searchGamesWorks(
               const dEnt = derivData.entities[dId];
               if (!dEnt || !isLikelyGameEntity(dEnt, '')) continue;
               gameEntities.push({ entity: dEnt, hit: null });
+              for (const nestedDeriv of extractWikidataClaimIds(dEnt, 'P4969')) {
+                allDerivativeTargetQids.add(nestedDeriv);
+              }
               for (const devId of extractWikidataClaimIds(dEnt, 'P178').slice(0, 2)) {
                 extraLabelQids.add(devId);
               }
@@ -1020,6 +1126,7 @@ export async function searchGamesWorks(
           fallbackSearch: hit,
           labelMap,
           resolvedType,
+          isDerivativeWork: allDerivativeTargetQids.has(entity.id),
         });
         if (built) candidates.push(built);
       }

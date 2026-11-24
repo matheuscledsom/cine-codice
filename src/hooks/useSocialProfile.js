@@ -25,14 +25,15 @@ function getDefaultProfile() {
     handle: profile.handle,
     email: '',
     avatarInitials: profile.avatarInitials,
+    avatarIcon: '',
     avatarUrl: profile.avatarUrl || '',
     coverUrl: profile.coverUrl || '',
     bio: profile.bio,
     linkLabel: profile.linkLabel,
     linkUrl: profile.linkUrl,
     age: '',
-    viewerFocus: ['Cinéfilo Curador'],
-    readerFocus: 'Cinéfilo Curador',
+    viewerFocus: ['Curadoria Pessoal'],
+    readerFocus: 'Curadoria Pessoal',
     annualGoal: 24,
     preferredFormat: 'Streaming',
     preferredCriteria: ['Roteiro & Ritmo'],
@@ -63,9 +64,20 @@ function normalizeProfileObject(rawProfile, fallback) {
     parsed.viewerFocus ?? parsed.viewer_focus,
     parsed.readerFocus ?? parsed.reader_focus ?? base.readerFocus
   );
+  const legacyDefaultNames = new Set(['Cinéfilo', 'Espectador']);
+  const isUntouchedLegacyProfile =
+    !parsed.onboardingCompleted && legacyDefaultNames.has(String(parsed.displayName || '').trim());
+
   const merged = {
     ...base,
     ...parsed,
+    displayName: isUntouchedLegacyProfile
+      ? base.displayName
+      : parsed.displayName || base.displayName,
+    bio:
+      isUntouchedLegacyProfile && /cinematogr/i.test(String(parsed.bio || ''))
+        ? base.bio
+        : parsed.bio ?? base.bio,
     viewerFocus,
     readerFocus: viewerFocus[0] || base.readerFocus,
     annualGoal: Math.max(
@@ -227,7 +239,7 @@ export function useSocialProfile({ migrationLocked = false } = {}) {
           updates.readerFocus ?? updates.reader_focus ?? prev.readerFocus
         );
         next.viewerFocus = nextFocus;
-        next.readerFocus = nextFocus[0] || 'Cinéfilo Curador';
+        next.readerFocus = nextFocus[0] || 'Curadoria Pessoal';
       }
       if (updates.favoriteGenres !== undefined) {
         next.favoriteGenres = migrateFavoriteGenresToObjects(updates.favoriteGenres);

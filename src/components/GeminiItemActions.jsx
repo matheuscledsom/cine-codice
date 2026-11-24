@@ -285,7 +285,7 @@ export function SynthesisReviewAction({
             ? `Sintetizando com ${activeProvider?.label || 'IA'}...`
             : targetField === 'fichamento'
               ? 'Estruturar Notas de Direção & Cena'
-              : 'Montar Crítica Cinematográfica'}
+              : 'Montar Crítica da Obra'}
         </span>
       </button>
 

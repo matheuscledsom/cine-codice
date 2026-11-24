@@ -8,6 +8,7 @@ import { SkeletonScreen } from './components/SkeletonScreen';
 import {
   domainConfig,
   getDomainMeta,
+  getStatusLabelForDomain,
   inferDomainFromWork,
   normalizeDomainId,
 } from './config/domainConfig';
@@ -70,6 +71,7 @@ import {
   getTodayLocalISO,
   isEpisodicWork,
 } from './utils/backlogHelpers';
+import { computeDomainQuickActionPatch } from './utils/catalogDraftHelpers';
 import { HomeScreen } from './screens/HomeScreen';
 
 const StatsScreen = lazy(() =>
@@ -252,6 +254,7 @@ export function App() {
   const bootMigrationPromiseRef = useRef(null);
   const [requestedCollectionId, setRequestedCollectionId] = useState(null);
   const [requestedCreatorQuery, setRequestedCreatorQuery] = useState('');
+  const [requestedAddQuery, setRequestedAddQuery] = useState('');
   const [privateStorageMode, setPrivateStorageMode] = useState(false);
   const [onboardingReopened, setOnboardingReopened] = useState(false);
   const [backendReady, setBackendReady] = useState(false);
@@ -1073,10 +1076,12 @@ export function App() {
     const itemId = String(newItem?.id || createUuid());
     const itemWithId = { ...newItem, id: itemId };
     addItem(itemWithId);
+    const itemDomain = inferDomainFromWork(itemWithId);
+    const completedLabel = getStatusLabelForDomain('completed', itemDomain);
     showToast({
       message:
         newItem?.status === 'completed'
-          ? 'Obra catalogada como Concluída'
+          ? `Obra catalogada como ${completedLabel}`
           : 'Obra salva no catálogo',
       type: 'success',
     });
@@ -1109,8 +1114,12 @@ export function App() {
     const prev = items.find((entry) => entry.id === id);
     updateItem(id, updates);
     if (updates?.status === 'completed' && prev?.status !== 'completed') {
+      const doneLabel = getStatusLabelForDomain(
+        'completed',
+        inferDomainFromWork(prev || updates)
+      );
       showToast({
-        message: 'Sessão concluída com sucesso',
+        message: `Status atualizado para ${doneLabel}`,
         type: 'success',
       });
     }
@@ -1536,54 +1545,33 @@ export function App() {
   const handleQuickAdvanceWork = useCallback(
     (work, options = {}) => {
       if (!work?.id) return;
-      const { allowCompletion = true } = options || {};
+      const { allowCompletion = true, actionType = null } = options || {};
       const workDomain = inferDomainFromWork(work);
 
-      if (workDomain === 'reading') {
-        const total = Number(work.totalPages) || 0;
-        const nextPages =
-          total > 0
-            ? Math.min(total, (Number(work.pagesRead) || 0) + 10)
-            : (Number(work.pagesRead) || 0) + 10;
-        const done = allowCompletion && total > 0 && nextPages >= total;
-        updateItem(work.id, {
-          pagesRead: nextPages,
-          status: done ? 'completed' : 'playing',
-          ...(done ? { completedDate: getTodayLocalISO(), progress: 100 } : {}),
+      if (workDomain === 'reading' || workDomain === 'games' || workDomain === 'music') {
+        const resolvedAction =
+          actionType ||
+          (workDomain === 'reading'
+            ? 'reading_pages'
+            : workDomain === 'games'
+              ? 'games_1h'
+              : 'music_listen');
+        const plan = computeDomainQuickActionPatch(work, resolvedAction, {
+          allowCompletion,
         });
+        if (!plan) return;
+        updateItem(work.id, plan.patch);
         registerToday?.();
         showToast({
-          message: total > 0 ? `${work.title}: Pág. ${nextPages}/${total}` : `${work.title}: Pág. ${nextPages}`,
+          message: plan.toastMessage,
           type: 'success',
-        });
-        return;
-      }
-
-      if (workDomain === 'games') {
-        const nextHours = Number(((Number(work.hoursPlayed) || 0) + 1).toFixed(1));
-        updateItem(work.id, {
-          hoursPlayed: nextHours,
-          status: work.status === 'queued' ? 'playing' : work.status,
-        });
-        registerToday?.();
-        showToast({
-          message: `${work.title}: ${nextHours}h jogadas`,
-          type: 'success',
-        });
-        return;
-      }
-
-      if (workDomain === 'music') {
-        const nextListens = (Number(work.listenCount) || 0) + 1;
-        updateItem(work.id, {
-          listenCount: nextListens,
-          status: work.status === 'queued' ? 'completed' : work.status,
-          ...(work.status === 'queued' ? { completedDate: getTodayLocalISO(), progress: 100 } : {}),
-        });
-        registerToday?.();
-        showToast({
-          message: `${work.title}: audição #${nextListens} registrada`,
-          type: 'success',
+          duration: 6000,
+          action: {
+            label: 'Desfazer',
+            onClick: () => {
+              updateItem(work.id, plan.undoSnapshot);
+            },
+          },
         });
         return;
       }
@@ -1610,6 +1598,8 @@ export function App() {
   const handleStartPickedWork = useCallback(
     (work) => {
       if (!work?.id) return;
+      const workDomain = inferDomainFromWork(work);
+      const activeStatusLabel = getStatusLabelForDomain('playing', workDomain);
       updateItem(work.id, {
         status: 'playing',
         inBacklog: true,
@@ -1617,7 +1607,7 @@ export function App() {
       });
       setSelectedItemId(work.id);
       showToast({
-        message: `"${work.title}" iniciada em Exibição`,
+        message: `"${work.title}" movida para ${activeStatusLabel}`,
         type: 'success',
       });
     },
@@ -1718,12 +1708,26 @@ export function App() {
         notes: work.notes ? `Referência externa: ${work.notes}` : '',
         addedAt: new Date().toISOString(),
       });
+      const queueLabel = getStatusLabelForDomain('queued', inferDomainFromWork(work));
       showToast({
-        message: `"${work.title}" adicionada à sua fila Quero Ver.`,
+        message: `"${work.title}" adicionada à fila ${queueLabel}.`,
         type: 'success',
       });
     },
     [items, addItem, showToast]
+  );
+
+  const handleNavigateAdd = useCallback(
+    (initialQuery = '', targetDomain = null) => {
+      if (targetDomain && targetDomain !== 'all') {
+        handleSelectDomain(targetDomain);
+      }
+      if (typeof initialQuery === 'string' && initialQuery.trim()) {
+        setRequestedAddQuery(initialQuery.trim());
+      }
+      setActiveTab('add');
+    },
+    [handleSelectDomain]
   );
 
   const handleRecommendWorkToFeed = useCallback(
@@ -1843,7 +1847,7 @@ export function App() {
               {domainConfig.appName}
             </span>
             <span className="hidden sm:inline rounded-full border border-line bg-card px-2 py-0.5 text-[10px] font-medium text-accent">
-              {activeDomainMeta.label}
+              {activeDomainMeta.tabLabel || activeDomainMeta.shortLabel}
             </span>
           </button>
 
@@ -2029,7 +2033,7 @@ export function App() {
                   onAddToWishlist={handleCopyWorkToWishlist}
                   onCatalogFranchiseEntry={handleAddItem}
                   onNavigateList={() => setActiveTab('list')}
-                  onNavigateAdd={() => setActiveTab('add')}
+                  onNavigateAdd={handleNavigateAdd}
                   onOpenGeminiSettings={() => setGeminiModalOpen(true)}
                   onOpenThemeStudio={() => setThemeModalOpen(true)}
                 />
@@ -2063,6 +2067,8 @@ export function App() {
                   onSelectExisting={(item) => setSelectedItemId(item.id)}
                   onOpenGeminiSettings={() => setGeminiModalOpen(true)}
                   onOpenImportCatalog={() => setImportCatalogOpen(true)}
+                  requestedSearchQuery={requestedAddQuery}
+                  onConsumeRequestedSearchQuery={() => setRequestedAddQuery('')}
                 />
               )}
               {activeTab === 'list' && (
@@ -2083,7 +2089,7 @@ export function App() {
                   onStartPickedWork={handleStartPickedWork}
                   onSelectItem={(item) => setSelectedItemId(item.id)}
                   onOpenCommandPalette={() => setPaletteOpen(true)}
-                  onNavigateAdd={() => setActiveTab('add')}
+                  onNavigateAdd={handleNavigateAdd}
                   requestedCollectionId={requestedCollectionId}
                   onConsumeRequestedCollection={() => setRequestedCollectionId(null)}
                   requestedCreatorQuery={requestedCreatorQuery}
@@ -2245,7 +2251,7 @@ export function App() {
               onSaveGeminiKey={saveApiKey}
               onImportBackup={handleImportBackup}
               onComplete={(updates) => {
-                handleUpdateProfileWithSync(updates, 'Perfil do espectador salvo');
+                handleUpdateProfileWithSync(updates, 'Perfil salvo');
                 setOnboardingReopened(false);
               }}
               onDismiss={() => setOnboardingReopened(false)}
@@ -2324,6 +2330,7 @@ export function App() {
               isOpen={globalRouletteOpen}
               onClose={() => setGlobalRouletteOpen(false)}
               items={items}
+              domain={activeDomain}
               readerDna={profile?.readerDna || null}
               onStartReading={handleStartPickedWork}
               onSelectItem={(item) => {
@@ -2347,7 +2354,7 @@ export function App() {
               onCommitImport={(records) => {
                 const inserted = batchAddItems(records);
                 showToast({
-                  message: `${inserted.length} obra(s) importada(s) para a catálogo.`,
+                  message: `${inserted.length} obra(s) importada(s) para o catálogo.`,
                   type: 'success',
                 });
                 if (inserted.length > 0) setActiveTab('list');

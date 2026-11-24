@@ -78,10 +78,10 @@ describe('FASE 5 (v1.3.0) — Métricas Zero-Scroll, Início Refinada & Perfil E
     assert.equal(nextTitle, '...And the Bag\'s in the River');
 
     const homeSrc = readSrc('src/screens/HomeScreen.jsx');
-    assert.match(homeSrc, /buildHomeLiveSummary/);
+    assert.match(homeSrc, /buildHomeInProgressStrip/);
     assert.match(homeSrc, /resolveHeroNextEpisodeTitle/);
-    assert.match(homeSrc, /Sortear da fila Quero Ver/);
-    assert.match(homeSrc, /Continuar última sessão/);
+    assert.match(homeSrc, /activeVocab\.rouletteButtonLabel/);
+    assert.match(homeSrc, /activeVocab\.continueLastLabel/);
   });
 
   it('3. profileMetrics calcula Histograma de Notas (0–100) e Atividade Recente', () => {
@@ -146,14 +146,14 @@ describe('FASE 5 (v1.3.0) — Métricas Zero-Scroll, Início Refinada & Perfil E
     assert.match(profileSrc, /Atividade Recente/);
     assert.match(profileSrc, /Histograma de Notas \(0–100\)/);
 
-    // Compatibilidade com testes anteriores
+    // Compatibilidade com testes anteriores + v2.3.0 multi-domínio
     assert.match(profileSrc, /resolveProfileHeroBackdrop/);
     assert.match(profileSrc, /computeProfileMetrics/);
     assert.match(profileSrc, /rgba\(10,12,16,0\.72\)/);
-    assert.match(profileSrc, /Em cartaz:/);
+    assert.match(profileSrc, /heroBanner\.statusLabel/);
     assert.match(profileSrc, /Episódios \/ Horas/);
     assert.match(profileSrc, /Média Geral/);
     assert.match(profileSrc, /sem duração excluída/);
-    assert.match(profileSrc, /Favoritos da Vida · Top 4/);
+    assert.match(profileSrc, /favoritesVocab\.favoritesTitle/);
   });
 });

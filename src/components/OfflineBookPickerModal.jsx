@@ -1,6 +1,10 @@
-import { Dices, Film, Play, Sparkles, X } from 'lucide-react';
+import { Dices, Play, Sparkles, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getWorkTypeConfig } from '../config/domainConfig';
+import {
+  getDomainVocabulary,
+  getWorkTypeLabel,
+  inferDomainFromWork,
+} from '../config/domainConfig';
 import { getDisplayTitles, isEpisodicWork } from '../utils/backlogHelpers';
 import {
   ROULETTE_FILTERS,
@@ -14,6 +18,7 @@ export function OfflineBookPickerModal({
   isOpen,
   onClose,
   items = [],
+  domain = 'cinema',
   readerDna = null,
   onStartReading,
   onSelectItem,
@@ -26,9 +31,20 @@ export function OfflineBookPickerModal({
   const [isSpinning, setIsSpinning] = useState(false);
   const spinTimerRef = useRef(null);
 
+  const isCinemaDomain = domain === 'cinema';
+  const vocab = useMemo(() => getDomainVocabulary(domain), [domain]);
+  const effectiveFilter = isCinemaDomain ? filter : 'all';
+
+  const domainScopedItems = useMemo(() => {
+    if (!domain || domain === 'all') return items;
+    return (Array.isArray(items) ? items : []).filter(
+      (item) => item && inferDomainFromWork(item) === domain
+    );
+  }, [items, domain]);
+
   const pool = useMemo(
-    () => buildWatchPickerPool({ items, filter }),
-    [items, filter]
+    () => buildWatchPickerPool({ items: domainScopedItems, filter: effectiveFilter }),
+    [domainScopedItems, effectiveFilter]
   );
 
   useEffect(() => {
@@ -67,15 +83,15 @@ export function OfflineBookPickerModal({
     const result =
       readerDna && useDnaWeighting
         ? pickWeightedQueuedWork({
-            items,
-            filter,
+            items: domainScopedItems,
+            filter: effectiveFilter,
             readerDna,
             lastPickedId: pickedItem?.id || null,
           })
         : {
             ...pickRandomQueuedWork({
-              items,
-              filter,
+              items: domainScopedItems,
+              filter: effectiveFilter,
               lastPickedId: pickedItem?.id || null,
             }),
             matchedReason: '',
@@ -123,7 +139,7 @@ export function OfflineBookPickerModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Roleta O que assistir hoje"
+      aria-label={vocab.rouletteTitle}
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/65 p-0 sm:items-center sm:p-4"
       onClick={onClose}
     >
@@ -136,46 +152,48 @@ export function OfflineBookPickerModal({
             <Dices className="h-4 w-4 text-accent" strokeWidth={1.5} />
             <div>
               <h3 className="text-sm font-semibold text-ink">
-                O que assistir hoje?
+                {vocab.rouletteTitle}
               </h3>
               <p className="text-[11px] text-subtle">
-                Roleta por tempo disponível da fila Quero Ver
+                {vocab.rouletteSubtitle}
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Fechar roleta de sessão"
+            aria-label="Fechar sorteio"
             className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[4px] text-muted hover:bg-elevated hover:text-ink"
           >
             <X className="h-4 w-4" strokeWidth={1.5} />
           </button>
         </div>
 
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Tempo disponível">
-          {ROULETTE_FILTERS.map((f) => {
-            const active = filter === f.id;
-            return (
-              <button
-                key={f.id}
-                type="button"
-                aria-pressed={active}
-                onClick={() => {
-                  setFilter(f.id);
-                  setPickedItem(null);
-                }}
-                className={`inline-flex min-h-[44px] items-center rounded-[4px] border px-3 py-1.5 text-xs font-medium transition-colors ${
-                  active
-                    ? 'border-accent bg-accent/15 text-accent'
-                    : 'border-line bg-app text-muted hover:text-ink'
-                }`}
-              >
-                {f.label}
-              </button>
-            );
-          })}
-        </div>
+        {isCinemaDomain && (
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Tempo disponível">
+            {ROULETTE_FILTERS.map((f) => {
+              const active = filter === f.id;
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => {
+                    setFilter(f.id);
+                    setPickedItem(null);
+                  }}
+                  className={`inline-flex min-h-[44px] items-center rounded-[4px] border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    active
+                      ? 'border-accent bg-accent/15 text-accent'
+                      : 'border-line bg-app text-muted hover:text-ink'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
           <div className="flex flex-wrap items-center gap-2">
@@ -211,19 +229,19 @@ export function OfflineBookPickerModal({
 
         {pool.length === 0 ? (
           <div className="rounded-[6px] border border-dashed border-line bg-app px-4 py-6 text-center">
-            <Film className="mx-auto h-5 w-5 text-subtle" strokeWidth={1.5} />
+            <Sparkles className="mx-auto h-5 w-5 text-subtle" strokeWidth={1.5} />
             <p className="mt-2 text-xs font-medium text-ink">
-              Nenhuma obra em Quero Ver neste tempo
+              {vocab.rouletteEmpty}
             </p>
             <p className="mt-1 text-[11px] text-subtle">
-              Troque para Qualquer duração ou adicione títulos em Quero Ver.
+              Adicione títulos na fila {vocab.statuses.queued} para sortear.
             </p>
           </div>
         ) : !activeDisplay ? (
           <div className="rounded-[6px] border border-line bg-app px-4 py-6 text-center">
             <Sparkles className="mx-auto h-5 w-5 text-accent" strokeWidth={1.5} />
             <p className="mt-2 text-xs text-muted">
-              Toque em <strong className="text-ink">Girar Roleta</strong> para escolher a sessão de hoje.
+              Toque em <strong className="text-ink">Girar Roleta</strong> para escolher da fila {vocab.statuses.queued}.
             </p>
           </div>
         ) : (
@@ -240,12 +258,14 @@ export function OfflineBookPickerModal({
                   </p>
                 )}
                 <p className="truncate text-xs text-muted">
-                  {activeDisplay.director ||
+                  {activeDisplay.creator ||
+                    activeDisplay.director ||
+                    activeDisplay.author ||
                     activeDisplay.studio ||
-                    getWorkTypeConfig(activeDisplay.workType).shortLabel}
+                    getWorkTypeLabel(activeDisplay, inferDomainFromWork(activeDisplay))}
                 </p>
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[10px] tabular-nums text-subtle">
-                  {isEpisodicWork(activeDisplay) ? (
+                  {inferDomainFromWork(activeDisplay) === 'cinema' && isEpisodicWork(activeDisplay) ? (
                     activeDisplay.totalEpisodes > 0 && (
                       <span className="rounded-[2px] border border-line bg-card px-1.5 py-0.5">
                         {activeDisplay.totalEpisodes} eps
@@ -257,6 +277,11 @@ export function OfflineBookPickerModal({
                         {activeDisplay.durationMinutes} min
                       </span>
                     )
+                  )}
+                  {activeDisplay.platform && (
+                    <span className="rounded-[2px] border border-line bg-card px-1.5 py-0.5">
+                      {activeDisplay.platform}
+                    </span>
                   )}
                   {activeDisplay.audioFormat && (
                     <span className="rounded-[2px] border border-line bg-card px-1.5 py-0.5">
@@ -280,7 +305,7 @@ export function OfflineBookPickerModal({
                   className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-[4px] bg-accent px-3.5 py-2 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90"
                 >
                   <Play className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  <span>Iniciar Sessão</span>
+                  <span>{vocab.startActionLabel}</span>
                 </button>
                 <button
                   type="button"

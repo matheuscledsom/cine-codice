@@ -5,6 +5,8 @@ export const OMNIPRISM_DOMAINS = [
     id: 'cinema',
     label: 'Cinema & Séries',
     shortLabel: 'Cinema',
+    tabLabel: 'Cinema',
+    favoritesTabLabel: 'Filmes',
     icon: 'Film',
     tintHex: '#D97706',
     beamHex: '#F59E0B',
@@ -19,13 +21,15 @@ export const OMNIPRISM_DOMAINS = [
     id: 'reading',
     label: 'Leitura & Acadêmico',
     shortLabel: 'Leitura',
+    tabLabel: 'Livros',
+    favoritesTabLabel: 'Livros',
     icon: 'BookOpen',
     tintHex: '#059669',
     beamHex: '#10B981',
     status: 'active',
     badge: 'Livros · Mangás · Papers',
     description: 'Livros, mangás, artigos e filosofia',
-    creatorLabel: 'Autor(a) / Pesquisador(a)',
+    creatorLabel: 'Autor(a)',
     queueLabel: 'Quero Ler',
     playingLabel: 'Lendo',
   },
@@ -33,6 +37,8 @@ export const OMNIPRISM_DOMAINS = [
     id: 'games',
     label: 'Games',
     shortLabel: 'Games',
+    tabLabel: 'Games',
+    favoritesTabLabel: 'Games',
     icon: 'Gamepad2',
     tintHex: '#7C3AED',
     beamHex: '#8B5CF6',
@@ -40,13 +46,15 @@ export const OMNIPRISM_DOMAINS = [
     badge: 'Jogos · DLCs · Modpacks',
     description: 'Campanhas, horas jogadas e plataformas',
     creatorLabel: 'Estúdio / Desenvolvedora',
-    queueLabel: 'Na Fila',
+    queueLabel: 'Quero Jogar',
     playingLabel: 'Jogando',
   },
   {
     id: 'music',
     label: 'Música',
     shortLabel: 'Música',
+    tabLabel: 'Música',
+    favoritesTabLabel: 'Música',
     icon: 'Music',
     tintHex: '#BE123C',
     beamHex: '#F43F5E',
@@ -58,6 +66,205 @@ export const OMNIPRISM_DOMAINS = [
     playingLabel: 'Ouvindo',
   },
 ];
+
+export const DOMAIN_VOCABULARY = {
+  cinema: {
+    domainId: 'cinema',
+    tabLabel: 'Cinema',
+    favoritesTabLabel: 'Filmes',
+    favoritesTitle: 'Favoritos da Vida · Filmes',
+    workTypeLabel: 'Formato Audiovisual',
+    creatorLabel: 'Direção / Estúdio',
+    creatorFallback: 'Direção não informada',
+    ratingLabel: 'Nota (0–100)',
+    searchPlaceholder: 'Buscar filme, série, anime ou direção...',
+    addSearchPlaceholder: 'Buscar filme, série, anime, diretor ou estúdio...',
+    homeEmptySearchPlaceholder: 'Buscar um filme, série ou anime...',
+    emptyTitle: 'Nenhum título de Cinema & Séries ainda',
+    emptyDescription: 'Catalogue filmes, séries e animes para acompanhar episódios e notas.',
+    emptyCta: 'Catalogar título',
+    rouletteButtonLabel: 'Sortear da fila Quero Ver',
+    rouletteTitle: 'O que assistir hoje?',
+    rouletteSubtitle: 'Roleta da fila Quero Ver',
+    continueLastLabel: 'Continuar última sessão',
+    startActionLabel: 'Começar',
+    revisitLabel: 'Quero rever',
+    revisitActiveLabel: 'Quero rever (ativo)',
+    revisitBadgePrefix: 'Rewatch',
+    wishlistToggleLabel: 'Guardar na lista',
+    notesTabLabel: 'Cenas & Diário',
+    loanLabel: 'Mídia física emprestada',
+    manualTitlePlaceholder: 'Ex: Blade Runner 2049',
+    manualGenresPlaceholder: 'Ex: Ficção Científica, Noir',
+    completedPluralLabel: 'Concluídos',
+    addButtonLabel: 'Adicionar',
+    statuses: {
+      queued: 'Quero Ver',
+      playing: 'Assistindo',
+      rewatching: 'Reassistindo',
+      paused: 'Pausado',
+      completed: 'Concluído',
+      dropped: 'Abandonado',
+    },
+  },
+  reading: {
+    domainId: 'reading',
+    tabLabel: 'Livros',
+    favoritesTabLabel: 'Livros',
+    favoritesTitle: 'Favoritos da Vida · Livros',
+    workTypeLabel: 'Tipo',
+    creatorLabel: 'Autor(a)',
+    creatorFallback: 'Autor não informado',
+    ratingLabel: 'Nota (0–100)',
+    searchPlaceholder: 'Buscar livro, autor, mangá ou ISBN...',
+    addSearchPlaceholder: 'Buscar livro, mangá, autor ou ISBN...',
+    homeEmptySearchPlaceholder: 'Buscar um livro ou mangá...',
+    emptyTitle: 'Nenhum livro ou leitura ainda',
+    emptyDescription: 'Catalogue livros, mangás e artigos para acompanhar páginas e capítulos.',
+    emptyCta: 'Catalogar livro',
+    rouletteButtonLabel: 'Sortear da fila Quero Ler',
+    rouletteTitle: 'O que ler hoje?',
+    rouletteSubtitle: 'Roleta da fila Quero Ler',
+    continueLastLabel: 'Continuar última leitura',
+    startActionLabel: 'Começar a ler',
+    revisitLabel: 'Quero reler',
+    revisitActiveLabel: 'Quero reler (ativo)',
+    revisitBadgePrefix: 'Releitura',
+    wishlistToggleLabel: 'Guardar para ler',
+    notesTabLabel: 'Citações & Notas',
+    loanLabel: 'Livro emprestado',
+    manualTitlePlaceholder: 'Ex: A Metamorfose',
+    manualGenresPlaceholder: 'Ex: Clássico, Filosofia',
+    completedPluralLabel: 'Lidos',
+    addButtonLabel: 'Adicionar',
+    statuses: {
+      queued: 'Quero Ler',
+      playing: 'Lendo',
+      rewatching: 'Relendo',
+      paused: 'Pausado',
+      completed: 'Lido',
+      dropped: 'Abandonado',
+    },
+  },
+  games: {
+    domainId: 'games',
+    tabLabel: 'Games',
+    favoritesTabLabel: 'Games',
+    favoritesTitle: 'Favoritos da Vida · Games',
+    workTypeLabel: 'Tipo',
+    creatorLabel: 'Estúdio / Desenvolvedora',
+    creatorFallback: 'Estúdio não informado',
+    ratingLabel: 'Nota (0–11)',
+    searchPlaceholder: 'Buscar jogo, estúdio, remake ou plataforma...',
+    addSearchPlaceholder: 'Buscar jogo, remake, DLC ou plataforma...',
+    homeEmptySearchPlaceholder: 'Buscar um jogo...',
+    emptyTitle: 'Nenhum jogo catalogado ainda',
+    emptyDescription: 'Catalogue jogos, remakes e DLCs com plataforma e horas jogadas.',
+    emptyCta: 'Catalogar jogo',
+    rouletteButtonLabel: 'Sortear da fila Quero Jogar',
+    rouletteTitle: 'O que jogar hoje?',
+    rouletteSubtitle: 'Roleta da fila Quero Jogar',
+    continueLastLabel: 'Continuar último jogo',
+    startActionLabel: 'Começar a jogar',
+    revisitLabel: 'Quero rejogar',
+    revisitActiveLabel: 'Quero rejogar (ativo)',
+    revisitBadgePrefix: 'Rejogada',
+    wishlistToggleLabel: 'Guardar para jogar',
+    notesTabLabel: 'Momentos & Diário',
+    loanLabel: 'Jogo físico emprestado',
+    manualTitlePlaceholder: 'Ex: Shadow of the Colossus',
+    manualGenresPlaceholder: 'Ex: Aventura, RPG',
+    completedPluralLabel: 'Zerados',
+    addButtonLabel: 'Adicionar',
+    statuses: {
+      queued: 'Quero Jogar',
+      playing: 'Jogando',
+      rewatching: 'Rejogando',
+      paused: 'Pausado',
+      completed: 'Zerado',
+      dropped: 'Abandonado',
+    },
+  },
+  music: {
+    domainId: 'music',
+    tabLabel: 'Música',
+    favoritesTabLabel: 'Música',
+    favoritesTitle: 'Favoritos da Vida · Música',
+    workTypeLabel: 'Tipo',
+    creatorLabel: 'Artista / Banda',
+    creatorFallback: 'Artista não informado',
+    ratingLabel: 'Nota (0–100)',
+    trackRatingLabel: 'Nota da faixa (0–10)',
+    searchPlaceholder: 'Buscar faixa, álbum, artista ou subgênero...',
+    addSearchPlaceholder: 'Buscar faixa, álbum, EP, artista ou show...',
+    homeEmptySearchPlaceholder: 'Buscar um álbum ou faixa...',
+    emptyTitle: 'Nenhuma música ou álbum ainda',
+    emptyDescription: 'Catalogue faixas, álbuns e discografias com notas e audições.',
+    emptyCta: 'Catalogar música',
+    rouletteButtonLabel: 'Sortear da fila Quero Ouvir',
+    rouletteTitle: 'O que ouvir hoje?',
+    rouletteSubtitle: 'Roleta da fila Quero Ouvir',
+    continueLastLabel: 'Continuar última audição',
+    startActionLabel: 'Começar a ouvir',
+    revisitLabel: 'Quero reouvir',
+    revisitActiveLabel: 'Quero reouvir (ativo)',
+    revisitBadgePrefix: 'Reaudição',
+    wishlistToggleLabel: 'Guardar para ouvir',
+    notesTabLabel: 'Letras & Notas',
+    loanLabel: 'Vinil / CD emprestado',
+    manualTitlePlaceholder: 'Ex: Master of Puppets',
+    manualGenresPlaceholder: 'Ex: Heavy Metal, Rock',
+    completedPluralLabel: 'Ouvidos',
+    addButtonLabel: 'Adicionar',
+    statuses: {
+      queued: 'Quero Ouvir',
+      playing: 'Ouvindo',
+      rewatching: 'Reouvindo',
+      paused: 'Pausado',
+      completed: 'Ouvido',
+      dropped: 'Abandonado',
+    },
+  },
+  all: {
+    domainId: 'all',
+    tabLabel: 'Todos',
+    favoritesTabLabel: 'Todos',
+    favoritesTitle: 'Favoritos da Vida',
+    workTypeLabel: 'Tipo',
+    creatorLabel: 'Criador',
+    creatorFallback: 'Criador não informado',
+    ratingLabel: 'Nota',
+    searchPlaceholder: 'Buscar obra, autor, estúdio, artista ou tag...',
+    addSearchPlaceholder: 'Buscar filme, livro, jogo ou álbum...',
+    homeEmptySearchPlaceholder: 'Buscar um filme, livro, jogo ou álbum...',
+    emptyTitle: 'Seu arquivo está vazio',
+    emptyDescription: 'Busque um filme, livro, jogo ou álbum para começar.',
+    emptyCta: 'Catalogar obra',
+    rouletteButtonLabel: 'Sortear da fila',
+    rouletteTitle: 'Sortear da fila',
+    rouletteSubtitle: 'Roleta da sua fila',
+    continueLastLabel: 'Continuar mais recente',
+    startActionLabel: 'Começar',
+    revisitLabel: 'Quero revisitar',
+    revisitActiveLabel: 'Quero revisitar (ativo)',
+    revisitBadgePrefix: 'Revisita',
+    wishlistToggleLabel: 'Guardar na lista',
+    notesTabLabel: 'Notas & Diário',
+    loanLabel: 'Item emprestado',
+    manualTitlePlaceholder: 'Título da obra',
+    manualGenresPlaceholder: 'Separados por vírgula',
+    completedPluralLabel: 'Concluídos',
+    addButtonLabel: 'Adicionar',
+    statuses: {
+      queued: 'Na Fila',
+      playing: 'Em andamento',
+      rewatching: 'Revendo',
+      paused: 'Pausado',
+      completed: 'Concluído',
+      dropped: 'Abandonado',
+    },
+  },
+};
 
 export const DOMAIN_MEDIA_TYPES = {
   cinema: [
@@ -276,7 +483,7 @@ export const domainConfig = {
     },
     paused: {
       id: 'paused',
-      label: 'Em Pausa',
+      label: 'Pausado',
       color: '#F59E0B',
       dotClass: 'bg-amber-400',
       badgeClass: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
@@ -399,28 +606,28 @@ export const domainConfig = {
 
   ui: {
     home: {
-      greetingPrefix: 'Sessão de',
-      subtitle: 'Catálogo Pessoal · Cinema & Séries',
+      greetingPrefix: 'Arquivo de',
+      subtitle: 'Catálogo Pessoal Multi-Domínio',
       signature: 'OmniPrism · Camaleão',
-      annualGoalTitle: 'Meta Anual de Sessões',
-      continueWatchingTitle: 'Em Cartaz · Continuar Assistindo',
-      resumeLabel: 'Retomar Sessão',
-      highlightsTitle: 'Cartazes em Destaque',
+      annualGoalTitle: 'Meta Anual',
+      continueWatchingTitle: 'Em andamento',
+      resumeLabel: 'Retomar',
+      highlightsTitle: 'Destaques',
       highlightsEmptyTitle: 'Seu catálogo começa aqui',
       highlightsEmptyDescription:
-        'Marque obras como 5 estrelas ou avance suas sessões para destacar os cartazes na entrada.',
+        'Busque um título para acompanhar seu progresso em cinema, livros, games e música.',
       summaryCards: {
         total: 'Total no Catálogo',
         completedYear: 'Concluídos no Ano',
         playingNow: 'Em Andamento',
       },
-      activeSectionTitle: 'Em Exibição Agora',
-      emptyActiveMessage: 'Nenhuma sessão ativa no momento.',
-      emptyActiveCta: 'Escolher próxima sessão',
+      activeSectionTitle: 'Em andamento',
+      emptyActiveMessage: 'Nenhum item ativo no momento.',
+      emptyActiveCta: 'Escolher próximo item',
       seeAllLabel: 'Ver catálogo',
       emptyBacklogTitle: 'Seu catálogo está vazio',
       emptyBacklogDescription:
-        'Catalogue filmes, séries e animes com controle de minutagem, episódios e ordem cronológica.',
+        'Catalogue filmes, livros, games e músicas em um único lugar.',
       emptyBacklogCta: 'Catalogar primeira Obra',
     },
     stats: {
@@ -464,7 +671,7 @@ export const domainConfig = {
       drawerStatusLabel: 'Status inicial',
       drawerFormatLabel: 'Mídia / Sala',
       drawerAudioLabel: 'Áudio / Legenda',
-      drawerWorkTypeLabel: 'Formato Audiovisual',
+      drawerWorkTypeLabel: 'Tipo',
       drawerSaveLabel: 'Guardar no Catálogo',
       drawerCancelLabel: 'Cancelar',
       manualButtonLabel: 'Cadastro Manual',
@@ -483,7 +690,7 @@ export const domainConfig = {
       allTabLabel: 'Todos',
       allTypesLabel: 'Todos os formatos',
       emptyMessage: 'Nenhuma obra neste filtro.',
-      emptyBacklogTitle: 'Seu catálogo de filmes, séries e animes está vazio',
+      emptyBacklogTitle: 'Seu catálogo está vazio',
       emptyBacklogCta: 'Catalogar primeira Obra',
       countSingular: 'obra',
       countPlural: 'obras',
@@ -508,14 +715,14 @@ export const domainConfig = {
       closeLabel: 'Fechar',
     },
     profile: {
-      handle: '@espectador',
-      displayName: 'Cinéfilo',
-      avatarInitials: 'CC',
+      handle: '@meu-arquivo',
+      displayName: 'Meu arquivo',
+      avatarInitials: 'MA',
       avatarUrl: '',
       coverUrl: '',
-      bio: 'Catálogo pessoal e privado — filmes, séries e animes sem ruído.',
-      linkLabel: 'omniprism.app/@espectador',
-      linkUrl: 'https://omniprism.app/@espectador',
+      bio: 'Catálogo pessoal multi-domínio — filmes, livros, games e música.',
+      linkLabel: 'omniprism.app/@meu-arquivo',
+      linkUrl: 'https://omniprism.app/@meu-arquivo',
       xpConfig: {
         perMinute: 0.25,
         perEpisode: 12,
@@ -541,7 +748,7 @@ export const domainConfig = {
       emptyJournalDescription: 'Registre ingressos, impressões de sessão, capturas e diálogos marcantes.',
       emptyJournalCta: 'Registrar primeira sessão',
       emptyTrophies: 'Nenhuma obra concluída ou favoritada ainda.',
-      emptyRadar: 'Nenhuma obra na fila Quero Ver.',
+      emptyRadar: 'Nenhum item na fila ainda.',
       editModal: {
         title: 'Editar Perfil',
         coverLabel: 'Banner do Catálogo',
@@ -588,7 +795,7 @@ export const domainConfig = {
       },
     },
     detail: {
-      workTypeTitle: 'Formato Audiovisual',
+      workTypeTitle: 'Tipo',
       statusTitle: 'Status',
       formatTitle: 'Mídia / Sala',
       audioFormatTitle: 'Áudio / Legenda',
@@ -617,19 +824,46 @@ export const domainConfig = {
       notesLabel: 'Crítica Pessoal',
       notesPlaceholder: 'Escreva sua crítica, impressões de direção, trilha ou atuações...',
       favoriteLabel: 'Favorito',
-      wishlistLabel: 'Quero Reassistir / Guardar',
+      wishlistLabel: 'Guardar na lista',
       removeLabel: 'Remover do catálogo',
       closeLabel: 'Fechar',
     },
   },
 };
 
-export function getStatusList() {
-  return domainConfig.statusOrder.map((id) => domainConfig.statuses[id]);
+export function getDomainVocabulary(domain = 'cinema') {
+  if (String(domain || '').trim().toLowerCase() === 'all') {
+    return DOMAIN_VOCABULARY.all;
+  }
+  const clean = normalizeDomainId(domain);
+  return DOMAIN_VOCABULARY[clean] || DOMAIN_VOCABULARY.cinema;
 }
 
-export function getStatusConfig(statusId) {
-  return domainConfig.statuses[statusId] ?? domainConfig.statuses.queued;
+export function getStatusLabelForDomain(statusId, domain = 'cinema') {
+  const vocab = getDomainVocabulary(domain);
+  const key = normalizeCinemaStatus(statusId);
+  return vocab.statuses[key] || DOMAIN_VOCABULARY.cinema.statuses[key] || domainConfig.statuses.queued.label;
+}
+
+export function getStatusConfigForDomain(statusId, domain = 'cinema') {
+  const key = normalizeCinemaStatus(statusId);
+  const base = domainConfig.statuses[key] ?? domainConfig.statuses.queued;
+  return {
+    ...base,
+    label: getStatusLabelForDomain(key, domain),
+  };
+}
+
+export function getStatusListForDomain(domain = 'cinema') {
+  return domainConfig.statusOrder.map((id) => getStatusConfigForDomain(id, domain));
+}
+
+export function getStatusList(domain = 'cinema') {
+  return getStatusListForDomain(domain);
+}
+
+export function getStatusConfig(statusId, domain = 'cinema') {
+  return getStatusConfigForDomain(statusId, domain);
 }
 
 export function getWorkTypeConfig(workTypeId) {
@@ -653,10 +887,40 @@ export function normalizeCinemaWorkType(rawType) {
 
 export function normalizeCinemaStatus(rawStatus) {
   const clean = String(rawStatus || '').trim().toLowerCase();
-  if (clean === 'playing' || clean === 'watching' || clean === 'assistindo') return 'playing';
-  if (clean === 'completed' || clean === 'watched' || clean === 'concluido') return 'completed';
-  if (clean === 'paused' || clean === 'on_hold' || clean === 'em_pausa') return 'paused';
-  if (clean === 'rewatching' || clean === 'reassistindo') return 'rewatching';
+  if (
+    clean === 'playing' ||
+    clean === 'watching' ||
+    clean === 'in-progress' ||
+    clean === 'assistindo' ||
+    clean === 'lendo' ||
+    clean === 'jogando' ||
+    clean === 'ouvindo'
+  ) {
+    return 'playing';
+  }
+  if (
+    clean === 'completed' ||
+    clean === 'watched' ||
+    clean === 'concluido' ||
+    clean === 'concluído' ||
+    clean === 'lido' ||
+    clean === 'zerado' ||
+    clean === 'ouvido'
+  ) {
+    return 'completed';
+  }
+  if (clean === 'paused' || clean === 'on_hold' || clean === 'em_pausa' || clean === 'pausado') {
+    return 'paused';
+  }
+  if (
+    clean === 'rewatching' ||
+    clean === 'reassistindo' ||
+    clean === 'relendo' ||
+    clean === 'rejogando' ||
+    clean === 'reouvindo'
+  ) {
+    return 'rewatching';
+  }
   if (clean === 'dropped' || clean === 'abandonado') return 'dropped';
   return 'queued';
 }

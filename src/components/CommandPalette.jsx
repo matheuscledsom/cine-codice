@@ -156,7 +156,7 @@ export function CommandPalette({
             aria-label="Buscar obras, coleções ou comandos"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar filmes, séries, animes, coleções... (Ctrl+K)"
+            placeholder="Buscar filmes, livros, games, álbuns e coleções... (Ctrl+K)"
             className="min-h-[44px] min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-subtle focus:outline-none"
           />
           <button

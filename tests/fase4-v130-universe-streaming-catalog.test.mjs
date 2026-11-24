@@ -204,6 +204,10 @@ test('Fase 4 (v1.3.0): Distinção Visual no Catálogo (Filme · 2h 28m, Série 
   assert.equal(animeLeg.label, 'Anime · LEG');
 
   const addSrc = fs.readFileSync(path.resolve('src/screens/AddScreen.jsx'), 'utf8');
-  assert.ok(addSrc.includes('Gêneros Oficiais (API)'));
-  assert.ok(addSrc.includes('Clima &amp; Marcadores Pessoais'));
+  const detailSrc = fs.readFileSync(
+    path.resolve('src/components/WorkDetailPage.jsx'),
+    'utf8'
+  );
+  assert.ok(addSrc.includes('getDisplayGenres'));
+  assert.ok(detailSrc.includes('TechnicalAtmosphereSection'));
 });

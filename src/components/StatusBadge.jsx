@@ -6,7 +6,7 @@ import {
   RotateCcw,
   XCircle,
 } from 'lucide-react';
-import { getStatusConfig } from '../config/domainConfig';
+import { getStatusConfigForDomain } from '../config/domainConfig';
 
 const STATUS_SHAPES = {
   queued: Bookmark,
@@ -17,8 +17,8 @@ const STATUS_SHAPES = {
   dropped: XCircle,
 };
 
-export function StatusBadge({ statusId, size = 'sm' }) {
-  const status = getStatusConfig(statusId);
+export function StatusBadge({ statusId, domain = 'cinema', size = 'sm' }) {
+  const status = getStatusConfigForDomain(statusId, domain);
   const ShapeIcon = STATUS_SHAPES[status.id] || Bookmark;
   const sizeClasses =
     size === 'xs'

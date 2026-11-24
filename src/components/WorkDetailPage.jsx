@@ -39,7 +39,8 @@ import {
   MUSIC_RELEASE_FORMATS,
   domainConfig,
   getDomainMeta,
-  getStatusList,
+  getDomainVocabulary,
+  getStatusListForDomain,
   getWorkTypeLabel,
   inferDomainFromWork,
   normalizeDomainId,
@@ -55,6 +56,10 @@ import {
 } from '../services/cinemaApi';
 import { findFranchiseForItem } from '../services/franchiseEngine';
 import {
+  getDisplayGenres,
+  getDisplaySynopsis,
+} from '../services/multiDomainSearchService';
+import {
   advanceEpisodeProgress,
   createExpandedSeasonPatch,
   formatFlexibleProgressMetric,
@@ -67,6 +72,12 @@ import {
   isLoanOverdue,
   normalizeTagsList,
 } from '../utils/backlogHelpers';
+import {
+  computeAlbumTrackRatingPatch,
+  computeDomainQuickActionPatch,
+  makeAlbumTrackKey,
+  normalizeTrackRatingsMap,
+} from '../utils/catalogDraftHelpers';
 import {
   extractWorkAdaptivePalette,
   getWorkAdaptivePaletteSync,
@@ -95,9 +106,10 @@ export function computeNextTop4Patch(item, allItems = []) {
     };
   }
 
+  const targetDomain = inferDomainFromWork(item || {});
   const occupied = new Set(
     (Array.isArray(allItems) ? allItems : [])
-      .filter((w) => w && w.id !== item?.id)
+      .filter((w) => w && w.id !== item?.id && inferDomainFromWork(w) === targetDomain)
       .map((w) => Number(w.favoriteRank))
       .filter((r) => Number.isInteger(r) && r >= 1 && r <= 4)
   );
@@ -138,7 +150,11 @@ export function WorkDetailPage({
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [synopsisExpanded, setSynopsisExpanded] = useState(false);
+  const [moreDetailsOpen, setMoreDetailsOpen] = useState(false);
   const [isEditDrawerOpen, setIsEditDrawerOpen] = useState(false);
+  const [editMoreDetailsOpen, setEditMoreDetailsOpen] = useState(false);
+  const [activeTrackRatingKey, setActiveTrackRatingKey] = useState(null);
+  const [pendingPagesFillPrompt, setPendingPagesFillPrompt] = useState(false);
   const [top4PickerOpen, setTop4PickerOpen] = useState(false);
   const [tagInput, setTagInput] = useState('');
   const [ratingsLoading, setRatingsLoading] = useState(false);
@@ -333,7 +349,11 @@ export function WorkDetailPage({
   useEffect(() => {
     setActiveTab('overview');
     setSynopsisExpanded(false);
+    setMoreDetailsOpen(false);
     setIsEditDrawerOpen(false);
+    setEditMoreDetailsOpen(false);
+    setActiveTrackRatingKey(null);
+    setPendingPagesFillPrompt(false);
     setTop4PickerOpen(false);
     setTagInput('');
     setRatingsMeta({
@@ -425,9 +445,12 @@ export function WorkDetailPage({
 
   const critiqueBadge = computeWorkCritiqueBadge(item);
 
-  const statuses = getStatusList();
-  const { ui, cardFields } = domainConfig;
-  const genres = Array.isArray(item[cardFields.genres]) ? item[cardFields.genres] : [];
+  const workDomain = normalizeDomainId(inferDomainFromWork(item));
+  const domainMeta = getDomainMeta(workDomain);
+  const workVocab = getDomainVocabulary(workDomain);
+  const statuses = getStatusListForDomain(workDomain);
+  const { ui } = domainConfig;
+  const genres = getDisplayGenres(item, { max: 3 });
   const moods = Array.isArray(item.moods)
     ? item.moods
     : Array.isArray(item.atmosphere)
@@ -437,8 +460,6 @@ export function WorkDetailPage({
   const verdictMeta = item.verdict ? getVerdictMeta(item.verdict) : null;
   const quotesCount = Array.isArray(item.quotes) ? item.quotes.length : 0;
   const displayTitles = getDisplayTitles(item, 'bilingual');
-  const workDomain = normalizeDomainId(inferDomainFromWork(item));
-  const domainMeta = getDomainMeta(workDomain);
   const creatorLabel = item.creator || item.director || item.studio || item.author || '';
   const episodic = workDomain === 'cinema' && isEpisodicWork(item);
   const nextAiringBadge = episodic ? formatNextAiringBadge(item) : null;
@@ -446,8 +467,9 @@ export function WorkDetailPage({
   const workFormatLabel = getWorkTypeLabel(item, workDomain);
   const domainQuickMetric =
     workDomain !== 'cinema' ? formatFlexibleProgressMetric(item) : null;
+  const albumTrackRatings = normalizeTrackRatingsMap(item.trackRatings);
 
-  const synopsisText = String(item.synopsis || item.overview || '').trim();
+  const synopsisText = getDisplaySynopsis(item);
   const isLongSynopsis = synopsisText.length > 260;
 
   const clickableCreators = Array.from(
@@ -472,82 +494,127 @@ export function WorkDetailPage({
       ? Number(item.favoriteRank)
       : null;
 
+  const runDomainQuickAction = (actionType) => {
+    const plan = computeDomainQuickActionPatch(item, actionType, {
+      allowCompletion: true,
+    });
+    if (!plan) return;
+    onUpdateItem(item.id, plan.patch);
+    playTactileSound(plan.sound || 'page');
+    showToast({
+      message: plan.toastMessage,
+      type: 'success',
+      duration: 6000,
+      action: {
+        label: 'Desfazer',
+        onClick: () => {
+          onUpdateItem(item.id, plan.undoSnapshot);
+        },
+      },
+    });
+  };
+
+  const handleTrackRatingSelect = (track, idx, score10) => {
+    const result = computeAlbumTrackRatingPatch(item, track, idx, score10);
+    if (!result) return;
+    onUpdateItem(item.id, result.patch);
+    playTactileSound('page');
+    showToast({
+      message: result.toastMessage,
+      type: 'success',
+      duration: 6000,
+      action: {
+        label: 'Desfazer',
+        onClick: () => {
+          onUpdateItem(item.id, result.undoSnapshot);
+        },
+      },
+    });
+  };
+
+  const handleStatusSelect = (nextStatusId) => {
+    onUpdateItem(item.id, { status: nextStatusId, inBacklog: true });
+    if (
+      workDomain === 'reading' &&
+      nextStatusId === 'completed' &&
+      Number(item.totalPages) > 0 &&
+      Number(item.pagesRead || 0) < Number(item.totalPages)
+    ) {
+      setPendingPagesFillPrompt(true);
+    } else {
+      setPendingPagesFillPrompt(false);
+    }
+  };
+
   const handlePrimaryContextualAction = () => {
     if (workDomain === 'reading') {
-      const totalPages = Number(item.totalPages) || 0;
-      const currentPages = Math.max(0, Number(item.pagesRead) || 0);
-      const nextPages =
-        totalPages > 0 ? Math.min(totalPages, currentPages + 10) : currentPages + 10;
-      const done = totalPages > 0 && nextPages >= totalPages;
-      onUpdateItem(item.id, {
-        pagesRead: nextPages,
-        status: done ? 'completed' : 'playing',
-        ...(done ? { completedAt: getTodayLocalISO(), progress: 100 } : {}),
-      });
-      playTactileSound(done ? 'complete' : 'page');
-      showToast({
-        message: totalPages > 0 ? `Leitura: Pág. ${nextPages}/${totalPages}` : `Leitura: Pág. ${nextPages}`,
-        type: 'success',
-      });
+      runDomainQuickAction('reading_pages');
       return;
     }
 
     if (workDomain === 'games') {
-      const nextHours = Number((Math.max(0, Number(item.hoursPlayed) || 0) + 1).toFixed(1));
-      onUpdateItem(item.id, {
-        hoursPlayed: nextHours,
-        status: item.status === 'queued' ? 'playing' : item.status,
-      });
-      playTactileSound('page');
-      showToast({
-        message: `${item.title}: ${nextHours}h jogadas (${item.platform || GAME_PLATFORM_UNSET_LABEL})`,
-        type: 'success',
-      });
+      runDomainQuickAction('games_1h');
       return;
     }
 
     if (workDomain === 'music') {
-      const nextListens = Math.max(0, Number(item.listenCount) || 0) + 1;
-      onUpdateItem(item.id, {
-        listenCount: nextListens,
-        status: item.status === 'queued' ? 'completed' : item.status,
-        ...(item.status === 'queued' ? { completedAt: getTodayLocalISO() } : {}),
-      });
-      playTactileSound('page');
-      showToast({
-        message: `${item.title}: audição #${nextListens} registrada`,
-        type: 'success',
-      });
+      runDomainQuickAction('music_listen');
       return;
     }
 
     if (episodic) {
+      const undoSnapshot = {
+        status: item.status,
+        currentSeason: item.currentSeason ?? 1,
+        currentEpisode: item.currentEpisode ?? 0,
+        watchedEpisodes: item.watchedEpisodes || {},
+        progress: item.progress ?? 0,
+        completedDate: item.completedDate || null,
+        updatedAt: item.updatedAt || item.createdAt || null,
+      };
       const patch = advanceEpisodeProgress(item, 1, { allowExpandSeasons: true });
       playTactileSound(patch.status === 'completed' ? 'complete' : 'page');
       onUpdateItem(item.id, patch);
       showToast({
         message: `Progresso atualizado: T${patch.currentSeason || curSeason} · E${patch.currentEpisode || curEp + 1}`,
         type: 'success',
+        duration: 6000,
+        action: {
+          label: 'Desfazer',
+          onClick: () => onUpdateItem(item.id, undoSnapshot),
+        },
       });
     } else {
+      const undoSnapshot = {
+        status: item.status,
+        rewatchCount: Number(item.rewatchCount || 0),
+        completedDate: item.completedDate || null,
+        progress: item.progress ?? 0,
+        updatedAt: item.updatedAt || item.createdAt || null,
+      };
       const alreadyDone = item.status === 'completed';
       const patch = alreadyDone
         ? {
             rewatchCount: Number(item.rewatchCount || 0) + 1,
-            completedAt: getTodayLocalISO(),
+            completedDate: getTodayLocalISO(),
           }
         : {
             status: 'completed',
             inBacklog: true,
-            completedAt: getTodayLocalISO(),
+            completedDate: getTodayLocalISO(),
           };
       playTactileSound('complete');
       onUpdateItem(item.id, patch);
       showToast({
         message: alreadyDone
-          ? `Rewatch #${patch.rewatchCount} registrado para "${item.title}".`
-          : `"${item.title}" marcado como Concluído.`,
+          ? `${workVocab.revisitBadgePrefix} #${patch.rewatchCount} registrado para "${item.title}".`
+          : `"${item.title}" marcado como ${workVocab.statuses.completed}.`,
         type: 'success',
+        duration: 6000,
+        action: {
+          label: 'Desfazer',
+          onClick: () => onUpdateItem(item.id, undoSnapshot),
+        },
       });
     }
   };
@@ -558,16 +625,19 @@ export function WorkDetailPage({
         onUpdateItem(item.id, { favoriteRank: null });
         showToast({ message: 'Removido da vitrine Top 4 Favoritos.', type: 'info' });
       } else {
-        // Libera slot se outra obra ocupava a mesma posição
+        // Libera slot se outra obra do MESMO domínio ocupava a mesma posição
         const currentOccupant = allItems.find(
-          (w) => w.id !== item.id && Number(w.favoriteRank) === explicitSlot
+          (w) =>
+            w.id !== item.id &&
+            inferDomainFromWork(w) === workDomain &&
+            Number(w.favoriteRank) === explicitSlot
         );
         if (currentOccupant) {
           onUpdateItem(currentOccupant.id, { favoriteRank: currentFavRank || null });
         }
         onUpdateItem(item.id, { favoriteRank: explicitSlot, isFavorite: true });
         showToast({
-          message: `"${item.title}" fixado no Top #${explicitSlot} Favoritos da Vida.`,
+          message: `"${item.title}" fixado no Top #${explicitSlot} (${workVocab.favoritesTabLabel}).`,
           type: 'success',
         });
       }
@@ -581,14 +651,17 @@ export function WorkDetailPage({
       showToast({ message: 'Removido da vitrine Top 4 Favoritos.', type: 'info' });
     } else {
       const currentOccupant = allItems.find(
-        (w) => w.id !== item.id && Number(w.favoriteRank) === res.favoriteRank
+        (w) =>
+          w.id !== item.id &&
+          inferDomainFromWork(w) === workDomain &&
+          Number(w.favoriteRank) === res.favoriteRank
       );
       if (currentOccupant) {
         onUpdateItem(currentOccupant.id, { favoriteRank: null });
       }
       onUpdateItem(item.id, { favoriteRank: res.favoriteRank, isFavorite: true });
       showToast({
-        message: `"${item.title}" fixado no Top #${res.favoriteRank} Favoritos da Vida.`,
+        message: `"${item.title}" fixado no Top #${res.favoriteRank} (${workVocab.favoritesTabLabel}).`,
         type: 'success',
       });
     }
@@ -745,7 +818,7 @@ export function WorkDetailPage({
             <div className="min-w-0 flex-1 space-y-2.5">
               {/* Selos de Status, Top 4 e Próxima Exibição */}
               <div className="flex flex-wrap items-center gap-1.5">
-                <StatusBadge statusId={item.status} />
+                <StatusBadge statusId={item.status} domain={workDomain} />
                 {currentFavRank && (
                   <span className="inline-flex items-center gap-1 rounded-full border border-accent bg-accent/20 px-2.5 py-0.5 text-[11px] font-semibold tabular-nums text-accent">
                     <Award className="h-3 w-3" strokeWidth={1.5} />
@@ -786,7 +859,7 @@ export function WorkDetailPage({
                 {Number(item.rewatchCount) > 0 && (
                   <span className="inline-flex items-center gap-1 rounded-full border border-line bg-app px-2.5 py-0.5 text-[11px] font-medium tabular-nums text-ink">
                     <RotateCcw className="h-3 w-3 text-accent" strokeWidth={1.5} />
-                    <span>Rewatch #{item.rewatchCount}</span>
+                    <span>{workVocab.revisitBadgePrefix} #{item.rewatchCount}</span>
                   </span>
                 )}
                 {verdictMeta && (
@@ -857,47 +930,81 @@ export function WorkDetailPage({
 
           {/* Barra de Ações Principais (>= 44px) */}
           <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-4">
-            <button
-              type="button"
-              onClick={handlePrimaryContextualAction}
-              className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-xs font-semibold tabular-nums text-accent-ink transition-opacity hover:opacity-90"
-            >
-              {workDomain === 'reading' ? (
-                <>
+            {workDomain === 'reading' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => runDomainQuickAction('reading_pages')}
+                  className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-xs font-semibold tabular-nums text-accent-ink transition-opacity hover:opacity-90"
+                >
                   <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
                   <span>
                     +10 págs ({Number(item.pagesRead || 0)}
                     {Number(item.totalPages) > 0 ? `/${item.totalPages}` : ''})
                   </span>
-                </>
-              ) : workDomain === 'games' ? (
-                <>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runDomainQuickAction('reading_chapter')}
+                  className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-accent/40 bg-accent/15 px-4 py-2.5 text-xs font-semibold tabular-nums text-accent transition-colors hover:bg-accent/25"
+                >
                   <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-                  <span>
-                    +1h jogada ({Number(item.hoursPlayed || 0)}h · {item.platform || GAME_PLATFORM_UNSET_LABEL})
-                  </span>
-                </>
-              ) : workDomain === 'music' ? (
-                <>
+                  <span>+1 cap ({Number(item.chaptersRead || 0)})</span>
+                </button>
+              </>
+            ) : workDomain === 'games' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => runDomainQuickAction('games_30m')}
+                  className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-accent/40 bg-accent/15 px-4 py-2.5 text-xs font-semibold tabular-nums text-accent transition-colors hover:bg-accent/25"
+                >
                   <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-                  <span>+1 escuta ({Number(item.listenCount || 0)}x)</span>
-                </>
-              ) : episodic ? (
-                <>
+                  <span>+30 min</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runDomainQuickAction('games_1h')}
+                  className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-1.5 rounded-xl bg-accent px-4 py-2.5 text-xs font-semibold tabular-nums text-accent-ink transition-opacity hover:opacity-90"
+                >
                   <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-                  <span>
-                    +1 Ep (T{curSeason} · E{curEp})
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Check className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-                  <span>
-                    {item.status === 'completed' ? 'Registrar Rewatch (+1)' : 'Marcar como Concluído'}
-                  </span>
-                </>
-              )}
-            </button>
+                  <span>+1 h ({Number(item.hoursPlayed || 0)}h)</span>
+                </button>
+              </>
+            ) : workDomain === 'music' ? (
+              <button
+                type="button"
+                onClick={() => runDomainQuickAction('music_listen')}
+                className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-xs font-semibold tabular-nums text-accent-ink transition-opacity hover:opacity-90"
+              >
+                <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                <span>+1 audição ({Number(item.listenCount || 0)}x)</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handlePrimaryContextualAction}
+                className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-xs font-semibold tabular-nums text-accent-ink transition-opacity hover:opacity-90"
+              >
+                {episodic ? (
+                  <>
+                    <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                    <span>
+                      +1 Ep (T{curSeason} · E{curEp})
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                    <span>
+                      {item.status === 'completed'
+                        ? 'Registrar Rewatch (+1)'
+                        : `Marcar como ${workVocab.statuses.completed}`}
+                    </span>
+                  </>
+                )}
+              </button>
+            )}
 
             <div className="relative">
               <button
@@ -974,9 +1081,7 @@ export function WorkDetailPage({
                   key={status.id}
                   type="button"
                   aria-pressed={isSelected}
-                  onClick={() =>
-                    onUpdateItem(item.id, { status: status.id, inBacklog: true })
-                  }
+                  onClick={() => handleStatusSelect(status.id)}
                   className={`inline-flex min-h-[44px] items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition-colors ${
                     isSelected
                       ? 'border-accent bg-accent/15 text-ink'
@@ -989,6 +1094,54 @@ export function WorkDetailPage({
               );
             })}
           </div>
+
+          {pendingPagesFillPrompt &&
+            workDomain === 'reading' &&
+            Number(item.totalPages) > 0 &&
+            Number(item.pagesRead || 0) < Number(item.totalPages) && (
+              <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-accent/40 bg-accent/10 px-3.5 py-2.5 text-xs">
+                <span className="text-ink">
+                  Preencher páginas lidas com o total ({item.totalPages} págs)?
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const prevPages = Number(item.pagesRead || 0);
+                      const prevProgress = Number(item.progress || 0);
+                      onUpdateItem(item.id, {
+                        pagesRead: Number(item.totalPages),
+                        progress: 100,
+                      });
+                      setPendingPagesFillPrompt(false);
+                      showToast({
+                        message: `Páginas lidas atualizadas para ${item.totalPages}/${item.totalPages}.`,
+                        type: 'success',
+                        duration: 6000,
+                        action: {
+                          label: 'Desfazer',
+                          onClick: () =>
+                            onUpdateItem(item.id, {
+                              pagesRead: prevPages,
+                              progress: prevProgress,
+                            }),
+                        },
+                      });
+                    }}
+                    className="min-h-[36px] rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:opacity-90"
+                  >
+                    Confirmar ({item.totalPages} págs)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingPagesFillPrompt(false)}
+                    className="min-h-[36px] rounded-lg border border-line bg-card px-3 py-1.5 text-xs font-medium text-muted hover:text-ink"
+                  >
+                    Manter em {Number(item.pagesRead || 0)}
+                  </button>
+                </div>
+              </div>
+            )}
         </div>
       </header>
 
@@ -1027,7 +1180,7 @@ export function WorkDetailPage({
                 : workDomain === 'games'
                   ? 'Plataforma & Horas'
                   : workDomain === 'music'
-                    ? 'Faixas & Escutas'
+                    ? 'Faixas & Audições'
                     : episodic
                       ? 'Temporadas & Episódios'
                       : 'Sessão & Duração'}
@@ -1044,7 +1197,9 @@ export function WorkDetailPage({
             }`}
           >
             <Quote className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-            <span className="truncate">Cenas &amp; Diário</span>
+            <span className="truncate">
+              {workDomain === 'cinema' ? <>Cenas &amp; Diário</> : workVocab.notesTabLabel}
+            </span>
             {quotesCount > 0 && (
               <span
                 className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${
@@ -1156,16 +1311,10 @@ export function WorkDetailPage({
                             {Number(item.chaptersRead || 0)} cap.
                           </dd>
                         </div>
-                        <div className="rounded-lg border border-line bg-app p-2.5">
+                        <div className="col-span-2 rounded-lg border border-line bg-app p-2.5">
                           <dt className="text-[10px] text-subtle">Formato</dt>
                           <dd className="mt-0.5 font-semibold text-ink">
                             {item.bookFormat || 'Físico'}
-                          </dd>
-                        </div>
-                        <div className="rounded-lg border border-line bg-app p-2.5">
-                          <dt className="text-[10px] text-subtle">ISBN / DOI</dt>
-                          <dd className="mt-0.5 truncate font-semibold tabular-nums text-ink">
-                            {item.isbnOrDoi || '—'}
                           </dd>
                         </div>
                       </dl>
@@ -1196,12 +1345,6 @@ export function WorkDetailPage({
                             {item.completionType || 'História Principal'}
                           </dd>
                         </div>
-                        <div className="col-span-2 rounded-lg border border-line bg-app p-2.5">
-                          <dt className="text-[10px] text-subtle">Launcher / Build</dt>
-                          <dd className="mt-0.5 truncate font-semibold text-ink">
-                            {[item.storeOrLauncher, item.buildOrCharacter].filter(Boolean).join(' · ') || '—'}
-                          </dd>
-                        </div>
                         {item.masterpieceJustification && (
                           <div className="col-span-2 rounded-lg border border-accent/40 bg-accent/10 p-2.5">
                             <dt className="text-[10px] font-semibold text-accent">
@@ -1217,21 +1360,16 @@ export function WorkDetailPage({
                     {workDomain === 'music' && (
                       <dl className="grid grid-cols-2 gap-2 text-xs">
                         <div className="rounded-lg border border-line bg-app p-2.5">
-                          <dt className="text-[10px] text-subtle">Formato / Subgênero</dt>
+                          <dt className="text-[10px] text-subtle">Formato</dt>
                           <dd className="mt-0.5 truncate font-semibold text-ink">
-                            {[
-                              item.releaseFormat ||
-                                (item.workType === 'track' ? 'Faixa Individual' : 'Álbum de Estúdio'),
-                              item.subgenre,
-                            ]
-                              .filter(Boolean)
-                              .join(' · ')}
+                            {item.releaseFormat ||
+                              (item.workType === 'track' ? 'Faixa Individual' : 'Álbum de Estúdio')}
                           </dd>
                         </div>
                         <div className="rounded-lg border border-line bg-app p-2.5">
                           <dt className="text-[10px] text-subtle">Audições</dt>
                           <dd className="mt-0.5 font-semibold tabular-nums text-ink">
-                            {Number(item.listenCount || 0)} escutas
+                            {Number(item.listenCount || 0)} audições
                           </dd>
                         </div>
                         {item.workType === 'track' ? (
@@ -1245,7 +1383,7 @@ export function WorkDetailPage({
                           <div className="col-span-2 rounded-lg border border-line bg-app p-2.5">
                             <dt className="text-[10px] text-subtle">Faixa favorita</dt>
                             <dd className="mt-0.5 truncate font-semibold text-accent">
-                              {item.favoriteTrack || 'Toque na aba Faixas & Escutas para escolher'}
+                              {item.favoriteTrack || 'Toque na aba Faixas & Audições para escolher'}
                             </dd>
                           </div>
                         )}
@@ -1422,7 +1560,11 @@ export function WorkDetailPage({
                     }`}
                   >
                     <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.5} />
-                    <span>{item.wantToReread ? 'Quero rever (ativo)' : 'Quero rever'}</span>
+                    <span>
+                      {item.wantToReread
+                        ? workVocab.revisitActiveLabel
+                        : workVocab.revisitLabel}
+                    </span>
                   </button>
 
                   <button
@@ -1439,7 +1581,7 @@ export function WorkDetailPage({
                       fill={item.isWishlist ? 'currentColor' : 'none'}
                       strokeWidth={1.5}
                     />
-                    <span>{ui.detail.wishlistLabel}</span>
+                    <span>{workVocab.wishlistToggleLabel}</span>
                   </button>
                 </div>
               </section>
@@ -1514,7 +1656,7 @@ export function WorkDetailPage({
                   <span className="inline-flex items-center gap-1.5 text-ink">
                     <UserCheck className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
                     <span>
-                      Mídia física emprestada para <strong>{item.loanedTo}</strong>
+                      Emprestado para <strong>{item.loanedTo}</strong>
                     </span>
                   </span>
                   {isLoanOverdue(item) && (
@@ -1523,6 +1665,155 @@ export function WorkDetailPage({
                       <span>Emprestado há +30 dias</span>
                     </span>
                   )}
+                </div>
+              )}
+            </section>
+
+            {/* Seção recolhida "Mais detalhes" (campos avançados saem do fluxo rápido) */}
+            <section
+              aria-label="Mais detalhes da obra"
+              className="rounded-2xl border border-line bg-card p-4"
+            >
+              <button
+                type="button"
+                aria-expanded={moreDetailsOpen}
+                onClick={() => setMoreDetailsOpen((v) => !v)}
+                className="flex min-h-[44px] w-full items-center justify-between gap-2 text-left"
+              >
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wider text-muted">
+                    Mais detalhes
+                  </span>
+                  <p className="text-[11px] text-subtle">
+                    {workDomain === 'reading'
+                      ? 'ISBN/DOI, citação marcante, editora e título original'
+                      : workDomain === 'games'
+                        ? 'Loja/launcher, build/personagem, horas detalhadas e título original'
+                        : workDomain === 'music'
+                          ? 'Subgênero, selo, álbum vinculado e título original'
+                          : 'Título original, estúdio, franquia e data de conclusão'}
+                  </p>
+                </div>
+                {moreDetailsOpen ? (
+                  <ChevronUp className="h-4 w-4 shrink-0 text-muted" strokeWidth={1.5} />
+                ) : (
+                  <ChevronDown className="h-4 w-4 shrink-0 text-muted" strokeWidth={1.5} />
+                )}
+              </button>
+
+              {moreDetailsOpen && (
+                <div className="mt-3 space-y-3 border-t border-line pt-3">
+                  <dl className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                    <div className="rounded-lg border border-line bg-app p-2.5">
+                      <dt className="text-[10px] text-subtle">Título original</dt>
+                      <dd className="mt-0.5 font-semibold text-ink">
+                        {item.originalTitle || '—'}
+                      </dd>
+                    </div>
+                    <div className="rounded-lg border border-line bg-app p-2.5">
+                      <dt className="text-[10px] text-subtle">
+                        {workDomain === 'cinema' ? 'Estúdio / Rede' : 'Selo / Editora / Publicadora'}
+                      </dt>
+                      <dd className="mt-0.5 font-semibold text-ink">
+                        {item.studio || '—'}
+                      </dd>
+                    </div>
+                    {workDomain === 'reading' && (
+                      <>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">ISBN / DOI</dt>
+                          <dd className="mt-0.5 truncate font-semibold tabular-nums text-ink">
+                            {item.isbnOrDoi || '—'}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Data de término</dt>
+                          <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                            {item.completedDate || item.completedAt || '—'}
+                          </dd>
+                        </div>
+                        <div className="sm:col-span-2 rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Citação marcante</dt>
+                          <dd className="mt-0.5 text-xs text-ink">
+                            {item.favoriteScene || '—'}
+                          </dd>
+                        </div>
+                      </>
+                    )}
+                    {workDomain === 'games' && (
+                      <>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Loja / Launcher</dt>
+                          <dd className="mt-0.5 font-semibold text-ink">
+                            {item.storeOrLauncher || '—'}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Build / Personagem / Time</dt>
+                          <dd className="mt-0.5 font-semibold text-ink">
+                            {item.buildOrCharacter || '—'}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Horas jogadas</dt>
+                          <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                            {Number(item.hoursPlayed || 0)}h
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Data de término</dt>
+                          <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                            {item.completedDate || item.completedAt || '—'}
+                          </dd>
+                        </div>
+                      </>
+                    )}
+                    {workDomain === 'music' && (
+                      <>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Subgênero</dt>
+                          <dd className="mt-0.5 font-semibold text-ink">
+                            {item.subgenre || '—'}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Álbum vinculado</dt>
+                          <dd className="mt-0.5 font-semibold text-ink">
+                            {item.albumName || '—'}
+                          </dd>
+                        </div>
+                      </>
+                    )}
+                    {workDomain === 'cinema' && (
+                      <>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Franquia / Universo</dt>
+                          <dd className="mt-0.5 font-semibold text-ink">
+                            {item.franchiseName || item.seriesName || '—'}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Data de conclusão</dt>
+                          <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                            {item.completedDate || item.completedAt || '—'}
+                          </dd>
+                        </div>
+                      </>
+                    )}
+                  </dl>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditMoreDetailsOpen(true);
+                        setIsEditDrawerOpen(true);
+                      }}
+                      className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-line bg-app px-3 text-xs font-medium text-ink hover:border-accent hover:text-accent"
+                    >
+                      <Edit3 className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                      <span>Editar mais detalhes</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </section>
@@ -1563,7 +1854,6 @@ export function WorkDetailPage({
                       {[
                         item.bookFormat || 'Físico',
                         Number(item.chaptersRead) > 0 ? `${item.chaptersRead} capítulos` : null,
-                        item.isbnOrDoi ? `Ref. ${item.isbnOrDoi}` : null,
                       ]
                         .filter(Boolean)
                         .join(' · ')}
@@ -1571,46 +1861,49 @@ export function WorkDetailPage({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {[5, 10, 25].map((delta) => (
-                      <button
-                        key={delta}
-                        type="button"
-                        onClick={() => {
-                          const total = Number(item.totalPages) || 0;
-                          const next =
-                            total > 0
-                              ? Math.min(total, Number(item.pagesRead || 0) + delta)
-                              : Number(item.pagesRead || 0) + delta;
-                          const done = total > 0 && next >= total;
-                          onUpdateItem(item.id, {
-                            pagesRead: next,
-                            status: done ? 'completed' : 'playing',
-                            ...(done ? { completedAt: getTodayLocalISO(), progress: 100 } : {}),
-                          });
-                          playTactileSound(done ? 'complete' : 'page');
-                        }}
-                        className="inline-flex min-h-[44px] items-center gap-1 rounded-xl border border-line bg-app px-3 py-2 text-xs font-semibold tabular-nums text-ink hover:border-accent"
-                      >
-                        <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                        <span>{delta} págs</span>
-                      </button>
-                    ))}
+                    <button
+                      type="button"
+                      onClick={() => runDomainQuickAction('reading_pages')}
+                      className="inline-flex min-h-[44px] items-center gap-1 rounded-xl border border-line bg-app px-3.5 py-2 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+                    >
+                      <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      <span>10 págs</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => runDomainQuickAction('reading_chapter')}
+                      className="inline-flex min-h-[44px] items-center gap-1 rounded-xl border border-line bg-app px-3.5 py-2 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+                    >
+                      <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      <span>1 cap ({Number(item.chaptersRead || 0)})</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
-                        const total = Number(item.totalPages) || 0;
-                        onUpdateItem(item.id, {
-                          status: 'completed',
-                          pagesRead: total > 0 ? total : Number(item.pagesRead || 0),
-                          completedAt: getTodayLocalISO(),
-                          progress: 100,
-                        });
+                        const prevStatus = item.status;
+                        const prevCompletedDate = item.completedDate || null;
+                        handleStatusSelect('completed');
                         playTactileSound('complete');
+                        showToast({
+                          message: `"${item.title}" marcado como ${workVocab.statuses.completed}.`,
+                          type: 'success',
+                          duration: 6000,
+                          action: {
+                            label: 'Desfazer',
+                            onClick: () => {
+                              setPendingPagesFillPrompt(false);
+                              onUpdateItem(item.id, {
+                                status: prevStatus,
+                                completedDate: prevCompletedDate,
+                              });
+                            },
+                          },
+                        });
                       }}
                       className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-accent-ink hover:opacity-90"
                     >
                       <Check className="h-3.5 w-3.5" strokeWidth={1.5} />
-                      <span>Concluir Leitura</span>
+                      <span>Marcar como Lido</span>
                     </button>
                   </div>
                 </div>
@@ -1635,31 +1928,14 @@ export function WorkDetailPage({
                       ))}
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onUpdateItem(item.id, {
-                            chaptersRead: Math.max(0, Number(item.chaptersRead || 0)) + 1,
-                            status: item.status === 'queued' ? 'playing' : item.status,
-                          });
-                          playTactileSound('page');
-                        }}
-                        className="inline-flex min-h-[40px] items-center gap-1 rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-ink hover:border-accent"
-                      >
-                        <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                        <span>1 cap. ({Number(item.chaptersRead || 0)})</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setIsEditDrawerOpen(true)}
-                        className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-line bg-app px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
-                      >
-                        <Edit3 className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                        <span>Editar páginas / ISBN</span>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsEditDrawerOpen(true)}
+                      className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-line bg-app px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
+                    >
+                      <Edit3 className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                      <span>Editar páginas e detalhes</span>
+                    </button>
                   </div>
                 </div>
               </section>
@@ -1680,8 +1956,6 @@ export function WorkDetailPage({
                       {[
                         item.editionType || GAME_EDITION_TYPES[0],
                         item.completionType || 'História Principal',
-                        item.storeOrLauncher,
-                        item.buildOrCharacter,
                       ]
                         .filter(Boolean)
                         .join(' · ')}
@@ -1689,33 +1963,47 @@ export function WorkDetailPage({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {[1, 3].map((delta) => (
-                      <button
-                        key={delta}
-                        type="button"
-                        onClick={() => {
-                          const next = Number((Number(item.hoursPlayed || 0) + delta).toFixed(1));
-                          onUpdateItem(item.id, {
-                            hoursPlayed: next,
-                            status: item.status === 'queued' ? 'playing' : item.status,
-                          });
-                          playTactileSound('page');
-                        }}
-                        className="inline-flex min-h-[44px] items-center gap-1 rounded-xl border border-line bg-app px-3.5 py-2 text-xs font-semibold tabular-nums text-ink hover:border-accent"
-                      >
-                        <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                        <span>{delta}h</span>
-                      </button>
-                    ))}
+                    <button
+                      type="button"
+                      onClick={() => runDomainQuickAction('games_30m')}
+                      className="inline-flex min-h-[44px] items-center gap-1 rounded-xl border border-line bg-app px-3.5 py-2 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+                    >
+                      <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      <span>30 min</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => runDomainQuickAction('games_1h')}
+                      className="inline-flex min-h-[44px] items-center gap-1 rounded-xl border border-line bg-app px-3.5 py-2 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+                    >
+                      <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      <span>1 h</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
+                        const prev = {
+                          status: item.status,
+                          completedAt: item.completedAt || null,
+                          completedDate: item.completedDate || null,
+                          progress: item.progress ?? 0,
+                        };
                         onUpdateItem(item.id, {
                           status: 'completed',
                           completedAt: getTodayLocalISO(),
+                          completedDate: getTodayLocalISO(),
                           progress: 100,
                         });
                         playTactileSound('complete');
+                        showToast({
+                          message: `"${item.title}" marcado como Zerado.`,
+                          type: 'success',
+                          duration: 6000,
+                          action: {
+                            label: 'Desfazer',
+                            onClick: () => onUpdateItem(item.id, prev),
+                          },
+                        });
                       }}
                       className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-accent-ink hover:opacity-90"
                     >
@@ -1801,11 +2089,14 @@ export function WorkDetailPage({
 
                     <button
                       type="button"
-                      onClick={() => setIsEditDrawerOpen(true)}
+                      onClick={() => {
+                        setEditMoreDetailsOpen(true);
+                        setIsEditDrawerOpen(true);
+                      }}
                       className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-line bg-app px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
                     >
                       <Edit3 className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                      <span>Editar horas / launcher / build</span>
+                      <span>Mais detalhes / Editar</span>
                     </button>
                   </div>
                 </div>
@@ -1818,13 +2109,13 @@ export function WorkDetailPage({
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h2 className="text-sm font-semibold text-ink">
-                      Faixas &amp; Escutas ·{' '}
+                      Faixas &amp; Audições ·{' '}
                       <span className="tabular-nums text-accent">
                         {Number(item.listenCount || 0)} audições
                       </span>
                     </h2>
                     <p className="mt-0.5 text-xs text-muted">
-                      {[item.releaseFormat || 'Álbum de Estúdio', item.subgenre, item.favoriteTrack && `Fav.: ${item.favoriteTrack}`]
+                      {[item.releaseFormat || 'Álbum de Estúdio', item.favoriteTrack && `Fav.: ${item.favoriteTrack}`]
                         .filter(Boolean)
                         .join(' · ')}
                     </p>
@@ -1832,46 +2123,138 @@ export function WorkDetailPage({
 
                   <button
                     type="button"
-                    onClick={handlePrimaryContextualAction}
+                    onClick={() => runDomainQuickAction('music_listen')}
                     className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold tabular-nums text-accent-ink hover:opacity-90"
                   >
                     <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                    <span>+1 Escuta</span>
+                    <span>+1 audição</span>
                   </button>
                 </div>
 
                 {Array.isArray(item.tracks) && item.tracks.length > 0 ? (
                   <div className="space-y-1.5 border-t border-line pt-3">
-                    <p className="text-[11px] font-medium text-muted">
-                      Tracklist ({item.tracks.length} faixas — toque para definir como faixa favorita)
-                    </p>
-                    <div className="max-h-72 overflow-y-auto divide-y divide-line rounded-xl border border-line bg-app no-scrollbar">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-[11px] font-medium text-muted">
+                        Tracklist ({item.tracks.length} faixas — avalie cada faixa de 0 a 10 ou marque a favorita)
+                      </p>
+                      {Object.keys(albumTrackRatings).length > 0 && (
+                        <span className="rounded-md border border-accent/35 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
+                          Média das faixas:{' '}
+                          {(
+                            Object.values(albumTrackRatings).reduce((acc, v) => acc + v, 0) /
+                            Object.values(albumTrackRatings).length
+                          ).toFixed(1)}
+                          /10
+                        </span>
+                      )}
+                    </div>
+                    <div className="max-h-96 overflow-y-auto divide-y divide-line rounded-xl border border-line bg-app no-scrollbar">
                       {item.tracks.map((tr, idx) => {
                         const isFav = item.favoriteTrack === tr.title;
+                        const trackKey = makeAlbumTrackKey(tr, idx);
+                        const trackScore = albumTrackRatings[trackKey];
+                        const pickerOpen = activeTrackRatingKey === trackKey;
                         return (
-                          <button
+                          <div
                             key={`${tr.number || idx}-${tr.title}`}
-                            type="button"
-                            onClick={() => {
-                              onUpdateItem(item.id, { favoriteTrack: tr.title });
-                              playTactileSound('page');
-                            }}
-                            className={`flex min-h-[42px] w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors ${
-                              isFav ? 'bg-accent/15 font-semibold text-accent' : 'text-ink hover:bg-card'
+                            className={`px-3 py-2 text-xs transition-colors ${
+                              isFav ? 'bg-accent/10' : ''
                             }`}
                           >
-                            <span className="truncate">
-                              <span className="mr-2 tabular-nums text-subtle">
-                                {tr.number || idx + 1}.
-                              </span>
-                              {tr.title}
-                            </span>
-                            {isFav && (
-                              <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-accent text-accent-ink">
-                                Favorita
-                              </span>
+                            <div className="flex min-h-[38px] items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const prevFav = item.favoriteTrack || '';
+                                  const nextFav = isFav ? '' : tr.title;
+                                  onUpdateItem(item.id, { favoriteTrack: nextFav });
+                                  playTactileSound('page');
+                                  showToast({
+                                    message: nextFav
+                                      ? `Faixa favorita: "${nextFav}".`
+                                      : 'Faixa favorita removida.',
+                                    type: 'info',
+                                    duration: 5000,
+                                    action: {
+                                      label: 'Desfazer',
+                                      onClick: () =>
+                                        onUpdateItem(item.id, { favoriteTrack: prevFav }),
+                                    },
+                                  });
+                                }}
+                                title={
+                                  isFav
+                                    ? 'Remover destaque de faixa favorita'
+                                    : 'Definir como faixa favorita'
+                                }
+                                className={`min-w-0 flex-1 truncate text-left ${
+                                  isFav ? 'font-semibold text-accent' : 'text-ink hover:text-accent'
+                                }`}
+                              >
+                                <span className="mr-2 tabular-nums text-subtle">
+                                  {tr.number || idx + 1}.
+                                </span>
+                                {tr.title}
+                              </button>
+
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                {isFav && (
+                                  <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-accent text-accent-ink">
+                                    Favorita
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  aria-expanded={pickerOpen}
+                                  aria-label={`Avaliar faixa ${tr.title}`}
+                                  onClick={() =>
+                                    setActiveTrackRatingKey(pickerOpen ? null : trackKey)
+                                  }
+                                  className={`min-h-[34px] rounded-lg border px-2 py-1 text-[11px] font-semibold tabular-nums transition-colors ${
+                                    typeof trackScore === 'number'
+                                      ? 'border-accent/50 bg-accent/15 text-accent'
+                                      : 'border-line bg-card text-muted hover:border-accent hover:text-ink'
+                                  }`}
+                                >
+                                  {typeof trackScore === 'number' ? `${trackScore}/10` : 'Nota'}
+                                </button>
+                              </div>
+                            </div>
+
+                            {pickerOpen && (
+                              <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-line/60 pt-2">
+                                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((sc) => (
+                                  <button
+                                    key={sc}
+                                    type="button"
+                                    onClick={() => {
+                                      handleTrackRatingSelect(tr, idx, sc);
+                                      setActiveTrackRatingKey(null);
+                                    }}
+                                    className={`min-h-[34px] min-w-[34px] rounded-lg border px-2 text-[11px] font-semibold tabular-nums transition-colors ${
+                                      trackScore === sc
+                                        ? 'border-accent bg-accent text-accent-ink'
+                                        : 'border-line bg-card text-ink hover:border-accent'
+                                    }`}
+                                  >
+                                    {sc}
+                                  </button>
+                                ))}
+                                {typeof trackScore === 'number' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleTrackRatingSelect(tr, idx, null);
+                                      setActiveTrackRatingKey(null);
+                                    }}
+                                    className="min-h-[34px] rounded-lg border border-line bg-card px-2.5 text-[11px] text-muted hover:text-ink"
+                                  >
+                                    Limpar
+                                  </button>
+                                )}
+                              </div>
                             )}
-                          </button>
+                          </div>
                         );
                       })}
                     </div>
@@ -2067,7 +2450,7 @@ export function WorkDetailPage({
 
             <WorkTypeSelector
               domain={workDomain}
-              label={ui.detail.workTypeTitle}
+              label={workVocab.workTypeLabel}
               value={item.workType}
               onChange={(nextType) => onUpdateItem(item.id, { workType: nextType })}
             />
@@ -2081,20 +2464,6 @@ export function WorkDetailPage({
                   type="text"
                   value={item.title || ''}
                   onChange={(e) => onUpdateItem(item.id, { title: e.target.value })}
-                  className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-muted">
-                  Título Original
-                </span>
-                <input
-                  type="text"
-                  value={item.originalTitle || ''}
-                  onChange={(e) =>
-                    onUpdateItem(item.id, { originalTitle: e.target.value })
-                  }
                   className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
                 />
               </label>
@@ -2120,37 +2489,6 @@ export function WorkDetailPage({
 
               <label className="block">
                 <span className="mb-1 block text-[11px] font-medium text-muted">
-                  {workDomain === 'cinema' ? 'Estúdio / Rede' : 'Selo / Editora / Publicadora'}
-                </span>
-                <input
-                  type="text"
-                  value={item.studio || ''}
-                  onChange={(e) => onUpdateItem(item.id, { studio: e.target.value })}
-                  placeholder={workDomain === 'cinema' ? 'Ex: Studio Ghibli, HBO' : 'Opcional'}
-                  className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-muted">
-                  Franquia / Universo
-                </span>
-                <input
-                  type="text"
-                  value={item.franchiseName || item.seriesName || ''}
-                  onChange={(e) =>
-                    onUpdateItem(item.id, {
-                      franchiseName: e.target.value,
-                      seriesName: e.target.value,
-                    })
-                  }
-                  placeholder="Ex: Duna, Zelda..."
-                  className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-muted">
                   Ano de Lançamento
                 </span>
                 <input
@@ -2165,6 +2503,29 @@ export function WorkDetailPage({
                   }
                   placeholder="2001"
                   className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-medium text-muted">
+                  Data de Término
+                </span>
+                <input
+                  type="date"
+                  value={
+                    item.completedDate
+                      ? String(item.completedDate).slice(0, 10)
+                      : item.completedAt
+                        ? String(item.completedAt).slice(0, 10)
+                        : ''
+                  }
+                  onChange={(e) =>
+                    onUpdateItem(item.id, {
+                      completedDate: e.target.value || null,
+                      completedAt: e.target.value || null,
+                    })
+                  }
+                  className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
                 />
               </label>
 
@@ -2293,18 +2654,6 @@ export function WorkDetailPage({
                       ))}
                     </select>
                   </label>
-                  <label className="block sm:col-span-2">
-                    <span className="mb-1 block text-[11px] font-medium text-muted">
-                      ISBN / DOI
-                    </span>
-                    <input
-                      type="text"
-                      value={item.isbnOrDoi || ''}
-                      onChange={(e) => onUpdateItem(item.id, { isbnOrDoi: e.target.value })}
-                      placeholder="ISBN-13 ou DOI"
-                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
                 </>
               ) : workDomain === 'games' ? (
                 <>
@@ -2341,26 +2690,7 @@ export function WorkDetailPage({
                       ))}
                     </select>
                   </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Loja / Launcher
-                    </span>
-                    <select
-                      value={item.storeOrLauncher || ''}
-                      onChange={(e) =>
-                        onUpdateItem(item.id, { storeOrLauncher: e.target.value })
-                      }
-                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                    >
-                      <option value="">A definir</option>
-                      {GAME_STORES_LAUNCHERS.map((st) => (
-                        <option key={st} value={st}>
-                          {st}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block">
+                  <label className="block sm:col-span-2">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
                       Tipo de Conclusão
                     </span>
@@ -2378,68 +2708,9 @@ export function WorkDetailPage({
                       ))}
                     </select>
                   </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Horas Jogadas
-                    </span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      value={item.hoursPlayed ?? 0}
-                      onChange={(e) =>
-                        onUpdateItem(item.id, {
-                          hoursPlayed: Math.max(0, Number(e.target.value) || 0),
-                        })
-                      }
-                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Build / Personagem / Time
-                    </span>
-                    <input
-                      type="text"
-                      value={item.buildOrCharacter || ''}
-                      onChange={(e) =>
-                        onUpdateItem(item.id, { buildOrCharacter: e.target.value })
-                      }
-                      placeholder="Build, campeão ou time"
-                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block sm:col-span-2">
-                    <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Justificativa da Nota 11 (Obra-Prima · opcional)
-                    </span>
-                    <input
-                      type="text"
-                      value={item.masterpieceJustification || ''}
-                      onChange={(e) =>
-                        onUpdateItem(item.id, { masterpieceJustification: e.target.value })
-                      }
-                      placeholder="Por que este jogo é um marco excepcional da sua vida..."
-                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
                 </>
               ) : (
                 <>
-                  {item.workType === 'track' && (
-                    <label className="block sm:col-span-2">
-                      <span className="mb-1 block text-[11px] font-medium text-muted">
-                        Álbum vinculado
-                      </span>
-                      <input
-                        type="text"
-                        value={item.albumName || ''}
-                        onChange={(e) => onUpdateItem(item.id, { albumName: e.target.value })}
-                        placeholder="Nome do álbum original"
-                        className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                      />
-                    </label>
-                  )}
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
                       Formato do Lançamento
@@ -2474,19 +2745,7 @@ export function WorkDetailPage({
                       className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
                     />
                   </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Subgênero Musical
-                    </span>
-                    <input
-                      type="text"
-                      value={item.subgenre || ''}
-                      onChange={(e) => onUpdateItem(item.id, { subgenre: e.target.value })}
-                      placeholder="Power Metal, Hard Rock..."
-                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
+                  <label className="block sm:col-span-2">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
                       Faixa Favorita
                     </span>
@@ -2501,35 +2760,232 @@ export function WorkDetailPage({
                   </label>
                 </>
               )}
-
-              <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-muted">
-                  URL da Capa
-                </span>
-                <input
-                  type="url"
-                  value={item.coverUrl || ''}
-                  onChange={(e) => onUpdateItem(item.id, { coverUrl: e.target.value })}
-                  placeholder="https://..."
-                  className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-muted">
-                  URL do Banner Widescreen (16:9)
-                </span>
-                <input
-                  type="url"
-                  value={item.backdropUrl || ''}
-                  onChange={(e) =>
-                    onUpdateItem(item.id, { backdropUrl: e.target.value })
-                  }
-                  placeholder="https://..."
-                  className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
-                />
-              </label>
             </div>
+
+            {/* Seção recolhida "Mais detalhes" para campos avançados */}
+            <section className="rounded-xl border border-line bg-app p-3.5">
+              <button
+                type="button"
+                aria-expanded={editMoreDetailsOpen}
+                onClick={() => setEditMoreDetailsOpen((v) => !v)}
+                className="flex min-h-[40px] w-full items-center justify-between gap-2 text-left text-xs font-semibold text-ink"
+              >
+                <span>Mais detalhes</span>
+                {editMoreDetailsOpen ? (
+                  <ChevronUp className="h-4 w-4 text-muted" strokeWidth={1.5} />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-muted" strokeWidth={1.5} />
+                )}
+              </button>
+
+              {editMoreDetailsOpen && (
+                <div className="mt-3 grid grid-cols-1 gap-3 border-t border-line pt-3 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Título Original
+                    </span>
+                    <input
+                      type="text"
+                      value={item.originalTitle || ''}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, { originalTitle: e.target.value })
+                      }
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      {workDomain === 'cinema' ? 'Estúdio / Rede' : 'Selo / Editora / Publicadora'}
+                    </span>
+                    <input
+                      type="text"
+                      value={item.studio || ''}
+                      onChange={(e) => onUpdateItem(item.id, { studio: e.target.value })}
+                      placeholder={workDomain === 'cinema' ? 'Ex: Studio Ghibli, HBO' : 'Opcional'}
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                    />
+                  </label>
+
+                  <label className="block sm:col-span-2">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Franquia / Universo
+                    </span>
+                    <input
+                      type="text"
+                      value={item.franchiseName || item.seriesName || ''}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, {
+                          franchiseName: e.target.value,
+                          seriesName: e.target.value,
+                        })
+                      }
+                      placeholder="Ex: Duna, Zelda..."
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                    />
+                  </label>
+
+                  {workDomain === 'reading' && (
+                    <>
+                      <label className="block sm:col-span-2">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          ISBN / DOI
+                        </span>
+                        <input
+                          type="text"
+                          value={item.isbnOrDoi || ''}
+                          onChange={(e) => onUpdateItem(item.id, { isbnOrDoi: e.target.value })}
+                          placeholder="ISBN-13 ou DOI"
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block sm:col-span-2">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Citação marcante
+                        </span>
+                        <input
+                          type="text"
+                          value={item.favoriteScene || ''}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, { favoriteScene: e.target.value })
+                          }
+                          placeholder="Trecho ou passagem inesquecível..."
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                    </>
+                  )}
+
+                  {workDomain === 'games' && (
+                    <>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Horas Jogadas
+                        </span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={item.hoursPlayed ?? 0}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, {
+                              hoursPlayed: Math.max(0, Number(e.target.value) || 0),
+                            })
+                          }
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Loja / Launcher
+                        </span>
+                        <select
+                          value={item.storeOrLauncher || ''}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, { storeOrLauncher: e.target.value })
+                          }
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        >
+                          <option value="">A definir</option>
+                          {GAME_STORES_LAUNCHERS.map((st) => (
+                            <option key={st} value={st}>
+                              {st}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="block sm:col-span-2">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Build / Personagem / Time
+                        </span>
+                        <input
+                          type="text"
+                          value={item.buildOrCharacter || ''}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, { buildOrCharacter: e.target.value })
+                          }
+                          placeholder="Build, campeão ou time"
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block sm:col-span-2">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Justificativa da Nota 11 (Obra-Prima · opcional)
+                        </span>
+                        <input
+                          type="text"
+                          value={item.masterpieceJustification || ''}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, {
+                              masterpieceJustification: e.target.value,
+                            })
+                          }
+                          placeholder="Por que este jogo é um marco excepcional da sua vida..."
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                    </>
+                  )}
+
+                  {workDomain === 'music' && (
+                    <>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Subgênero Musical
+                        </span>
+                        <input
+                          type="text"
+                          value={item.subgenre || ''}
+                          onChange={(e) => onUpdateItem(item.id, { subgenre: e.target.value })}
+                          placeholder="Power Metal, Hard Rock..."
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Álbum vinculado
+                        </span>
+                        <input
+                          type="text"
+                          value={item.albumName || ''}
+                          onChange={(e) => onUpdateItem(item.id, { albumName: e.target.value })}
+                          placeholder="Nome do álbum original"
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                    </>
+                  )}
+
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      URL da Capa
+                    </span>
+                    <input
+                      type="url"
+                      value={item.coverUrl || ''}
+                      onChange={(e) => onUpdateItem(item.id, { coverUrl: e.target.value })}
+                      placeholder="https://..."
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      URL do Banner Widescreen (16:9)
+                    </span>
+                    <input
+                      type="url"
+                      value={item.backdropUrl || ''}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, { backdropUrl: e.target.value })
+                      }
+                      placeholder="https://..."
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                </div>
+              )}
+            </section>
 
             {workDomain === 'cinema' && (
               <SmartCatalogButton
@@ -2694,7 +3150,7 @@ export function WorkDetailPage({
               <div className="border-t border-line pt-3 space-y-2">
                 <span className="inline-flex items-center gap-1.5 text-xs font-medium text-ink">
                   <UserCheck className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                  <span>Blu-ray / DVD Emprestado</span>
+                  <span>{workVocab.loanLabel}</span>
                 </span>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <input

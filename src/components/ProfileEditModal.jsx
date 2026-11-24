@@ -1,10 +1,14 @@
 import {
   Award,
+  BookOpen,
   Clapperboard,
   Compass,
   Film,
   Flame,
+  Gamepad2,
   ImagePlus,
+  Layers,
+  Music,
   Sparkles,
   Star,
   Trash2,
@@ -27,6 +31,10 @@ export const AVATAR_EMBLEM_COMPONENTS = {
   Compass,
   Flame,
   Star,
+  BookOpen,
+  Gamepad2,
+  Music,
+  Layers,
 };
 
 export function ProfileEditModal({ isOpen, onClose, profile, onSave }) {
@@ -76,7 +84,7 @@ export function ProfileEditModal({ isOpen, onClose, profile, onSave }) {
       'profile:local_avatar_v120',
       {
         avatarUrl: draft.avatarUrl || '',
-        avatarIcon: draft.avatarIcon || 'Film',
+        avatarIcon: draft.avatarIcon || '',
         updatedAt: Date.now(),
       },
       { ttlMs: 365 * 24 * 60 * 60 * 1000 }
@@ -87,7 +95,7 @@ export function ProfileEditModal({ isOpen, onClose, profile, onSave }) {
 
   const SelectedEmblemIcon =
     AVATAR_EMBLEM_COMPONENTS[draft?.avatarIcon] ||
-    AVATAR_EMBLEM_COMPONENTS.Film;
+    AVATAR_EMBLEM_COMPONENTS.Layers;
 
   return (
     <div
@@ -238,16 +246,16 @@ export function ProfileEditModal({ isOpen, onClose, profile, onSave }) {
             </div>
           </div>
 
-          {/* Seletor dos 8 Emblemas Cinematográficos Minimalistas */}
+          {/* Seletor de Emblemas */}
           <div className="space-y-1.5">
             <span className="block text-[11px] font-medium text-subtle">
-              Ou escolha um emblema cinematográfico:
+              Ou escolha um emblema (ou deixe vazio para seguir o domínio ativo):
             </span>
             <div className="grid grid-cols-4 gap-2">
               {PROFILE_AVATAR_EMBLEMS.map((emblem) => {
-                const IconComp = AVATAR_EMBLEM_COMPONENTS[emblem.id] || Film;
+                const IconComp = AVATAR_EMBLEM_COMPONENTS[emblem.id] || Layers;
                 const active =
-                  !draft.avatarUrl && (draft.avatarIcon || 'Film') === emblem.id;
+                  !draft.avatarUrl && draft.avatarIcon === emblem.id;
                 return (
                   <button
                     key={emblem.id}
@@ -256,7 +264,7 @@ export function ProfileEditModal({ isOpen, onClose, profile, onSave }) {
                     onClick={() =>
                       setDraft((prev) => ({
                         ...prev,
-                        avatarIcon: emblem.id,
+                        avatarIcon: active ? '' : emblem.id,
                         avatarUrl: '',
                       }))
                     }
@@ -288,7 +296,8 @@ export function ProfileEditModal({ isOpen, onClose, profile, onSave }) {
               onChange={(e) =>
                 setDraft((prev) => ({ ...prev, displayName: e.target.value }))
               }
-              className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 py-2 text-xs text-ink focus:border-accent focus:outline-none"
+              placeholder="Meu arquivo"
+              className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 py-2 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
             />
           </label>
         </div>
@@ -303,7 +312,8 @@ export function ProfileEditModal({ isOpen, onClose, profile, onSave }) {
             onChange={(e) =>
               setDraft((prev) => ({ ...prev, bio: e.target.value }))
             }
-            className="w-full resize-none rounded-xl border border-line bg-app px-3 py-2 text-xs text-ink focus:border-accent focus:outline-none"
+            placeholder="Seu arquivo pessoal de filmes, livros, games e música."
+            className="w-full resize-none rounded-xl border border-line bg-app px-3 py-2 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
           />
         </label>
 
