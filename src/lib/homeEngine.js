@@ -4,6 +4,12 @@
  * e trilhos locais sem chamadas de rede ou dependências de React/DOM.
  */
 
+import {
+  getDomainMeta,
+  getDomainVocabulary,
+  inferDomainFromWork,
+  OMNIPRISM_DOMAINS,
+} from '../config/domainConfig.js';
 import { analyzeFranchises } from '../services/franchiseEngine.js';
 import {
   advanceEpisodeProgress,
@@ -126,11 +132,13 @@ export function selectHeroPresentation(items = [], { loading = false } = {}) {
   if (queued.length > 0) {
     const picked = queued[0];
     const knownTotal = hasKnownWorkTotal(picked);
+    const pickedDomain = inferDomainFromWork(picked);
+    const pickedVocab = getDomainVocabulary(pickedDomain);
     return {
       state: 'queued',
       work: picked,
       progressPct: knownTotal ? calculateWorkProgress(picked) : null,
-      progressLabel: 'Na fila Quero Ver',
+      progressLabel: `Na fila ${pickedVocab.statuses.queued}`,
       hasKnownTotal: knownTotal,
       isEpisodic: isEpisodicWork(picked),
     };
@@ -463,6 +471,172 @@ export function buildHomeLiveSummary(items = []) {
   const totalHours = Math.round(totalMinutes / 60);
   const noun = inProgressCount === 1 ? 'obra em andamento' : 'obras em andamento';
   return `${inProgressCount} ${noun} · ${totalHours}h acumuladas`;
+}
+
+export function getWorkQuickActionsForHome(work) {
+  if (!work || typeof work !== 'object') return [];
+  const domain = inferDomainFromWork(work);
+  if (domain === 'reading') {
+    return [
+      { actionType: 'reading_pages', label: '+10 págs' },
+      { actionType: 'reading_chapter', label: '+1 cap' },
+    ];
+  }
+  if (domain === 'games') {
+    return [
+      { actionType: 'games_30m', label: '+30 min' },
+      { actionType: 'games_1h', label: '+1 h' },
+    ];
+  }
+  if (domain === 'music') {
+    return [{ actionType: 'music_listen', label: '+1 audição' }];
+  }
+  return isEpisodicWork(work)
+    ? [{ actionType: 'cinema_episode', label: '+1 Ep' }]
+    : [{ actionType: 'cinema_minutes', label: '+20 min' }];
+}
+
+function hasKnownDomainTotal(work, domain) {
+  if (!work) return false;
+  if (domain === 'reading') return Number(work.totalPages) > 0;
+  if (domain === 'cinema') return hasKnownWorkTotal(work);
+  return false;
+}
+
+/**
+ * Faixa única "Em andamento" da Home v2.3.0:
+ * reúne os itens ativos (Assistindo/Lendo/Jogando/Ouvindo e Revisitando) dos 4 domínios
+ * ou filtra por um domínio específico quando selecionado nas abas.
+ */
+export function buildHomeInProgressStrip(items = [], { domainFilter = 'all' } = {}) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false
+  );
+
+  const active = sortByRecentActivity(
+    backlog.filter((item) => {
+      const isActive =
+        item.status === 'playing' ||
+        item.status === 'in-progress' ||
+        item.status === 'rewatching';
+      if (!isActive) return false;
+      if (domainFilter && domainFilter !== 'all') {
+        return inferDomainFromWork(item) === domainFilter;
+      }
+      return true;
+    })
+  );
+
+  return active.map((work) => {
+    const domain = inferDomainFromWork(work);
+    const domainMeta = getDomainMeta(domain);
+    const vocab = getDomainVocabulary(domain);
+    const knownTotal = hasKnownDomainTotal(work, domain);
+    const statusKey = work.status === 'rewatching' ? 'rewatching' : 'playing';
+    return {
+      id: String(work.id),
+      work,
+      domain,
+      domainMeta,
+      vocab,
+      hasKnownTotal: knownTotal,
+      progressPct: knownTotal ? calculateWorkProgress(work) : null,
+      metricLabel:
+        domain === 'cinema'
+          ? formatHonestHeroProgressLabel(work)
+          : formatFlexibleProgressMetric(work),
+      statusLabel: vocab.statuses[statusKey],
+      quickActions: getWorkQuickActionsForHome(work),
+    };
+  });
+}
+
+/**
+ * Seção "Próximos da fila":
+ * - Em modo cross-domain ('all'): 1 sugestão por domínio (até 4 cards).
+ * - Quando filtrado por domínio: até 4 obras na fila daquele domínio.
+ */
+export function buildHomeNextInQueue(items = [], { domainFilter = 'all' } = {}) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false && item.status === 'queued'
+  );
+
+  const sorted = [...backlog].sort((a, b) => {
+    const hypeW =
+      (getHypeMeta(b.hype)?.weight || 0) - (getHypeMeta(a.hype)?.weight || 0);
+    if (hypeW !== 0) return hypeW;
+    return parseRecencyMs(b) - parseRecencyMs(a);
+  });
+
+  let pickedWorks = [];
+  if (domainFilter && domainFilter !== 'all') {
+    pickedWorks = sorted
+      .filter((w) => inferDomainFromWork(w) === domainFilter)
+      .slice(0, 4);
+  } else {
+    const domainOrder = OMNIPRISM_DOMAINS.map((d) => d.id);
+    for (const dId of domainOrder) {
+      const firstInDomain = sorted.find((w) => inferDomainFromWork(w) === dId);
+      if (firstInDomain) pickedWorks.push(firstInDomain);
+    }
+  }
+
+  return pickedWorks.map((work) => {
+    const domain = inferDomainFromWork(work);
+    const domainMeta = getDomainMeta(domain);
+    const vocab = getDomainVocabulary(domain);
+    return {
+      id: String(work.id),
+      work,
+      domain,
+      domainMeta,
+      vocab,
+      queueLabel: vocab.statuses.queued,
+    };
+  });
+}
+
+/**
+ * Seção "Concluídos recentemente":
+ * últimos 5 concluídos de qualquer domínio (ou filtrados pelo domínio selecionado).
+ */
+export function buildHomeRecentlyCompleted(
+  items = [],
+  { domainFilter = 'all', limit = 5 } = {}
+) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false && item.status === 'completed'
+  );
+
+  const filtered =
+    domainFilter && domainFilter !== 'all'
+      ? backlog.filter((w) => inferDomainFromWork(w) === domainFilter)
+      : backlog;
+
+  const sorted = [...filtered].sort((a, b) => {
+    const da =
+      Date.parse(a.completedDate || a.completedAt || a.updatedAt || a.createdAt || '') || 0;
+    const db =
+      Date.parse(b.completedDate || b.completedAt || b.updatedAt || b.createdAt || '') || 0;
+    return db - da;
+  });
+
+  return sorted.slice(0, Math.max(1, Number(limit) || 5)).map((work) => {
+    const domain = inferDomainFromWork(work);
+    const domainMeta = getDomainMeta(domain);
+    const vocab = getDomainVocabulary(domain);
+    const rawDate = work.completedDate || work.completedAt || '';
+    return {
+      id: String(work.id),
+      work,
+      domain,
+      domainMeta,
+      vocab,
+      completedLabel: vocab.statuses.completed,
+      completedDate: rawDate ? String(rawDate).slice(0, 10) : '',
+      confirmedRating: isConfirmedUserRating(work) ? work.rating : null,
+    };
+  });
 }
 
 export function resolveHeroNextEpisodeTitle(work) {

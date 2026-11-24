@@ -311,6 +311,12 @@ export function normalizeRelationalWorkRecord(work = {}) {
     releaseFormat: String(work.releaseFormat || '').trim(),
     listenCount: Math.max(0, Math.round(Number(work.listenCount) || 0)),
     tracks: Array.isArray(work.tracks) ? work.tracks : [],
+    trackRatings:
+      work.trackRatings &&
+      typeof work.trackRatings === 'object' &&
+      !Array.isArray(work.trackRatings)
+        ? work.trackRatings
+        : {},
     updatedAt: work.updatedAt || work.createdAt || new Date().toISOString(),
   };
 }

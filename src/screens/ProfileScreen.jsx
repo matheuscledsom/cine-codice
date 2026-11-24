@@ -3,11 +3,11 @@ import {
   BarChart2,
   BookOpen,
   Camera,
-  Clapperboard,
   Film,
   Gamepad2,
   Layers,
   Music,
+  Palette,
   PenLine,
   Plus,
   Quote,
@@ -32,7 +32,13 @@ import { ReaderPassportWidget } from '../components/ReaderPassportWidget';
 import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
 import { ThemeModal } from '../components/ThemeModal';
 import { TitlesBadgesModal } from '../components/TitlesBadgesModal';
-import { domainConfig } from '../config/domainConfig';
+import {
+  OMNIPRISM_DOMAINS,
+  domainConfig,
+  getDomainVocabulary,
+  inferDomainFromWork,
+  normalizeDomainId,
+} from '../config/domainConfig';
 import { CODICE_RELEASE } from '../config/versioning';
 import { useToast } from '../context/ToastContext';
 import { useAiConfig } from '../hooks/useAiConfig';
@@ -116,7 +122,14 @@ export function ProfileScreen({
   const { profile: profileCfg } = ui;
 
   const [activeTab, setActiveTab] = useState(loadSessionActiveTab);
+  const [favoritesDomain, setFavoritesDomain] = useState(() =>
+    normalizeDomainId(activeDomain)
+  );
   const [bannerImgError, setBannerImgError] = useState(false);
+
+  useEffect(() => {
+    setFavoritesDomain(normalizeDomainId(activeDomain));
+  }, [activeDomain]);
   const [shelfLimit, setShelfLimit] = useState(PAGE_SIZE);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [themeModalOpen, setThemeModalOpen] = useState(false);
@@ -199,7 +212,18 @@ export function ProfileScreen({
     [items]
   );
 
-  const top4Slots = useMemo(() => resolveTop4Favorites(items), [items]);
+  const favoritesDomainWorks = useMemo(
+    () => backlogItems.filter((item) => inferDomainFromWork(item) === favoritesDomain),
+    [backlogItems, favoritesDomain]
+  );
+  const favoritesVocab = useMemo(
+    () => getDomainVocabulary(favoritesDomain),
+    [favoritesDomain]
+  );
+  const top4Slots = useMemo(
+    () => resolveTop4Favorites(items, favoritesDomain),
+    [items, favoritesDomain]
+  );
   const personalFeed = useMemo(
     () => buildProfilePersonalFeed(items, posts, { limit: 18 }),
     [items, posts]
@@ -297,9 +321,13 @@ export function ProfileScreen({
 
   const handleAssignTop4Slot = (slotNum, targetWork) => {
     if (!onUpdateItem || !targetWork?.id) return;
-    // Libera qualquer outra obra que estivesse neste slot
+    const targetDomain = inferDomainFromWork(targetWork);
+    // Libera qualquer outra obra do MESMO domínio que estivesse neste slot
     const prevOccupant = backlogItems.find(
-      (w) => w.id !== targetWork.id && Number(w.favoriteRank) === slotNum
+      (w) =>
+        w.id !== targetWork.id &&
+        inferDomainFromWork(w) === targetDomain &&
+        Number(w.favoriteRank) === slotNum
     );
     if (prevOccupant) {
       onUpdateItem(prevOccupant.id, { favoriteRank: null });
@@ -310,7 +338,7 @@ export function ProfileScreen({
     });
     playTactileSound('complete');
     showToast({
-      message: `"${targetWork.title}" fixado no Top #${slotNum} Favoritos da Vida.`,
+      message: `"${targetWork.title}" fixado no Top #${slotNum} (${getDomainVocabulary(targetDomain).favoritesTabLabel}).`,
       type: 'success',
     });
     setPickerSlot(null);
@@ -318,7 +346,7 @@ export function ProfileScreen({
 
   const handleClearTop4Slot = (slotNum) => {
     if (!onUpdateItem) return;
-    const currentOccupant = backlogItems.find(
+    const currentOccupant = favoritesDomainWorks.find(
       (w) => Number(w.favoriteRank) === slotNum
     );
     if (currentOccupant) {
@@ -331,16 +359,24 @@ export function ProfileScreen({
     setPickerSlot(null);
   };
 
-  const heroBanner = useMemo(() => resolveProfileHeroBackdrop(items), [items]);
+  const normalizedActiveDomain = normalizeDomainId(activeDomain);
+  const heroBanner = useMemo(
+    () => resolveProfileHeroBackdrop(items, normalizedActiveDomain),
+    [items, normalizedActiveDomain]
+  );
+  const resolvedBannerUrl =
+    profile?.coverUrl && String(profile.coverUrl).trim()
+      ? String(profile.coverUrl).trim()
+      : heroBanner?.imageUrl || heroBanner?.backdropUrl || '';
   const profileMetrics = useMemo(() => computeProfileMetrics(items), [items]);
 
   useEffect(() => {
     setBannerImgError(false);
-  }, [heroBanner?.backdropUrl]);
+  }, [resolvedBannerUrl]);
 
   const tabs = useMemo(
     () => [
-      { id: 'journal', label: 'Últimas Cenas & Avaliações' },
+      { id: 'journal', label: 'Notas & Avaliações' },
       { id: 'shelf', label: 'Meu Catálogo' },
       { id: 'badges', label: calmMode ? 'Passaporte' : 'Insígnias' },
     ],
@@ -363,9 +399,18 @@ export function ProfileScreen({
   const visibleShelfWorks = backlogItems.slice(0, shelfLimit);
   const remainingShelf = Math.max(0, backlogItems.length - visibleShelfWorks.length);
 
+  const ActiveDomainIcon =
+    normalizedActiveDomain === 'reading'
+      ? BookOpen
+      : normalizedActiveDomain === 'games'
+        ? Gamepad2
+        : normalizedActiveDomain === 'music'
+          ? Music
+          : Film;
+
   const AvatarEmblemIcon =
-    AVATAR_EMBLEM_COMPONENTS[profile?.avatarIcon] ||
-    AVATAR_EMBLEM_COMPONENTS.Film;
+    (profile?.avatarIcon && AVATAR_EMBLEM_COMPONENTS[profile.avatarIcon]) ||
+    ActiveDomainIcon;
 
   return (
     <div className="space-y-4 pb-24">
@@ -400,18 +445,26 @@ export function ProfileScreen({
           className="relative aspect-[3/1] w-full overflow-hidden border-y border-line"
           style={{
             background:
-              heroBanner?.backdropUrl && !bannerImgError
+              resolvedBannerUrl && !bannerImgError
                 ? 'var(--bg-elevated, var(--bg-card))'
                 : 'linear-gradient(135deg, color-mix(in srgb, var(--accent-color) 28%, var(--bg-app)) 0%, var(--bg-elevated, var(--bg-card)) 55%, var(--bg-app) 100%)',
           }}
         >
-          {heroBanner?.backdropUrl && !bannerImgError ? (
+          {resolvedBannerUrl && !bannerImgError ? (
             <>
               <img
-                src={heroBanner.backdropUrl}
-                alt={`Cena de ${heroBanner.title}`}
+                src={resolvedBannerUrl}
+                alt={
+                  profile?.coverUrl
+                    ? 'Capa do perfil'
+                    : `Capa de ${heroBanner?.title || 'obra em andamento'}`
+                }
                 onError={() => setBannerImgError(true)}
-                className="h-full w-full object-cover"
+                className={`h-full w-full object-cover ${
+                  !profile?.coverUrl && heroBanner?.isCoverFallback
+                    ? 'scale-110 blur-sm opacity-75'
+                    : ''
+                }`}
               />
               <div
                 aria-hidden="true"
@@ -421,9 +474,13 @@ export function ProfileScreen({
                     'linear-gradient(180deg, rgba(10,12,16,0.72) 0%, rgba(10,12,16,0.84) 100%)',
                 }}
               />
-              <div className="pointer-events-none absolute right-3 top-2.5 max-w-[70%] rounded-[4px] bg-black/75 px-2.5 py-1 text-right text-[11px] font-medium text-white backdrop-blur-sm">
-                <span className="block truncate">Em cartaz: {heroBanner.title}</span>
-              </div>
+              {!profile?.coverUrl && heroBanner?.title && (
+                <div className="pointer-events-none absolute right-3 top-2.5 max-w-[70%] rounded-[4px] bg-black/75 px-2.5 py-1 text-right text-[11px] font-medium text-white backdrop-blur-sm">
+                  <span className="block truncate">
+                    {heroBanner.statusLabel || 'Em andamento'}: {heroBanner.title}
+                  </span>
+                </div>
+              )}
             </>
           ) : (
             <div
@@ -438,8 +495,8 @@ export function ProfileScreen({
         </div>
 
         <div className="px-4 sm:px-6 space-y-4">
-          <div className="flex items-end justify-between gap-3">
-            {/* Avatar Customizável: Foto 256x256 OU 1 dos 8 Emblemas Cinematográficos */}
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            {/* Avatar Customizável: Foto 256x256, Emblema escolhido OU ícone do domínio ativo */}
             <button
               type="button"
               onClick={() => setEditModalOpen(true)}
@@ -450,7 +507,7 @@ export function ProfileScreen({
               {profile?.avatarUrl ? (
                 <img
                   src={profile.avatarUrl}
-                  alt={profile.displayName || 'Avatar do espectador'}
+                  alt={profile.displayName || profileCfg.displayName || 'Meu arquivo'}
                   className="h-full w-full object-cover"
                 />
               ) : (
@@ -460,7 +517,20 @@ export function ProfileScreen({
               )}
             </button>
 
-            <div className="mt-2 flex items-center gap-2">
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenThemeStudio ? onOpenThemeStudio() : setThemeModalOpen(true)
+                }
+                aria-label="Temas e Aparência"
+                title="Temas e Aparência"
+                className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-line bg-card px-3 py-2 text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+              >
+                <Palette className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                <span>Temas &amp; Aparência</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setEditModalOpen(true)}
@@ -496,7 +566,7 @@ export function ProfileScreen({
                 className="min-w-0 truncate text-xl font-bold text-ink"
                 style={{ letterSpacing: '-0.02em', lineHeight: 1.15 }}
               >
-                {profile?.displayName || 'Espectador'}
+                {profile?.displayName || profileCfg.displayName || 'Meu arquivo'}
               </h1>
             </div>
 
@@ -518,21 +588,48 @@ export function ProfileScreen({
             )}
           </div>
 
-          {/* VITRINE "FAVORITOS DA VIDA" (TOP 4 — Grade 2:3 de 4 slots) */}
+          {/* VITRINE "FAVORITOS DA VIDA" POR DOMÍNIO (Abas Filmes, Livros, Games, Música) */}
           <section
-            aria-label="Vitrine Favoritos da Vida Top 4"
+            aria-label={favoritesVocab.favoritesTitle}
             className="rounded-2xl border border-line bg-card p-4 space-y-3"
           >
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
                 <Award className="h-4 w-4 text-accent" strokeWidth={1.5} />
                 <h2 className="text-xs font-bold uppercase tracking-wider text-ink">
-                  Favoritos da Vida · Top 4
+                  {favoritesVocab.favoritesTitle}
                 </h2>
               </div>
               <span className="text-[11px] tabular-nums text-subtle">
                 {top4Slots.filter((s) => Boolean(s.work)).length}/4 fixados
               </span>
+            </div>
+
+            <div
+              role="tablist"
+              aria-label="Domínios de Favoritos da Vida"
+              className="grid grid-cols-4 gap-1.5"
+            >
+              {OMNIPRISM_DOMAINS.map((dom) => {
+                const domVocab = getDomainVocabulary(dom.id);
+                const isFavTabActive = favoritesDomain === dom.id;
+                return (
+                  <button
+                    key={dom.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={isFavTabActive}
+                    onClick={() => setFavoritesDomain(dom.id)}
+                    className={`min-h-[38px] rounded-xl border px-2 py-1.5 text-xs font-semibold transition-colors ${
+                      isFavTabActive
+                        ? 'border-accent bg-accent text-accent-ink'
+                        : 'border-line bg-app text-muted hover:border-accent hover:text-ink'
+                    }`}
+                  >
+                    {domVocab.favoritesTabLabel}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
@@ -729,7 +826,7 @@ export function ProfileScreen({
                           strokeWidth={1.75}
                           style={{ color: portalPalette.accent }}
                         />
-                        <span className="truncate">{dom.shortLabel}</span>
+                        <span className="truncate">{dom.tabLabel || dom.shortLabel}</span>
                       </span>
                       <span
                         className="rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums"
@@ -738,7 +835,7 @@ export function ProfileScreen({
                           color: portalPalette.accent,
                         }}
                       >
-                        {dom.totalWorks} obras
+                        {dom.totalWorks}
                       </span>
                     </div>
 
@@ -772,21 +869,21 @@ export function ProfileScreen({
             </div>
           </section>
 
-          {/* ATIVIDADE RECENTE (Letterboxd / Serializd — Pôsteres 2:3 com Nota & Selo) */}
+          {/* ATIVIDADE RECENTE */}
           {recentActivityWorks.length > 0 && (
             <section
-              aria-label="Atividade Recente do Espectador"
+              aria-label="Atividade Recente"
               className="rounded-2xl border border-line bg-card p-4 space-y-3"
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5">
-                  <Film className="h-4 w-4 text-accent" strokeWidth={1.5} />
+                  <ActiveDomainIcon className="h-4 w-4 text-accent" strokeWidth={1.5} />
                   <h2 className="text-xs font-bold uppercase tracking-wider text-ink">
                     Atividade Recente
                   </h2>
                 </div>
                 <span className="text-[11px] tabular-nums text-subtle">
-                  Últimas {recentActivityWorks.length} sessões
+                  Últimas {recentActivityWorks.length} obras
                 </span>
               </div>
 
@@ -910,7 +1007,7 @@ export function ProfileScreen({
               </div>
             ) : (
               <p className="py-4 text-center text-xs text-muted">
-                Avalie obras no catálogo para visualizar seu histograma de notas cinematográficas.
+                Avalie obras no catálogo para visualizar a distribuição das suas notas.
               </p>
             )}
           </section>
@@ -958,10 +1055,10 @@ export function ProfileScreen({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
-                  Memória Recente do Espectador
+                  Memória Recente
                 </h2>
                 <p className="text-[11px] text-subtle">
-                  Suas cenas favoritas, notas confirmadas e sessões recentes
+                  Suas citações marcantes, notas confirmadas e registros recentes
                 </p>
               </div>
               {onOpenJournalComposer && (
@@ -971,19 +1068,19 @@ export function ProfileScreen({
                   className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-line bg-card px-3 py-1.5 text-xs font-semibold text-ink hover:border-accent hover:text-accent"
                 >
                   <Plus className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                  <span>+ Registrar Sessão</span>
+                  <span>+ Registrar Nota</span>
                 </button>
               )}
             </div>
 
             {personalFeed.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-line bg-card px-4 py-8 text-center space-y-2">
-                <Clapperboard className="mx-auto h-5 w-5 text-accent" strokeWidth={1.5} />
+                <Sparkles className="mx-auto h-5 w-5 text-accent" strokeWidth={1.5} />
                 <p className="text-xs font-medium text-ink">
-                  Suas avaliações, episódios assistidos e cenas favoritas aparecerão aqui automaticamente
+                  Suas avaliações, registros e destaques aparecerão aqui automaticamente
                 </p>
                 <p className="text-[11px] text-subtle">
-                  Catalogue obras, avalie episódios ou destaque uma cena favorita na página da obra.
+                  Catalogue obras, avalie títulos ou salve citações na ficha de cada obra.
                 </p>
               </div>
             ) : (
@@ -1082,10 +1179,12 @@ export function ProfileScreen({
                             {work.title}
                           </p>
                           <p className="truncate text-[11px] text-muted">
-                            {work.director ||
+                            {work.creator ||
+                              work.director ||
+                              work.author ||
                               work.studio ||
                               work[cardFields.creator] ||
-                              'Direção não informada'}
+                              'Criador não informado'}
                           </p>
                         </div>
                       </div>
@@ -1174,14 +1273,14 @@ export function ProfileScreen({
         )}
       </section>
 
-      {/* Modal Seletor Rápido para a Vitrine Top 4 Favoritos da Vida */}
+      {/* Modal Seletor Rápido para a Vitrine Top 4 Favoritos da Vida (filtrado por domínio) */}
       {pickerSlot !== null && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 sm:items-center sm:p-4"
           onClick={() => setPickerSlot(null)}
           role="dialog"
           aria-modal="true"
-          aria-label={`Escolher obra para Favorito Top #${pickerSlot}`}
+          aria-label={`Escolher obra para ${favoritesVocab.favoritesTitle} #${pickerSlot}`}
         >
           <div
             className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl sm:rounded-2xl border border-line bg-card p-5 space-y-4"
@@ -1190,22 +1289,23 @@ export function ProfileScreen({
             <div className="flex items-center justify-between gap-2 border-b border-line pb-3">
               <div>
                 <h3 className="text-sm font-bold text-ink">
-                  Escolher Favorito da Vida · Top #{pickerSlot}
+                  {favoritesVocab.favoritesTitle} · #{pickerSlot}
                 </h3>
                 <p className="text-[11px] text-muted">
-                  Selecione uma obra do seu catálogo para destacar na vitrine
+                  Selecione um título de {favoritesVocab.favoritesTabLabel} para destacar na vitrine
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setPickerSlot(null)}
+                aria-label="Fechar seletor de favoritos"
                 className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-line bg-app text-muted hover:text-ink"
               >
                 <X className="h-4 w-4" strokeWidth={1.5} />
               </button>
             </div>
 
-            {backlogItems.some((w) => Number(w.favoriteRank) === pickerSlot) && (
+            {favoritesDomainWorks.some((w) => Number(w.favoriteRank) === pickerSlot) && (
               <button
                 type="button"
                 onClick={() => handleClearTop4Slot(pickerSlot)}
@@ -1215,13 +1315,13 @@ export function ProfileScreen({
               </button>
             )}
 
-            {backlogItems.length === 0 ? (
+            {favoritesDomainWorks.length === 0 ? (
               <p className="py-6 text-center text-xs text-muted">
-                Catalogue obras no seu catálogo para escolher seus 4 favoritos da vida.
+                Catalogue obras em {favoritesVocab.favoritesTabLabel} para escolher seus 4 favoritos.
               </p>
             ) : (
               <div className="divide-y divide-line rounded-xl border border-line bg-app">
-                {backlogItems.map((work) => {
+                {favoritesDomainWorks.map((work) => {
                   const isCurrent = Number(work.favoriteRank) === pickerSlot;
                   return (
                     <button
@@ -1243,7 +1343,7 @@ export function ProfileScreen({
                             {work.title}
                           </p>
                           <p className="truncate text-[10px] text-muted">
-                            {work.director || work.studio || work.releaseYear || ''}
+                            {work.creator || work.director || work.author || work.studio || work.releaseYear || ''}
                           </p>
                         </div>
                       </div>

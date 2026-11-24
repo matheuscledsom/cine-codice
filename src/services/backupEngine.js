@@ -153,7 +153,7 @@ export async function inspectBackupPayload(rawText, options = {}) {
     ) {
       return {
         ok: false,
-        error: 'Arquivo JSON inválido ou incompatível com o Cine Códice.',
+        error: 'Arquivo JSON inválido ou incompatível com o OmniPrism.',
       };
     }
 
@@ -1033,8 +1033,8 @@ export async function shareOrDownloadSignedBackup(db) {
       const file = new File([jsonText], filename, { type: 'application/json' });
       if (!navigator.canShare || navigator.canShare({ files: [file] })) {
         await navigator.share({
-          title: 'Backup Cine Códice',
-          text: 'Cópia de segurança assinada com SHA-256 do Cine Códice.',
+          title: 'Backup OmniPrism',
+          text: 'Cópia de segurança assinada com SHA-256 do OmniPrism.',
           files: [file],
         });
         recordBackupExportTimestamp();

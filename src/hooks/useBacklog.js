@@ -149,8 +149,7 @@ function normalizeItem(rawItem, spectatorDna = null) {
   const externalRatings = normalizeExternalRatings(rawItem.externalRatings);
 
   const totalPages = normalizeNullablePositiveInt(rawItem.totalPages);
-  const rawPagesRead = normalizeNonNegativeInt(rawItem.pagesRead);
-  const pagesRead = isCompleted && totalPages ? totalPages : rawPagesRead;
+  const pagesRead = normalizeNonNegativeInt(rawItem.pagesRead);
 
   const normalized = {
     ...rawItem,
@@ -197,6 +196,12 @@ function normalizeItem(rawItem, spectatorDna = null) {
     ).trim(),
     listenCount: normalizeNonNegativeInt(rawItem.listenCount),
     tracks: Array.isArray(rawItem.tracks) ? rawItem.tracks : [],
+    trackRatings:
+      rawItem.trackRatings &&
+      typeof rawItem.trackRatings === 'object' &&
+      !Array.isArray(rawItem.trackRatings)
+        ? rawItem.trackRatings
+        : {},
     trackCount: normalizeNullablePositiveInt(rawItem.trackCount),
     studio: String(rawItem.studio || '').trim(),
     cast: String(rawItem.cast || '').trim(),
@@ -333,9 +338,7 @@ function applyStatusTransitionDefaults(merged, nextStatus, prevItem, spectatorDn
     if (isEpisodicWork(merged)) {
       if (merged.totalSeasons > 0) merged.currentSeason = merged.totalSeasons;
       if (merged.totalEpisodes > 0) merged.currentEpisode = merged.totalEpisodes;
-    } else if (merged.domain === 'reading' && merged.totalPages > 0) {
-      merged.pagesRead = merged.totalPages;
-    } else if (merged.totalSeconds > 0) {
+    } else if (merged.domain === 'cinema' && merged.totalSeconds > 0) {
       merged.currentSeconds = merged.totalSeconds;
     }
 

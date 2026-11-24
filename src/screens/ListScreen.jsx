@@ -38,9 +38,10 @@ import {
   OMNIPRISM_DOMAINS,
   domainConfig,
   getDomainMeta,
+  getDomainVocabulary,
   getMediaTypesForDomain,
-  getStatusConfig,
-  getStatusList,
+  getStatusConfigForDomain,
+  getStatusListForDomain,
   getWorkTypeLabel,
   inferDomainFromWork,
   normalizeDomainId,
@@ -181,7 +182,14 @@ export function ListScreen({
 
   const { ui, cardFields } = domainConfig;
   const { list } = ui;
-  const statuses = getStatusList();
+  const listVocab = useMemo(
+    () => getDomainVocabulary(selectedDomain),
+    [selectedDomain]
+  );
+  const statuses = useMemo(
+    () => getStatusListForDomain(selectedDomain),
+    [selectedDomain]
+  );
 
   const backlogItems = useMemo(
     () => items.filter((item) => item && item.inBacklog !== false),
@@ -532,7 +540,8 @@ export function ListScreen({
   const handleBatchStatusChange = (nextStatus) => {
     if (!nextStatus || selectedIds.length === 0 || !onBatchUpdateItems) return;
     onBatchUpdateItems(selectedIds, { status: nextStatus });
-    const statusLabel = getStatusConfig(nextStatus)?.label || nextStatus;
+    const statusLabel =
+      getStatusConfigForDomain(nextStatus, selectedDomain)?.label || nextStatus;
     showToast({
       message: `${selectedIds.length} obra(s) movida(s) para ${statusLabel}.`,
       type: 'success',
@@ -766,35 +775,38 @@ export function ListScreen({
           </span>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
           {onOpenCommandPalette && (
             <button
               type="button"
               onClick={onOpenCommandPalette}
-              aria-label="Abrir paleta de comandos (Ctrl+K)"
-              title="Buscar global (Ctrl+K)"
-              className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[4px] border border-line bg-card text-muted transition-colors hover:border-accent hover:text-ink"
+              aria-label="Abrir busca global (Ctrl+K)"
+              title="Busca global (Ctrl+K)"
+              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-2.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-ink"
             >
-              <Command className="h-4 w-4" strokeWidth={1.5} />
+              <Command className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+              <span className="hidden sm:inline">Atalhos</span>
             </button>
           )}
           <button
             type="button"
             onClick={() => setRouletteOpen(true)}
-            aria-label="Roleta O que assistir hoje"
-            title="O que assistir hoje?"
-            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[4px] border border-line bg-card text-accent transition-colors hover:border-accent"
+            aria-label={listVocab.rouletteTitle}
+            title={listVocab.rouletteTitle}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-2.5 text-xs font-medium text-accent transition-colors hover:border-accent"
           >
-            <Dices className="h-4 w-4" strokeWidth={1.5} />
+            <Dices className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+            <span className="hidden sm:inline">Sortear</span>
           </button>
           <button
             type="button"
             onClick={() => setCollectionManagerOpen(true)}
             aria-label="Gerenciar coleções personalizadas"
-            title="Coleções"
-            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[4px] border border-line bg-card text-muted transition-colors hover:border-accent hover:text-ink"
+            title="Coleções personalizadas"
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-2.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-ink"
           >
-            <FolderPlus className="h-4 w-4" strokeWidth={1.5} />
+            <FolderPlus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+            <span className="hidden sm:inline">Coleções</span>
           </button>
           <button
             type="button"
@@ -803,14 +815,16 @@ export function ListScreen({
               else setSelectionMode(true);
             }}
             aria-pressed={selectionMode}
-            aria-label={selectionMode ? 'Sair da seleção em lote' : 'Seleção em lote'}
-            className={`flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[4px] border transition-colors ${
+            aria-label={selectionMode ? 'Sair da seleção em lote' : 'Selecionar obras em lote'}
+            title={selectionMode ? 'Sair da seleção em lote' : 'Selecionar em lote'}
+            className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border px-2.5 text-xs font-medium transition-colors ${
               selectionMode
                 ? 'border-accent bg-accent text-accent-ink'
                 : 'border-line bg-card text-muted hover:border-accent hover:text-ink'
             }`}
           >
-            <CheckSquare className="h-4 w-4" strokeWidth={1.5} />
+            <CheckSquare className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+            <span className="hidden sm:inline">Selecionar</span>
           </button>
         </div>
       </header>
@@ -835,8 +849,8 @@ export function ListScreen({
             type="search"
             value={localQuery}
             onChange={(e) => setLocalQuery(e.target.value)}
-            placeholder="Buscar filme, diretor, anime, saga..."
-            aria-label="Buscar obras no catálogo"
+            placeholder={listVocab.searchPlaceholder}
+            aria-label={listVocab.searchPlaceholder}
             className="min-h-[44px] w-full rounded-[4px] border border-line bg-card py-1.5 pl-8 pr-8 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
           />
           {localQuery && (
@@ -900,34 +914,7 @@ export function ListScreen({
         </div>
       </div>
 
-      {/* Filtros rápidos de formato no topo do Catálogo com contadores (Todos, Filmes, Séries, Animes) */}
-      <div
-        className="flex gap-1.5 overflow-x-auto pb-0.5 no-scrollbar"
-        role="group"
-        aria-label="Filtrar catálogo por formato"
-      >
-        {formatQuickTabs.map((ft) => {
-          const active = selectedWorkType === ft.id;
-          return (
-            <button
-              key={ft.id}
-              type="button"
-              aria-pressed={active}
-              onClick={() => setSelectedWorkType(ft.id)}
-              className={`inline-flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-[4px] border px-3 py-1 text-xs font-semibold tabular-nums transition-colors ${
-                active
-                  ? 'border-accent bg-accent/15 text-accent'
-                  : 'border-line bg-card text-muted hover:text-ink'
-              }`}
-            >
-              <span>{ft.label}</span>
-              <span className="text-[10px] opacity-80">({ft.count})</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Elemento 3: Fita única de Status */}
+      {/* Elemento 3: Fita única de Status no vocabulário do domínio ativo (apenas 2 fileiras no topo) */}
       <div className="flex gap-1.5 overflow-x-auto pb-0.5 no-scrollbar" role="tablist" aria-label="Filtrar por status">
         {filterTabs.map((tab) => {
           const active = selectedStatus === tab.id;
@@ -964,7 +951,7 @@ export function ListScreen({
               <User className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
               <div className="min-w-0">
                 <p className="truncate text-xs font-semibold text-ink">
-                  Direção/Estúdio: {creatorFilterBanner}
+                  Criador / Estúdio: {creatorFilterBanner}
                 </p>
                 <p className="text-[11px] tabular-nums text-subtle">
                   {filteredAndSortedItems.length} título(s) encontrado(s) no catálogo local
@@ -1191,11 +1178,13 @@ export function ListScreen({
           {onNavigateAdd && (
             <button
               type="button"
-              onClick={onNavigateAdd}
+              onClick={() =>
+                onNavigateAdd('', selectedDomain === 'all' ? activeDomain : selectedDomain)
+              }
               className="mt-4 inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] bg-accent px-4 py-2 text-xs font-semibold text-accent-ink"
             >
               <Plus className="h-4 w-4" strokeWidth={1.5} />
-              {list.emptyBacklogCta}
+              {listVocab.emptyCta || list.emptyBacklogCta}
             </button>
           )}
         </div>
@@ -1214,7 +1203,7 @@ export function ListScreen({
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2 px-0.5">
             <span className="text-[11px] text-subtle">
-              Lombadas VHS/Blu-ray pela cor dominante do pôster
+              Lombadas pela cor dominante da capa
             </span>
             <button
               type="button"
@@ -1301,7 +1290,7 @@ export function ListScreen({
                   </p>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <StatusBadge statusId={item.status} size="xs" />
+                    <StatusBadge statusId={item.status} domain={itemDomain} size="xs" />
                     <span className="text-[10px] font-medium tabular-nums text-muted">
                       {formatFlexibleProgressMetric(item)}
                     </span>
@@ -1582,7 +1571,7 @@ export function ListScreen({
 
           {collections.length === 0 ? (
             <p className="rounded-[4px] border border-dashed border-line bg-app py-6 text-center text-xs text-subtle">
-              Crie coleções temáticas como Animes Clássicos ou Terror Anos 80.
+              Crie coleções temáticas reunindo obras de qualquer domínio.
             </p>
           ) : (
             <div className="space-y-2">
@@ -1702,6 +1691,7 @@ export function ListScreen({
         isOpen={rouletteOpen}
         onClose={() => setRouletteOpen(false)}
         items={items}
+        domain={selectedDomain}
         readerDna={profile?.readerDna || null}
         onStartReading={onStartPickedWork}
         onSelectItem={onSelectItem}

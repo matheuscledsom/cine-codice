@@ -318,6 +318,12 @@ export function buildCodiceDatabase({
       releaseFormat: String(rawItem.releaseFormat || '').trim(),
       listenCount: Math.max(0, Math.round(Number(rawItem.listenCount) || 0)),
       tracks: Array.isArray(rawItem.tracks) ? rawItem.tracks : [],
+      trackRatings:
+        rawItem.trackRatings &&
+        typeof rawItem.trackRatings === 'object' &&
+        !Array.isArray(rawItem.trackRatings)
+          ? rawItem.trackRatings
+          : {},
       trackCount: Number(rawItem.trackCount) || null,
       studio: String(rawItem.studio || '').trim(),
       cast: String(rawItem.cast || '').trim(),
@@ -859,7 +865,7 @@ export function generateCatalogCsv(db) {
 
 export function generateCatalogMarkdown(db) {
   const { items } = hydrateAppSnapshotFromDatabase(db);
-  const lines = ['# Cine Códice — Catálogo do Catálogo', ''];
+  const lines = ['# OmniPrism — Catálogo Pessoal', ''];
   items.forEach((item) => {
     const meta = [
       item.workType === 'anime' ? 'Anime' : item.workType === 'series' ? 'Série' : 'Filme',

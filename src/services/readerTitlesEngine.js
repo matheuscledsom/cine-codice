@@ -90,7 +90,7 @@ const GENRE_TEMPLATES = [
 const TIER_LEVELS = [
   { id: 'iniciante', label: 'Espectador', target: 1 },
   { id: 'veterano', label: 'Curador', target: 4 },
-  { id: 'mestre', label: 'Cinéfilo', target: 10 },
+  { id: 'mestre', label: 'Curador', target: 10 },
 ];
 
 const GENRE_TITLES = GENRE_TEMPLATES.flatMap((topic) =>
@@ -483,7 +483,7 @@ export function evaluateReaderTitles({
     livingTitle ||
     unlockedBadges[0] || {
       id: 'default_cinefilo',
-      name: 'Espectador do Cine Códice',
+      name: 'Curador OmniPrism',
       category: 'living',
       iconName: 'Film',
       unlocked: true,

@@ -407,11 +407,11 @@ describe('OmniPrism v2.0.0 — Supabase Sync, Identidade Visual, Ícones PWA & 4
       path.resolve('src/components/DomainSwitcherBar.jsx'),
       'utf8'
     );
-    assert.match(homeSrc, /OmniLogo/);
+    const appSrc = fs.readFileSync(path.resolve('src/App.jsx'), 'utf8');
+    assert.match(appSrc, /OmniLogo/);
     assert.match(homeSrc, /DomainSwitcherBar/);
     assert.match(switcherSrc, /Portais de Domínio OmniPrism/);
 
-    const appSrc = fs.readFileSync(path.resolve('src/App.jsx'), 'utf8');
     assert.match(appSrc, /Local Offline/);
     assert.match(appSrc, /Sincronizado Supabase/);
     assert.match(appSrc, /OmniCloudModal/);

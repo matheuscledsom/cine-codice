@@ -184,11 +184,11 @@ describe('Fase 6 — Perfil, social oculto (SOCIAL_ENABLED) e limpeza R7', () =>
     assert.match(profileSrc, /resolveProfileHeroBackdrop/);
     assert.match(profileSrc, /computeProfileMetrics/);
     assert.match(profileSrc, /rgba\(10,12,16,0\.72\)/);
-    assert.match(profileSrc, /Em cartaz:/);
+    assert.match(profileSrc, /heroBanner\.statusLabel/);
     assert.match(profileSrc, /Episódios \/ Horas/);
     assert.match(profileSrc, /Média Geral/);
     assert.match(profileSrc, /sem duração excluída/);
-    assert.match(profileSrc, /Favoritos da Vida · Top 4/);
+    assert.match(profileSrc, /favoritesVocab\.favoritesTitle/);
 
     const settingsSrc = readSrc('src/components/ProfileSettingsDrawer.jsx');
     assert.match(settingsSrc, /Modo Calmo/);

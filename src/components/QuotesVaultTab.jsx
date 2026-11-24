@@ -77,7 +77,7 @@ export function QuotesVaultTab({ item, onUpdate }) {
       });
       setDownloadedId(quote.id);
       showToast({
-        message: 'Bilhete de Cinema 1080x1350 baixado',
+        message: 'Cartão Editorial 1080x1350 baixado',
         type: 'success',
       });
       setTimeout(() => {
@@ -275,7 +275,7 @@ export function QuotesVaultTab({ item, onUpdate }) {
                 className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-accent/40 bg-accent/15 px-4 py-2 text-xs font-semibold text-ink hover:bg-accent/25"
               >
                 <ImageDown className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                <span>Gerar Bilhete Cinematográfico (PNG)</span>
+                <span>Gerar Cartão Editorial (PNG)</span>
               </button>
             )}
           </div>
@@ -338,7 +338,7 @@ export function QuotesVaultTab({ item, onUpdate }) {
                   ) : (
                     <>
                       <ImageDown className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                      {isGenerating ? 'Gerando bilhete...' : 'Gerar Bilhete de Cinema (PNG)'}
+                      {isGenerating ? 'Gerando cartão...' : 'Gerar Cartão Editorial (PNG)'}
                     </>
                   )}
                 </button>

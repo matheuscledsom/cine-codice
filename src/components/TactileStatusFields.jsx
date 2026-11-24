@@ -17,7 +17,11 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { domainConfig } from '../config/domainConfig';
+import {
+  domainConfig,
+  getDomainVocabulary,
+  inferDomainFromWork,
+} from '../config/domainConfig';
 import { DNA_DIMENSIONS } from '../services/dnaScoring';
 import {
   advanceEpisodeProgress,
@@ -734,7 +738,9 @@ export function TactileStatusFields({
       {status === 'queued' && (
         <div className="space-y-3 rounded-xl border border-line bg-app p-3.5">
           <div>
-            <p className="mb-2 text-xs font-medium text-muted">Prioridade na fila Quero Ver</p>
+            <p className="mb-2 text-xs font-medium text-muted">
+              Prioridade na fila {getDomainVocabulary(inferDomainFromWork(item)).statuses.queued}
+            </p>
             <div className="flex flex-wrap gap-1.5">
               {hypeOptions.map((opt) => {
                 const selected = (item.hype || 'medium') === opt.id;

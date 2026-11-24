@@ -337,7 +337,7 @@ export async function generateEditorialQuoteCard({
 
   ctx.fillStyle = textPrimary;
   ctx.font = `700 32px ${fontFamily}`;
-  const titleLines = wrapTextLines(ctx, title || 'Sessão Cine Códice', INNER_W).slice(0, 2);
+  const titleLines = wrapTextLines(ctx, title || 'Registro OmniPrism', INNER_W).slice(0, 2);
   let footerY = FOOTER_TOP + 46;
   titleLines.forEach((tLine) => {
     ctx.fillText(tLine, INNER_X, footerY);

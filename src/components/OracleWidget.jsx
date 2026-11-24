@@ -45,7 +45,7 @@ export function OracleWidget({
     if (queuedItems.length === 0) {
       setResult(null);
       setInfoNotice(
-        'Adicione pelo menos uma obra em "Quero Ver" para sugerir uma sessão.'
+        'Adicione pelo menos uma obra na sua fila para gerar uma sugestão.'
       );
       return;
     }
@@ -59,7 +59,7 @@ export function OracleWidget({
         mood: moodQuery,
       });
       setResult(offlineRec);
-      setInfoNotice('Curadoria gerada localmente cruzando notas >= 80 e fila Quero Ver.');
+      setInfoNotice('Curadoria gerada localmente cruzando notas >= 80 e sua fila.');
       return;
     }
 
@@ -126,7 +126,7 @@ export function OracleWidget({
               Curador da Sessão
             </h2>
             <p className="text-[10px] tabular-nums text-subtle">
-              Cruza clima, DNA e fila Quero Ver ({queuedItems.length})
+              Cruza clima, DNA e sua fila ({queuedItems.length})
             </p>
           </div>
         </div>

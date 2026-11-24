@@ -18,6 +18,7 @@ import {
   GAME_PLATFORM_UNSET_LABEL,
   OMNIPRISM_DOMAINS,
   getDomainMeta,
+  getDomainVocabulary,
   getMediaTypesForDomain,
   getWorkTypeLabel,
   inferDomainFromWork,
@@ -85,19 +86,34 @@ function getKnownEpisodeDurationMinutes(work) {
 }
 
 /**
- * Seleciona o backdropUrl da obra em andamento mais recente para o banner do Perfil.
- * Se não houver obra ativa com backdropUrl válida, retorna null (fallback para gradiente do tema).
+ * Seleciona a imagem de banner da obra em andamento mais recente para o Perfil.
+ * - Sem `activeDomain` (legado): exige `backdropUrl` válida, retornando null se não houver.
+ * - Com `activeDomain`: filtra pelo domínio ativo e aceita `backdropUrl` OU `coverUrl`
+ *   (para que livros, games e álbuns usem sua capa sem ficar presos a cinema).
+ * Se não houver obra ativa com imagem válida, retorna null (fallback para gradiente do tema).
  */
-export function resolveProfileHeroBackdrop(items = []) {
+export function resolveProfileHeroBackdrop(items = [], activeDomain = null) {
+  const scopedDomain = activeDomain ? normalizeDomainId(activeDomain) : null;
   const active = (Array.isArray(items) ? items : [])
-    .filter(
-      (w) =>
-        w &&
-        w.inBacklog !== false &&
-        (w.status === 'playing' || w.status === 'rewatching') &&
-        typeof w.backdropUrl === 'string' &&
-        /^https?:\/\//i.test(w.backdropUrl.trim())
-    )
+    .filter((w) => {
+      if (!w || w.inBacklog === false) return false;
+      const isActive =
+        w.status === 'playing' || w.status === 'in-progress' || w.status === 'rewatching';
+      if (!isActive) return false;
+      if (scopedDomain && inferDomainFromWork(w) !== scopedDomain) return false;
+
+      const hasBackdrop =
+        typeof w.backdropUrl === 'string' && /^https?:\/\//i.test(w.backdropUrl.trim());
+      if (hasBackdrop) return true;
+
+      if (scopedDomain) {
+        const hasCover =
+          typeof w.coverUrl === 'string' &&
+          /^(https?:\/\/|data:image\/)/i.test(w.coverUrl.trim());
+        return hasCover;
+      }
+      return false;
+    })
     .sort((a, b) => {
       const tA = Date.parse(a.updatedAt || a.createdAt || '') || 0;
       const tB = Date.parse(b.updatedAt || b.createdAt || '') || 0;
@@ -105,10 +121,32 @@ export function resolveProfileHeroBackdrop(items = []) {
     });
 
   if (active.length === 0) return null;
+  const top = active[0];
+  const hasBackdrop =
+    typeof top.backdropUrl === 'string' && /^https?:\/\//i.test(top.backdropUrl.trim());
+  const rawUrl = hasBackdrop ? top.backdropUrl.trim() : String(top.coverUrl || '').trim();
+  const cleanUrl = rawUrl.replace(/^http:\/\//i, 'https://');
+
+  if (!scopedDomain) {
+    return {
+      workId: top.id,
+      title: top.title || '',
+      backdropUrl: cleanUrl,
+    };
+  }
+
+  const domain = inferDomainFromWork(top);
+  const vocab = getDomainVocabulary(domain);
+  const statusKey = top.status === 'rewatching' ? 'rewatching' : 'playing';
+
   return {
-    workId: active[0].id,
-    title: active[0].title || '',
-    backdropUrl: active[0].backdropUrl.trim().replace(/^http:\/\//i, 'https://'),
+    workId: top.id,
+    title: top.title || '',
+    domain,
+    statusLabel: vocab.statuses[statusKey],
+    backdropUrl: cleanUrl,
+    imageUrl: cleanUrl,
+    isCoverFallback: !hasBackdrop,
   };
 }
 
@@ -203,11 +241,15 @@ export const PROFILE_AVATAR_EMBLEMS = [
 
 /**
  * Monta os 4 slots da vitrine "Favoritos da Vida" (Top 4) a partir de favoriteRank (1..4).
+ * Quando `domain` é informado, filtra as obras pelo domínio selecionado (Filmes, Livros, Games, Música).
  */
-export function resolveTop4Favorites(items = []) {
-  const backlog = (Array.isArray(items) ? items : []).filter(
-    (item) => item && item.inBacklog !== false
-  );
+export function resolveTop4Favorites(items = [], domain = null) {
+  const targetDomain = domain ? normalizeDomainId(domain) : null;
+  const backlog = (Array.isArray(items) ? items : []).filter((item) => {
+    if (!item || item.inBacklog === false) return false;
+    if (targetDomain && inferDomainFromWork(item) !== targetDomain) return false;
+    return true;
+  });
 
   const byRank = new Map();
   for (const work of backlog) {
@@ -446,10 +488,13 @@ export function computeDomainBreakdownMetrics(items = []) {
       progressSummary = `${eps} eps`;
     }
 
+    const vocab = getDomainVocabulary(dom.id);
     return {
       domainId: dom.id,
       label: dom.label,
       shortLabel: dom.shortLabel,
+      tabLabel: dom.tabLabel || dom.shortLabel,
+      completedLabel: vocab.statuses.completed,
       tintHex: dom.tintHex,
       totalWorks: domainWorks.length,
       completedWorks,

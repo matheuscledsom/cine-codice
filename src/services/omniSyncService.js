@@ -219,6 +219,12 @@ export function mapLocalWorkToCatalogRow(
   const releaseFormat = String(work.releaseFormat || '').trim();
   const listenCount = Math.max(0, Math.round(Number(work.listenCount) || 0));
   const tracks = Array.isArray(work.tracks) ? work.tracks : [];
+  const trackRatings =
+    work.trackRatings &&
+    typeof work.trackRatings === 'object' &&
+    !Array.isArray(work.trackRatings)
+      ? work.trackRatings
+      : {};
   const trackCount = Number(work.trackCount) > 0 ? Math.round(Number(work.trackCount)) : null;
 
   return {
@@ -294,6 +300,7 @@ export function mapLocalWorkToCatalogRow(
       release_format: releaseFormat,
       listen_count: listenCount,
       tracks,
+      track_ratings: trackRatings,
       track_count: trackCount,
       ratingSource: work.ratingSource ?? null,
       reviewCriteria: work.reviewCriteria ?? null,
@@ -435,6 +442,12 @@ export function mapCatalogRowToLocalWork(row = {}) {
     ).trim(),
     listenCount: Math.max(0, Math.round(Number(pd.listen_count ?? pd.listenCount) || 0)),
     tracks: Array.isArray(pd.tracks) ? pd.tracks : [],
+    trackRatings:
+      (pd.track_ratings ?? pd.trackRatings) &&
+      typeof (pd.track_ratings ?? pd.trackRatings) === 'object' &&
+      !Array.isArray(pd.track_ratings ?? pd.trackRatings)
+        ? pd.track_ratings ?? pd.trackRatings
+        : {},
     trackCount:
       Number(pd.track_count ?? pd.trackCount) > 0
         ? Math.round(Number(pd.track_count ?? pd.trackCount))

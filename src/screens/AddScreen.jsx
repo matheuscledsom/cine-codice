@@ -2,6 +2,8 @@ import {
   AlertCircle,
   BookOpen,
   Check,
+  ChevronDown,
+  ChevronUp,
   FileSpreadsheet,
   Film,
   Gamepad2,
@@ -17,9 +19,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CoverArt } from '../components/CoverArt';
 import { DomainSwitcherBar } from '../components/DomainSwitcherBar';
-import { SmartCatalogButton } from '../components/SmartCatalogButton';
-import { TechnicalAtmosphereSection } from '../components/TechnicalAtmosphereSection';
-import { VectorIcon } from '../components/VectorIcon';
 import { WorkTypeSelector } from '../components/WorkTypeSelector';
 import {
   BOOK_FORMATS,
@@ -31,8 +30,9 @@ import {
   MUSIC_RELEASE_FORMATS,
   domainConfig,
   getDomainMeta,
+  getDomainVocabulary,
   getMediaTypesForDomain,
-  getStatusConfig,
+  getStatusConfigForDomain,
   getWorkTypeLabel,
   normalizeDomainId,
   normalizeWorkTypeForDomain,
@@ -55,27 +55,32 @@ import {
 import {
   fetchMusicReleaseTracks,
   formatTrackDuration,
+  getDisplayGenres,
+  getDisplaySynopsis,
   getQuickSuggestionsForDomain,
   searchWorksByDomain,
 } from '../services/multiDomainSearchService';
-import { getPresentExternalRatingBadges } from '../lib/ratings';
-import { workHasAnyExternalIds } from '../lib/ratings';
+import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
 import { createUuid } from '../services/codiceDatabase';
 import {
-  calculateSmartRating,
-  calculateWorkProgress,
   formatFlexibleProgressMetric,
   getDisplayTitles,
   getTodayLocalISO,
   getVerdictForScore,
   isEpisodicWork,
 } from '../utils/backlogHelpers';
+import {
+  buildQuickCatalogDraftWithStatus,
+  getQuickCatalogConditionalFields,
+} from '../utils/catalogDraftHelpers';
 import { findDuplicateMatch } from '../utils/catalogImporters';
 import {
   autoMapAtmosphereAndTags,
   buildPrefilledCatalogDraft,
 } from '../utils/genreMapper';
 import { GENRE_OPTIONS } from '../utils/readerPreferences';
+
+const QUICK_SCORES_100 = [60, 70, 75, 80, 85, 90, 95, 100];
 
 const SEARCH_FILTER_STORAGE_KEY = 'cine_codice_add_search_filter_v1';
 const MIN_SEARCH_QUERY_LENGTH = 3;
@@ -92,53 +97,8 @@ function createMonogram(title) {
   return String(title || 'OB').slice(0, 2).toUpperCase();
 }
 
-function buildDraftWithStatus(baseDraft, nextStatus) {
-  const today = getTodayLocalISO();
-  const updated = { ...baseDraft, status: nextStatus };
-
-  if (nextStatus === 'playing' || nextStatus === 'rewatching') {
-    updated.startDate = updated.startDate || today;
-    updated.progress = calculateWorkProgress(updated);
-  }
-
-  if (nextStatus === 'completed') {
-    updated.completedDate = updated.completedDate || today;
-    updated.startDate = updated.startDate || updated.completedDate;
-    updated.progress = 100;
-    if (updated.domain === 'reading' && Number(updated.totalPages) > 0) {
-      updated.pagesRead = Number(updated.totalPages);
-    } else if (isEpisodicWork(updated)) {
-      if (Number(updated.totalEpisodes) > 0) {
-        updated.currentEpisode = Number(updated.totalEpisodes);
-      }
-      if (Number(updated.totalSeasons) > 0) {
-        updated.currentSeason = Number(updated.totalSeasons);
-      }
-    } else if (Number(updated.totalSeconds) > 0 || Number(updated.durationMinutes) > 0) {
-      const totalSec =
-        Number(updated.totalSeconds) || Number(updated.durationMinutes) * 60;
-      updated.totalSeconds = totalSec;
-      updated.currentSeconds = totalSec;
-    }
-    if (updated.reviewCriteria) {
-      updated.rating = calculateSmartRating(updated.reviewCriteria);
-      updated.verdict = getVerdictForScore(updated.rating);
-      updated.ratingSource = updated.ratingSource || 'manual';
-    } else if (typeof updated.rating === 'number' && !Number.isNaN(updated.rating)) {
-      updated.verdict = updated.verdict || getVerdictForScore(updated.rating);
-      updated.ratingSource = updated.ratingSource || 'manual';
-    } else {
-      updated.rating = null;
-      updated.verdict = null;
-      updated.ratingSource = null;
-    }
-  }
-
-  if (nextStatus === 'queued') {
-    updated.progress = 0;
-  }
-
-  return updated;
+function buildDraftWithStatus(baseDraft, nextStatus, options = {}) {
+  return buildQuickCatalogDraftWithStatus(baseDraft, nextStatus, options);
 }
 
 function ResultSkeleton() {
@@ -178,7 +138,6 @@ function loadSavedSearchFilter(domain = 'cinema') {
 
 export function AddScreen({
   items = [],
-  geminiKey = '',
   tmdbKey = '',
   omdbKey = '',
   activeDomain = 'cinema',
@@ -187,8 +146,9 @@ export function AddScreen({
   onAddItem,
   onUpdateItem,
   onSelectExisting,
-  onOpenGeminiSettings,
   onOpenImportCatalog,
+  requestedSearchQuery = '',
+  onConsumeRequestedSearchQuery,
 }) {
   const [internalDomain, setInternalDomain] = useState(() => normalizeDomainId(activeDomain));
   useEffect(() => {
@@ -196,12 +156,19 @@ export function AddScreen({
   }, [activeDomain]);
   const effectiveDomain = internalDomain;
   const domainMeta = useMemo(() => getDomainMeta(effectiveDomain), [effectiveDomain]);
+  const domainVocab = useMemo(() => getDomainVocabulary(effectiveDomain), [effectiveDomain]);
   const domainMediaTypes = useMemo(
     () => getMediaTypesForDomain(effectiveDomain),
     [effectiveDomain]
   );
 
   const [query, setQuery] = useState('');
+  useEffect(() => {
+    const cleanRequested = String(requestedSearchQuery || '').trim();
+    if (!cleanRequested) return;
+    setQuery(cleanRequested);
+    onConsumeRequestedSearchQuery?.();
+  }, [requestedSearchQuery, onConsumeRequestedSearchQuery]);
   const [searchFilter, setSearchFilter] = useState(() =>
     loadSavedSearchFilter(activeDomain)
   );
@@ -229,8 +196,11 @@ export function AddScreen({
   const [gameCardOverrides, setGameCardOverrides] = useState({});
 
   const [draftItem, setDraftItem] = useState(null);
+  const [showDraftTypePicker, setShowDraftTypePicker] = useState(false);
+  const [confirmFillFullPages, setConfirmFillFullPages] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualDraft, setManualDraft] = useState(null);
+  const [manualMoreDetailsOpen, setManualMoreDetailsOpen] = useState(false);
 
   const { ui, addFlowStatuses, mediaFormats, audioFormatTags } = domainConfig;
   const { add } = ui;
@@ -662,6 +632,8 @@ export function AddScreen({
     const openToken = ++drawerOpenTokenRef.current;
     const controller = new AbortController();
     enrichAbortRef.current = controller;
+    setShowDraftTypePicker(false);
+    setConfirmFillFullPages(false);
 
     const candDomain = normalizeDomainId(candidate?.domain || effectiveDomain);
 
@@ -838,16 +810,26 @@ export function AddScreen({
     if (!draftItem) return;
     enrichAbortRef.current?.abort();
     const draftDomain = normalizeDomainId(draftItem.domain || effectiveDomain);
+    const shouldFillPages =
+      draftDomain === 'reading' &&
+      draftItem.status === 'completed' &&
+      confirmFillFullPages &&
+      Number(draftItem.totalPages) > 0;
     const finalDraft = {
       ...draftItem,
       domain: draftDomain,
       id: draftItem.id || createUuid(),
+      pagesRead: shouldFillPages
+        ? Number(draftItem.totalPages)
+        : Math.max(0, Number(draftItem.pagesRead) || 0),
       creator:
         draftItem.creator || draftItem.director || draftItem.author || draftItem.studio || '',
     };
     const alreadyEnriched = enrichedDraftIdsRef.current.has(finalDraft.id);
     onAddItem(finalDraft);
     setDraftItem(null);
+    setShowDraftTypePicker(false);
+    setConfirmFillFullPages(false);
 
     if (
       draftDomain === 'cinema' &&
@@ -908,6 +890,7 @@ export function AddScreen({
   };
 
   const handleOpenManualModal = () => {
+    setManualMoreDetailsOpen(false);
     const validTypes = domainMediaTypes.map((m) => m.id);
     const defaultType =
       searchFilter !== 'all' && validTypes.includes(searchFilter)
@@ -1020,14 +1003,7 @@ export function AddScreen({
     setManualDraft(null);
   };
 
-  const searchPlaceholder =
-    effectiveDomain === 'reading'
-      ? 'Buscar livros, mangás, autores ou ISBN...'
-      : effectiveDomain === 'games'
-        ? 'Buscar jogos, remakes, DLCs ou plataformas...'
-        : effectiveDomain === 'music'
-          ? 'Buscar faixas, álbuns, EPs, artistas ou shows...'
-          : add.searchPlaceholder;
+  const searchPlaceholder = domainVocab.addSearchPlaceholder;
 
   const domainApiHint =
     effectiveDomain === 'reading'
@@ -1051,10 +1027,17 @@ export function AddScreen({
     ? normalizeDomainId(draftItem.domain || effectiveDomain)
     : effectiveDomain;
   const draftDomainMeta = getDomainMeta(draftDomain);
+  const draftVocab = getDomainVocabulary(draftDomain);
+  const draftConditional = draftItem
+    ? getQuickCatalogConditionalFields(draftDomain, draftItem.status)
+    : null;
+  const draftDisplayGenres = draftItem ? getDisplayGenres(draftItem, { max: 3 }) : [];
+  const draftDisplaySynopsis = draftItem ? getDisplaySynopsis(draftItem) : '';
   const manualDomain = manualDraft
     ? normalizeDomainId(manualDraft.domain || effectiveDomain)
     : effectiveDomain;
   const manualDomainMeta = getDomainMeta(manualDomain);
+  const manualVocab = getDomainVocabulary(manualDomain);
 
   return (
     <div className="space-y-4 pb-24">
@@ -1292,7 +1275,7 @@ export function AddScreen({
             Sessão Secreta dos Irmãos Lumière (1895)
           </h2>
           <p className="text-xs text-muted">
-            Cinematógrafo calibrado. Seu catálogo privada está pronta para novas projeções.
+            Catálogo calibrado. Pronto para novas descobertas nos 4 domínios.
           </p>
         </div>
       ) : isLoading ? (
@@ -1492,9 +1475,9 @@ export function AddScreen({
                       </p>
                     )}
 
-                    {candidate.synopsis && (
+                    {getDisplaySynopsis(candidate) && (
                       <p className="line-clamp-2 text-[11px] leading-snug text-subtle">
-                        {candidate.synopsis}
+                        {getDisplaySynopsis(candidate)}
                       </p>
                     )}
 
@@ -1559,7 +1542,7 @@ export function AddScreen({
                             {provider}
                           </span>
                         ))}
-                        {(candidate.genres || []).slice(0, 3).map((g) => (
+                        {getDisplayGenres(candidate, { max: 3 }).map((g) => (
                           <span
                             key={g}
                             className="rounded-[3px] border border-line bg-app px-1.5 py-0.5 text-[10px] text-muted"
@@ -1597,14 +1580,16 @@ export function AddScreen({
         </section>
       )}
 
-      {/* Drawer de Confirmação ao Catalogar Resultado */}
-      {draftItem && (
+      {/* Folha Curta de Catalogação Rápida */}
+      {draftItem && draftConditional && (
         <div
           key={`draft-drawer-${draftItem.id}`}
           className="fixed inset-0 z-50 flex items-end justify-center bg-black/65 sm:items-center sm:p-4"
           onClick={() => {
             enrichAbortRef.current?.abort();
             setDraftItem(null);
+            setShowDraftTypePicker(false);
+            setConfirmFillFullPages(false);
           }}
           role="dialog"
           aria-modal="true"
@@ -1614,14 +1599,24 @@ export function AddScreen({
             onClick={(e) => e.stopPropagation()}
             className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-[8px] border border-line bg-card p-5 space-y-4 sm:rounded-[8px] no-scrollbar"
           >
+            {/* Cabeçalho curto: capa, título, autor/artista + link pequeno "alterar tipo" */}
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3 min-w-0">
                 <CoverArt item={draftItem} compact className="h-24 w-16 shrink-0 rounded-[4px]" />
                 <div className="min-w-0">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
-                    {add.drawerTitle}
-                    {enrichingCandidate ? ' · Buscando detalhes...' : ''}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-accent">
+                      {getWorkTypeLabel(draftItem, draftDomain)}
+                      {enrichingCandidate ? ' · Carregando...' : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowDraftTypePicker((v) => !v)}
+                      className="text-[10px] font-medium text-muted underline underline-offset-2 hover:text-accent"
+                    >
+                      {showDraftTypePicker ? 'ocultar tipo' : 'alterar tipo'}
+                    </button>
+                  </div>
                   <h2 className="mt-0.5 line-clamp-2 text-sm font-semibold text-ink">
                     {draftItem.title}
                   </h2>
@@ -1629,21 +1624,24 @@ export function AddScreen({
                     draftItem.originalTitle.toLowerCase() !==
                       String(draftItem.title || '').toLowerCase() && (
                       <p className="truncate text-[10px] italic text-subtle">
-                        Original: {draftItem.originalTitle}
+                        {draftItem.originalTitle}
                       </p>
                     )}
                   <p className="mt-0.5 text-[11px] tabular-nums text-muted">
                     {[
                       draftItem.creator || draftItem.director || draftItem.studio,
                       draftItem.releaseYear,
-                      formatFlexibleProgressMetric(draftItem) ||
-                        (draftDomain === 'cinema' && isEpisodicWork(draftItem)
-                          ? `${Math.max(1, Number(draftItem.totalSeasons) || 1)} temp.${
-                              draftItem.totalEpisodes ? ` · ${draftItem.totalEpisodes} eps` : ''
-                            }`
-                          : draftDomain === 'cinema' && draftItem.durationMinutes
-                            ? `${draftItem.durationMinutes} min`
-                            : null),
+                      draftDomain === 'reading' && draftItem.totalPages
+                        ? `${draftItem.totalPages} págs`
+                        : draftDomain === 'music' && draftItem.workType === 'track' && draftItem.durationMs
+                          ? formatTrackDuration(draftItem.durationMs)
+                          : draftDomain === 'cinema' && isEpisodicWork(draftItem)
+                            ? `${Math.max(1, Number(draftItem.totalSeasons) || 1)} temp.${
+                                draftItem.totalEpisodes ? ` · ${draftItem.totalEpisodes} eps` : ''
+                              }`
+                            : draftDomain === 'cinema' && draftItem.durationMinutes
+                              ? `${draftItem.durationMinutes} min`
+                              : null,
                     ]
                       .filter(Boolean)
                       .join(' · ')}
@@ -1655,6 +1653,8 @@ export function AddScreen({
                 onClick={() => {
                   enrichAbortRef.current?.abort();
                   setDraftItem(null);
+                  setShowDraftTypePicker(false);
+                  setConfirmFillFullPages(false);
                 }}
                 aria-label={add.drawerCancelLabel}
                 className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[4px] text-muted hover:text-ink"
@@ -1663,73 +1663,53 @@ export function AddScreen({
               </button>
             </div>
 
-            {/* Estrutura e Streaming BR antes de Salvar */}
-            {draftDomain === 'cinema' && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                {formatWorkStructureBadge(draftItem) && (
-                  <span className="rounded-[4px] border border-accent/40 bg-accent/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">
-                    {formatWorkStructureBadge(draftItem)}
+            {showDraftTypePicker && (
+              <WorkTypeSelector
+                key={`wt-${draftItem.id}-${draftDomain}`}
+                domain={draftDomain}
+                label={draftVocab.workTypeLabel}
+                value={draftItem.workType}
+                onChange={(nextType) =>
+                  setDraftItem((curr) => ({ ...curr, workType: nextType }))
+                }
+              />
+            )}
+
+            {/* Máx. 3 gêneros filtrados (descarta idioma estrangeiro quando título é PT) */}
+            {draftDisplayGenres.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {draftDisplayGenres.map((g) => (
+                  <span
+                    key={g}
+                    className="rounded-[4px] border border-line bg-app px-2 py-0.5 text-[11px] font-medium text-muted"
+                  >
+                    {g}
                   </span>
-                )}
-                {Array.isArray(draftItem.streamingProvidersBR) &&
-                  draftItem.streamingProvidersBR.map((provider) => (
-                    <span
-                      key={provider}
-                      className="rounded-[4px] border border-line bg-app px-2 py-0.5 text-[11px] font-semibold text-ink"
-                    >
-                      BR · {provider}
-                    </span>
-                  ))}
+                ))}
               </div>
             )}
 
-            {Array.isArray(draftItem.genres) && draftItem.genres.length > 0 && (
-              <div className="space-y-1.5 rounded-[6px] border border-line bg-app p-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-subtle">
-                  Gêneros Oficiais (API)
-                </p>
-                <div className="flex flex-wrap gap-1">
-                  {draftItem.genres.map((g) => (
-                    <span
-                      key={g}
-                      className="rounded-[4px] border border-line bg-card px-2 py-0.5 text-[11px] font-medium text-ink"
-                    >
-                      {g}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {draftItem.synopsis && (
-              <p className="line-clamp-3 rounded-xl border border-line bg-app px-3 py-2 text-xs leading-relaxed text-muted">
-                {draftItem.synopsis}
+            {draftDisplaySynopsis && (
+              <p className="line-clamp-2 rounded-[6px] border border-line bg-app px-3 py-2 text-xs leading-relaxed text-muted">
+                {draftDisplaySynopsis}
               </p>
             )}
 
-            <WorkTypeSelector
-              key={`wt-${draftItem.id}-${draftDomain}`}
-              domain={draftDomain}
-              label={add.drawerWorkTypeLabel}
-              value={draftItem.workType}
-              onChange={(nextType) =>
-                setDraftItem((curr) => ({ ...curr, workType: nextType }))
-              }
-            />
-
+            {/* Status com vocabulário próprio do domínio */}
             <div>
               <p className="mb-1.5 text-xs font-medium text-muted">{add.drawerStatusLabel}</p>
               <div className="grid grid-cols-3 gap-1.5">
                 {addFlowStatuses.map((statusId) => {
-                  const cfg = getStatusConfig(statusId);
+                  const cfg = getStatusConfigForDomain(statusId, draftDomain);
                   const active = draftItem.status === statusId;
                   return (
                     <button
                       key={statusId}
                       type="button"
-                      onClick={() =>
-                        setDraftItem((curr) => buildDraftWithStatus(curr, statusId))
-                      }
+                      onClick={() => {
+                        setConfirmFillFullPages(false);
+                        setDraftItem((curr) => buildDraftWithStatus(curr, statusId));
+                      }}
                       className={`min-h-[42px] rounded-[4px] border px-2 text-xs font-medium transition-colors ${
                         active
                           ? 'border-accent bg-accent/15 text-ink'
@@ -1743,7 +1723,8 @@ export function AddScreen({
               </div>
             </div>
 
-            {draftDomain === 'cinema' ? (
+            {/* Campo contextual único por domínio */}
+            {draftConditional.showCinemaFormats && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <p className="mb-1.5 text-xs font-medium text-muted">{add.drawerFormatLabel}</p>
@@ -1787,150 +1768,35 @@ export function AddScreen({
                   </div>
                 </div>
               </div>
-            ) : draftDomain === 'reading' ? (
-              <div className="space-y-3 rounded-[6px] border border-line bg-app p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
-                  Dados de {draftDomainMeta.shortLabel}
-                </p>
-                <div className="grid grid-cols-3 gap-2">
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-muted">Págs lidas</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={draftItem.pagesRead ?? 0}
-                      onChange={(e) =>
-                        setDraftItem((curr) => ({
-                          ...curr,
-                          pagesRead: Math.max(0, Number(e.target.value) || 0),
-                        }))
-                      }
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-muted">Total págs</span>
-                    <input
-                      type="number"
-                      min="1"
-                      value={draftItem.totalPages || ''}
-                      onChange={(e) =>
-                        setDraftItem((curr) => ({
-                          ...curr,
-                          totalPages: e.target.value ? Number(e.target.value) : null,
-                        }))
-                      }
-                      placeholder="340"
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-muted">Capítulos</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={draftItem.chaptersRead ?? 0}
-                      onChange={(e) =>
-                        setDraftItem((curr) => ({
-                          ...curr,
-                          chaptersRead: Math.max(0, Number(e.target.value) || 0),
-                        }))
-                      }
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
+            )}
+
+            {draftConditional.showBookFormat && (
+              <div>
+                <p className="mb-1.5 text-xs font-medium text-muted">Formato</p>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {BOOK_FORMATS.map((fmt) => (
+                    <button
+                      key={fmt}
+                      type="button"
+                      onClick={() => setDraftItem((curr) => ({ ...curr, bookFormat: fmt }))}
+                      className={`min-h-[40px] rounded-[4px] border px-2.5 text-xs font-medium ${
+                        (draftItem.bookFormat || BOOK_FORMATS[0]) === fmt
+                          ? 'border-accent bg-accent/15 text-ink'
+                          : 'border-line bg-app text-muted'
+                      }`}
+                    >
+                      {fmt}
+                    </button>
+                  ))}
                 </div>
-
-                <div>
-                  <span className="mb-1 block text-[11px] text-muted">Formato</span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {BOOK_FORMATS.map((fmt) => (
-                      <button
-                        key={fmt}
-                        type="button"
-                        onClick={() => setDraftItem((curr) => ({ ...curr, bookFormat: fmt }))}
-                        className={`min-h-[36px] rounded-[4px] border px-2.5 text-[11px] font-medium ${
-                          draftItem.bookFormat === fmt
-                            ? 'border-accent bg-accent/15 text-ink'
-                            : 'border-line bg-card text-muted'
-                        }`}
-                      >
-                        {fmt}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-muted">
-                    Título Original (opcional)
-                  </span>
-                  <input
-                    type="text"
-                    value={draftItem.originalTitle || ''}
-                    onChange={(e) =>
-                      setDraftItem((curr) => ({ ...curr, originalTitle: e.target.value }))
-                    }
-                    placeholder="Ex: Die Verwandlung / Metamorphosis"
-                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
-
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-muted">ISBN / DOI</span>
-                  <input
-                    type="text"
-                    value={draftItem.isbnOrDoi || ''}
-                    onChange={(e) =>
-                      setDraftItem((curr) => ({ ...curr, isbnOrDoi: e.target.value }))
-                    }
-                    placeholder="Ex: 978-0-14-044913-6 ou 10.1145/..."
-                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
-
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-muted">Citação marcante</span>
-                  <input
-                    type="text"
-                    value={draftItem.favoriteScene || ''}
-                    onChange={(e) =>
-                      setDraftItem((curr) => ({ ...curr, favoriteScene: e.target.value }))
-                    }
-                    placeholder="Trecho ou passagem favorita..."
-                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
               </div>
-            ) : draftDomain === 'games' ? (
-              <div className="space-y-3 rounded-[6px] border border-line bg-app p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
-                  Dados de {draftDomainMeta.shortLabel}
-                </p>
+            )}
 
-                <div>
-                  <span className="mb-1 block text-[11px] text-muted">Tipo de Edição</span>
-                  <div className="flex flex-wrap gap-1">
-                    {GAME_EDITION_TYPES.map((ed) => (
-                      <button
-                        key={ed}
-                        type="button"
-                        onClick={() => setDraftItem((curr) => ({ ...curr, editionType: ed }))}
-                        className={`min-h-[34px] rounded-[4px] border px-2 text-[11px] font-medium ${
-                          (draftItem.editionType || GAME_EDITION_TYPES[0]) === ed
-                            ? 'border-accent bg-accent/15 text-ink'
-                            : 'border-line bg-card text-muted'
-                        }`}
-                      >
-                        {ed}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
+            {draftConditional.showPlatform && (
+              <div className="space-y-3">
                 <div>
                   <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted">Plataforma Jogada</span>
+                    <span className="text-xs font-medium text-muted">Plataforma jogada</span>
                     {Array.isArray(draftItem.platforms) && draftItem.platforms.length > 0 && (
                       <span className="text-[10px] text-subtle">
                         API: {draftItem.platforms.join(', ')}
@@ -1944,7 +1810,7 @@ export function AddScreen({
                       className={`min-h-[34px] rounded-[4px] border px-2 text-[11px] font-medium ${
                         !draftItem.platform
                           ? 'border-accent bg-accent/15 text-ink'
-                          : 'border-line bg-card text-muted'
+                          : 'border-line bg-app text-muted'
                       }`}
                     >
                       A definir
@@ -1959,7 +1825,7 @@ export function AddScreen({
                         className={`min-h-[34px] rounded-[4px] border px-2 text-[11px] font-medium ${
                           draftItem.platform === plat
                             ? 'border-accent bg-accent/15 text-ink'
-                            : 'border-line bg-card text-muted'
+                            : 'border-line bg-app text-muted'
                         }`}
                       >
                         {plat}
@@ -1968,76 +1834,157 @@ export function AddScreen({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-muted">Horas jogadas</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      value={draftItem.hoursPlayed ?? 0}
-                      onChange={(e) =>
-                        setDraftItem((curr) => ({
-                          ...curr,
-                          hoursPlayed: Math.max(0, Number(e.target.value) || 0),
-                        }))
-                      }
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-muted">Loja / Launcher</span>
-                    <select
-                      value={draftItem.storeOrLauncher || ''}
-                      onChange={(e) =>
-                        setDraftItem((curr) => ({
-                          ...curr,
-                          storeOrLauncher: e.target.value,
-                        }))
-                      }
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2 text-xs text-ink focus:border-accent focus:outline-none"
-                    >
-                      <option value="">A definir</option>
-                      {GAME_STORES_LAUNCHERS.map((st) => (
-                        <option key={st} value={st}>
-                          {st}
-                        </option>
+                {draftConditional.showEditionType && (
+                  <div>
+                    <span className="mb-1 block text-xs font-medium text-muted">Tipo de edição</span>
+                    <div className="flex flex-wrap gap-1">
+                      {GAME_EDITION_TYPES.map((ed) => (
+                        <button
+                          key={ed}
+                          type="button"
+                          onClick={() => setDraftItem((curr) => ({ ...curr, editionType: ed }))}
+                          className={`min-h-[34px] rounded-[4px] border px-2 text-[11px] font-medium ${
+                            (draftItem.editionType || GAME_EDITION_TYPES[0]) === ed
+                              ? 'border-accent bg-accent/15 text-ink'
+                              : 'border-line bg-app text-muted'
+                          }`}
+                        >
+                          {ed}
+                        </button>
                       ))}
-                    </select>
-                  </label>
-                </div>
-
-                <div>
-                  <span className="mb-1 block text-[11px] text-muted">Meta de conclusão</span>
-                  <div className="flex flex-wrap gap-1">
-                    {GAME_COMPLETION_TYPES.map((ct) => (
-                      <button
-                        key={ct}
-                        type="button"
-                        onClick={() =>
-                          setDraftItem((curr) => ({ ...curr, completionType: ct }))
-                        }
-                        className={`min-h-[34px] rounded-[4px] border px-2 text-[11px] font-medium ${
-                          draftItem.completionType === ct
-                            ? 'border-accent bg-accent/15 text-ink'
-                            : 'border-line bg-card text-muted'
-                        }`}
-                      >
-                        {ct}
-                      </button>
-                    ))}
+                    </div>
                   </div>
-                </div>
+                )}
+              </div>
+            )}
 
-                <div>
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-muted">Nota (0 a 11 · 11 = Obra-Prima)</span>
-                    <span className="text-[11px] font-semibold tabular-nums text-accent">
-                      {draftItem.gameRating11 !== null && draftItem.gameRating11 !== undefined
+            {/* Campos condicionais por status */}
+            {draftConditional.showCurrentPage && (
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-muted">
+                  Página atual
+                  {Number(draftItem.totalPages) > 0 ? ` (de ${draftItem.totalPages})` : ''}
+                </span>
+                <input
+                  type="number"
+                  min="0"
+                  value={draftItem.pagesRead ?? 0}
+                  onChange={(e) =>
+                    setDraftItem((curr) => ({
+                      ...curr,
+                      pagesRead: Math.max(0, Number(e.target.value) || 0),
+                    }))
+                  }
+                  className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                />
+              </label>
+            )}
+
+            {draftConditional.showHours && (
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-muted">Horas jogadas</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={draftItem.hoursPlayed ?? 0}
+                  onChange={(e) =>
+                    setDraftItem((curr) => ({
+                      ...curr,
+                      hoursPlayed: Math.max(0, Number(e.target.value) || 0),
+                    }))
+                  }
+                  className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                />
+              </label>
+            )}
+
+            {draftConditional.showCompletionType && (
+              <div>
+                <span className="mb-1.5 block text-xs font-medium text-muted">
+                  Tipo de conclusão
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {GAME_COMPLETION_TYPES.map((ct) => (
+                    <button
+                      key={ct}
+                      type="button"
+                      onClick={() =>
+                        setDraftItem((curr) => ({ ...curr, completionType: ct }))
+                      }
+                      className={`min-h-[36px] rounded-[4px] border px-2.5 text-[11px] font-medium ${
+                        (draftItem.completionType || GAME_COMPLETION_TYPES[0]) === ct
+                          ? 'border-accent bg-accent/15 text-ink'
+                          : 'border-line bg-app text-muted'
+                      }`}
+                    >
+                      {ct}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {draftConditional.showCompletedDate && (
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-muted">
+                  Data de término
+                </span>
+                <input
+                  type="date"
+                  value={draftItem.completedDate || getTodayLocalISO()}
+                  onChange={(e) =>
+                    setDraftItem((curr) => ({
+                      ...curr,
+                      completedDate: e.target.value || getTodayLocalISO(),
+                    }))
+                  }
+                  className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                />
+              </label>
+            )}
+
+            {draftConditional.showConfirmFullPages &&
+              Number(draftItem.totalPages) > 0 &&
+              Number(draftItem.pagesRead || 0) < Number(draftItem.totalPages) && (
+                <label className="flex cursor-pointer items-center gap-2 rounded-[4px] border border-line bg-app px-3 py-2 text-xs text-muted">
+                  <input
+                    type="checkbox"
+                    checked={confirmFillFullPages}
+                    onChange={(e) => setConfirmFillFullPages(e.target.checked)}
+                    className="h-4 w-4 shrink-0 accent-[var(--accent-color)]"
+                  />
+                  <span>
+                    Confirmar preenchimento de páginas lidas ({draftItem.totalPages} págs)
+                  </span>
+                </label>
+              )}
+
+            {/* Nota opcional (escala específica do domínio) */}
+            {draftConditional.showRating && (
+              <div>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-muted">
+                    {draftDomain === 'music' && draftItem.workType === 'track'
+                      ? `${draftVocab.trackRatingLabel} · opcional`
+                      : `${draftVocab.ratingLabel} · opcional`}
+                  </span>
+                  <span className="text-xs font-semibold tabular-nums text-accent">
+                    {draftDomain === 'games'
+                      ? draftItem.gameRating11 !== null && draftItem.gameRating11 !== undefined
                         ? `${draftItem.gameRating11}/11`
-                        : 'Sem nota'}
-                    </span>
-                  </div>
+                        : 'Sem nota'
+                      : draftDomain === 'music' && draftItem.workType === 'track'
+                        ? draftItem.trackRating10 !== null && draftItem.trackRating10 !== undefined
+                          ? `${draftItem.trackRating10}/10`
+                          : 'Sem nota'
+                        : typeof draftItem.rating === 'number'
+                          ? `${draftItem.rating}/100`
+                          : 'Sem nota'}
+                  </span>
+                </div>
+
+                {draftDomain === 'games' ? (
                   <div className="flex flex-wrap gap-1">
                     {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => {
                       const active = draftItem.gameRating11 === n;
@@ -2054,12 +2001,12 @@ export function AddScreen({
                               ratingSource: curr.gameRating11 === n ? null : 'manual',
                             }))
                           }
-                          className={`min-h-[32px] min-w-[32px] rounded-[4px] border px-1.5 text-[11px] font-semibold tabular-nums ${
+                          className={`min-h-[34px] min-w-[34px] rounded-[4px] border px-1.5 text-[11px] font-semibold tabular-nums ${
                             active
                               ? 'border-accent bg-accent text-accent-ink'
                               : n === 11
                                 ? 'border-accent/45 bg-accent/10 text-accent hover:bg-accent/20'
-                                : 'border-line bg-card text-muted hover:text-ink'
+                                : 'border-line bg-app text-muted hover:text-ink'
                           }`}
                         >
                           {n}
@@ -2067,283 +2014,72 @@ export function AddScreen({
                       );
                     })}
                   </div>
-                  {draftItem.gameRating11 === 11 && (
-                    <label className="mt-2 block">
-                      <span className="mb-1 block text-[11px] text-accent">
-                        Justificativa da Obra-Prima (Nota 11 · opcional)
-                      </span>
-                      <input
-                        type="text"
-                        value={draftItem.masterpieceJustification || ''}
-                        onChange={(e) =>
-                          setDraftItem((curr) => ({
-                            ...curr,
-                            masterpieceJustification: e.target.value,
-                          }))
-                        }
-                        placeholder="Por que este jogo é um marco excepcional da sua vida..."
-                        className="min-h-[40px] w-full rounded-[4px] border border-accent/50 bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                      />
-                    </label>
-                  )}
-                </div>
-
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-muted">
-                    Build / Personagem / Time
-                  </span>
-                  <input
-                    type="text"
-                    value={draftItem.buildOrCharacter || ''}
-                    onChange={(e) =>
-                      setDraftItem((curr) => ({
-                        ...curr,
-                        buildOrCharacter: e.target.value,
-                      }))
-                    }
-                    placeholder="Ex: Dex/Arcane, Time Kanto, Main Thresh..."
-                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
-
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-muted">URL da capa (opcional)</span>
-                  <input
-                    type="url"
-                    value={draftItem.coverUrl || ''}
-                    onChange={(e) =>
-                      setDraftItem((curr) => ({
-                        ...curr,
-                        coverUrl: e.target.value.trim() || null,
-                      }))
-                    }
-                    placeholder="https://..."
-                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
-              </div>
-            ) : (
-              <div className="space-y-3 rounded-[6px] border border-line bg-app p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
-                  Dados de {draftDomainMeta.shortLabel}
-                </p>
-
-                {draftItem.workType === 'track' && (
-                  <div className="space-y-2.5 rounded-[5px] border border-accent/35 bg-card p-2.5">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">
-                      Faixa Individual
-                    </p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="block">
-                        <span className="mb-1 block text-[11px] text-muted">Álbum vinculado</span>
-                        <input
-                          type="text"
-                          value={draftItem.albumName || ''}
-                          onChange={(e) =>
-                            setDraftItem((curr) => ({ ...curr, albumName: e.target.value }))
+                ) : draftDomain === 'music' && draftItem.workType === 'track' ? (
+                  <div className="flex flex-wrap gap-1">
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => {
+                      const active = draftItem.trackRating10 === n;
+                      return (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() =>
+                            setDraftItem((curr) => ({
+                              ...curr,
+                              trackRating10: curr.trackRating10 === n ? null : n,
+                              rating: curr.trackRating10 === n ? null : n * 10,
+                              ratingSource: curr.trackRating10 === n ? null : 'manual',
+                            }))
                           }
-                          placeholder="Ex: Metallica (Black Album)"
-                          className="min-h-[38px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-[11px] text-muted">Duração</span>
-                        <input
-                          type="text"
-                          value={
-                            draftItem.durationMs
-                              ? formatTrackDuration(draftItem.durationMs)
-                              : ''
+                          className={`min-h-[34px] min-w-[34px] rounded-[4px] border px-1.5 text-[11px] font-semibold tabular-nums ${
+                            active
+                              ? 'border-accent bg-accent text-accent-ink'
+                              : 'border-line bg-app text-muted hover:text-ink'
+                          }`}
+                        >
+                          {n}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {QUICK_SCORES_100.map((score) => {
+                      const active = draftItem.rating === score;
+                      return (
+                        <button
+                          key={score}
+                          type="button"
+                          onClick={() =>
+                            setDraftItem((curr) => ({
+                              ...curr,
+                              rating: curr.rating === score ? null : score,
+                              ratingSource: curr.rating === score ? null : 'manual',
+                              verdict: curr.rating === score ? null : getVerdictForScore(score),
+                            }))
                           }
-                          onChange={(e) => {
-                            const raw = e.target.value.trim();
-                            const parts = raw.split(':').map(Number);
-                            const ms =
-                              parts.length === 2 && parts.every((n) => Number.isFinite(n) && n >= 0)
-                                ? (parts[0] * 60 + parts[1]) * 1000
-                                : null;
-                            setDraftItem((curr) => ({ ...curr, durationMs: ms }));
-                          }}
-                          placeholder="5:24"
-                          className="min-h-[38px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                        />
-                      </label>
-                    </div>
-                    <div>
-                      <div className="mb-1 flex items-center justify-between">
-                        <span className="text-[11px] text-muted">Nota da Faixa (0–10)</span>
-                        <span className="text-[11px] font-semibold tabular-nums text-accent">
-                          {draftItem.trackRating10 !== null && draftItem.trackRating10 !== undefined
-                            ? `${draftItem.trackRating10}/10`
-                            : 'Sem nota'}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => {
-                          const active = draftItem.trackRating10 === n;
-                          return (
-                            <button
-                              key={n}
-                              type="button"
-                              onClick={() =>
-                                setDraftItem((curr) => ({
-                                  ...curr,
-                                  trackRating10: curr.trackRating10 === n ? null : n,
-                                  rating: curr.trackRating10 === n ? null : n * 10,
-                                  ratingSource: curr.trackRating10 === n ? null : 'manual',
-                                }))
-                              }
-                              className={`min-h-[32px] min-w-[32px] rounded-[4px] border px-1.5 text-[11px] font-semibold tabular-nums ${
-                                active
-                                  ? 'border-accent bg-accent text-accent-ink'
-                                  : 'border-line bg-app text-muted hover:text-ink'
-                              }`}
-                            >
-                              {n}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
+                          className={`min-h-[36px] min-w-[38px] rounded-[4px] border px-2 text-xs font-semibold tabular-nums ${
+                            active
+                              ? 'border-accent bg-accent text-accent-ink'
+                              : 'border-line bg-app text-muted hover:text-ink'
+                          }`}
+                        >
+                          {score}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
-
-                <div>
-                  <span className="mb-1 block text-[11px] text-muted">Formato de lançamento</span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {MUSIC_RELEASE_FORMATS.map((rf) => (
-                      <button
-                        key={rf}
-                        type="button"
-                        onClick={() =>
-                          setDraftItem((curr) => ({ ...curr, releaseFormat: rf }))
-                        }
-                        className={`min-h-[36px] rounded-[4px] border px-2.5 text-[11px] font-medium ${
-                          draftItem.releaseFormat === rf
-                            ? 'border-accent bg-accent/15 text-ink'
-                            : 'border-line bg-card text-muted'
-                        }`}
-                      >
-                        {rf}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-muted">Subgênero</span>
-                    <input
-                      type="text"
-                      value={draftItem.subgenre || ''}
-                      onChange={(e) =>
-                        setDraftItem((curr) => ({ ...curr, subgenre: e.target.value }))
-                      }
-                      placeholder="Heavy Metal, Rock Nacional..."
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-muted">Audições</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={draftItem.listenCount ?? 0}
-                      onChange={(e) =>
-                        setDraftItem((curr) => ({
-                          ...curr,
-                          listenCount: Math.max(0, Number(e.target.value) || 0),
-                        }))
-                      }
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                </div>
-
-                {draftItem.workType !== 'track' && (
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-muted">Faixa favorita</span>
-                    <input
-                      type="text"
-                      value={draftItem.favoriteTrack || ''}
-                      onChange={(e) =>
-                        setDraftItem((curr) => ({ ...curr, favoriteTrack: e.target.value }))
-                      }
-                      placeholder="Digite ou selecione abaixo..."
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                )}
-
-                {draftItem.workType !== 'track' &&
-                  Array.isArray(draftItem.tracks) &&
-                  draftItem.tracks.length > 0 && (
-                    <div className="space-y-1">
-                      <span className="block text-[10px] font-semibold uppercase tracking-wider text-subtle">
-                        Tracklist ({draftItem.tracks.length} faixas — clique para favoritar)
-                      </span>
-                      <div className="max-h-32 overflow-y-auto space-y-1 rounded-[4px] border border-line bg-card p-1.5 no-scrollbar">
-                        {draftItem.tracks.map((tr, idx) => {
-                          const isFav = draftItem.favoriteTrack === tr.title;
-                          return (
-                            <button
-                              key={`${tr.number || idx}-${tr.title}`}
-                              type="button"
-                              onClick={() =>
-                                setDraftItem((curr) => ({ ...curr, favoriteTrack: tr.title }))
-                              }
-                              className={`flex w-full items-center justify-between rounded-[3px] px-2 py-1 text-left text-[11px] transition-colors ${
-                                isFav
-                                  ? 'bg-accent/15 font-semibold text-accent'
-                                  : 'text-ink hover:bg-app'
-                              }`}
-                            >
-                              <span className="truncate">
-                                {tr.number || idx + 1}. {tr.title}
-                              </span>
-                              {tr.durationMs && (
-                                <span className="ml-2 shrink-0 text-[10px] tabular-nums text-subtle">
-                                  {formatTrackDuration(tr.durationMs)}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
               </div>
             )}
-
-            {draftDomain === 'cinema' && (
-              <SmartCatalogButton
-                key={`smart-${draftItem.id}`}
-                item={draftItem}
-                geminiKey={geminiKey}
-                onApplyFields={(updates) =>
-                  setDraftItem((curr) => ({ ...curr, ...updates }))
-                }
-                onOpenGeminiSettings={onOpenGeminiSettings}
-              />
-            )}
-
-            <div className="space-y-1.5">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-subtle">
-                Clima &amp; Marcadores Pessoais
-              </p>
-              <TechnicalAtmosphereSection
-                key={`atmo-${draftItem.id}`}
-                item={draftItem}
-                compactAutoChips
-                defaultExpanded
-                onChange={(updates) => setDraftItem((curr) => ({ ...curr, ...updates }))}
-              />
-            </div>
 
             <div className="flex gap-2 border-t border-line pt-3">
               <button
                 type="button"
-                onClick={() => setDraftItem(null)}
+                onClick={() => {
+                  setDraftItem(null);
+                  setShowDraftTypePicker(false);
+                  setConfirmFillFullPages(false);
+                }}
                 className="min-h-[44px] flex-1 rounded-[4px] border border-line bg-app text-xs font-medium text-muted hover:text-ink"
               >
                 {add.drawerCancelLabel}
@@ -2353,7 +2089,7 @@ export function AddScreen({
                 onClick={handleSaveDraft}
                 className="min-h-[44px] flex-1 rounded-[4px] bg-accent text-xs font-semibold text-accent-ink hover:opacity-90"
               >
-                {add.drawerSaveLabel}
+                {draftVocab.addButtonLabel}
               </button>
             </div>
           </div>
@@ -2376,7 +2112,7 @@ export function AddScreen({
           >
             <div className="flex items-center justify-between border-b border-line pb-2.5">
               <h2 className="text-sm font-semibold text-ink">
-                {add.manualModalTitle} · {manualDomainMeta.shortLabel}
+                {add.manualModalTitle} · {manualDomainMeta.tabLabel || manualDomainMeta.shortLabel}
               </h2>
               <button
                 type="button"
@@ -2390,7 +2126,7 @@ export function AddScreen({
 
             <WorkTypeSelector
               domain={manualDomain}
-              label={add.drawerWorkTypeLabel}
+              label={manualVocab.workTypeLabel}
               value={manualDraft.workType}
               onChange={(nextType) =>
                 setManualDraft((curr) => ({ ...curr, workType: nextType }))
@@ -2408,15 +2144,41 @@ export function AddScreen({
                 onChange={(e) =>
                   setManualDraft((curr) => ({ ...curr, title: e.target.value }))
                 }
-                placeholder={add.manualTitlePlaceholder}
+                placeholder={manualVocab.manualTitlePlaceholder}
                 className="min-h-[44px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
               />
             </label>
 
+            <div>
+              <p className="mb-1.5 text-xs font-medium text-muted">{add.drawerStatusLabel}</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {addFlowStatuses.map((statusId) => {
+                  const cfg = getStatusConfigForDomain(statusId, manualDomain);
+                  const active = manualDraft.status === statusId;
+                  return (
+                    <button
+                      key={statusId}
+                      type="button"
+                      onClick={() =>
+                        setManualDraft((curr) => buildDraftWithStatus(curr, statusId))
+                      }
+                      className={`min-h-[40px] rounded-[4px] border px-2 text-xs font-medium transition-colors ${
+                        active
+                          ? 'border-accent bg-accent/15 text-ink'
+                          : 'border-line bg-app text-muted hover:text-ink'
+                      }`}
+                    >
+                      {cfg.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-muted">
-                  {manualDomainMeta.creatorLabel}
+                  {manualVocab.creatorLabel}
                 </span>
                 <input
                   type="text"
@@ -2428,7 +2190,7 @@ export function AddScreen({
                       creator: e.target.value,
                     }))
                   }
-                  placeholder={manualDomainMeta.creatorLabel}
+                  placeholder={manualVocab.creatorLabel}
                   className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
                 />
               </label>
@@ -2453,25 +2215,87 @@ export function AddScreen({
               </label>
             </div>
 
-            {manualDomain !== 'cinema' && (
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-muted">
-                  Capa por URL (opcional)
-                </span>
-                <input
-                  type="url"
-                  value={manualDraft.coverUrl || ''}
-                  onChange={(e) =>
-                    setManualDraft((curr) => ({ ...curr, coverUrl: e.target.value }))
-                  }
-                  placeholder="https://..."
-                  className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
-                />
-              </label>
+            {manualDomain === 'reading' && (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">Formato</span>
+                  <select
+                    value={manualDraft.bookFormat || BOOK_FORMATS[0]}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({ ...curr, bookFormat: e.target.value }))
+                    }
+                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                  >
+                    {BOOK_FORMATS.map((fmt) => (
+                      <option key={fmt} value={fmt}>
+                        {fmt}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">Total págs</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={manualDraft.totalPages || ''}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({
+                        ...curr,
+                        totalPages: e.target.value ? Number(e.target.value) : null,
+                      }))
+                    }
+                    placeholder="Opcional"
+                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                  />
+                </label>
+              </div>
             )}
 
-            {manualDomain === 'cinema' ? (
-              manualDraft.workType === 'movie' ? (
+            {manualDomain === 'games' && (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">
+                    Plataforma Jogada
+                  </span>
+                  <select
+                    value={manualDraft.platform || ''}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({ ...curr, platform: e.target.value }))
+                    }
+                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                  >
+                    <option value="">{GAME_PLATFORM_UNSET_LABEL}</option>
+                    {GAME_PLATFORMS.map((plat) => (
+                      <option key={plat} value={plat}>
+                        {plat}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">
+                    Tipo de Edição
+                  </span>
+                  <select
+                    value={manualDraft.editionType || GAME_EDITION_TYPES[0]}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({ ...curr, editionType: e.target.value }))
+                    }
+                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                  >
+                    {GAME_EDITION_TYPES.map((ed) => (
+                      <option key={ed} value={ed}>
+                        {ed}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
+
+            {manualDomain === 'cinema' &&
+              (manualDraft.workType === 'movie' ? (
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-muted">
                     {add.manualDurationLabel}
@@ -2528,391 +2352,197 @@ export function AddScreen({
                     />
                   </label>
                 </div>
-              )
-            ) : manualDomain === 'reading' ? (
-              <div className="space-y-2.5">
-                <div className="grid grid-cols-3 gap-2">
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Págs lidas
-                    </span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={manualDraft.pagesRead ?? 0}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          pagesRead: Math.max(0, Number(e.target.value) || 0),
-                        }))
-                      }
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Total págs
-                    </span>
-                    <input
-                      type="number"
-                      min="1"
-                      value={manualDraft.totalPages || ''}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          totalPages: e.target.value ? Number(e.target.value) : null,
-                        }))
-                      }
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Formato
-                    </span>
-                    <select
-                      value={manualDraft.bookFormat || BOOK_FORMATS[0]}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({ ...curr, bookFormat: e.target.value }))
-                      }
-                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-app px-2 text-xs text-ink focus:border-accent focus:outline-none"
-                    >
-                      {BOOK_FORMATS.map((fmt) => (
-                        <option key={fmt} value={fmt}>
-                          {fmt}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
+              ))}
+
+            <button
+              type="button"
+              onClick={() => setManualMoreDetailsOpen((v) => !v)}
+              aria-expanded={manualMoreDetailsOpen}
+              className="flex min-h-[40px] w-full items-center justify-between rounded-[4px] border border-line bg-app px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
+            >
+              <span>Mais detalhes (opcional)</span>
+              {manualMoreDetailsOpen ? (
+                <ChevronUp className="h-3.5 w-3.5" strokeWidth={1.5} />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.5} />
+              )}
+            </button>
+
+            {manualMoreDetailsOpen && (
+              <div className="space-y-3 rounded-[6px] border border-line bg-app p-3">
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-muted">
-                    Título Original (opcional)
+                    Capa por URL (opcional)
+                  </span>
+                  <input
+                    type="url"
+                    value={manualDraft.coverUrl || ''}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({ ...curr, coverUrl: e.target.value }))
+                    }
+                    placeholder="https://..."
+                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">
+                    {add.manualGenresLabel}
                   </span>
                   <input
                     type="text"
-                    value={manualDraft.originalTitle || ''}
+                    value={manualDraft.genresText || ''}
                     onChange={(e) =>
-                      setManualDraft((curr) => ({ ...curr, originalTitle: e.target.value }))
+                      setManualDraft((curr) => ({ ...curr, genresText: e.target.value }))
                     }
-                    placeholder="Ex: Die Verwandlung"
-                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    placeholder={manualVocab.manualGenresPlaceholder}
+                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
                   />
                 </label>
-                <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-muted">ISBN / DOI</span>
-                  <input
-                    type="text"
-                    value={manualDraft.isbnOrDoi || ''}
-                    onChange={(e) =>
-                      setManualDraft((curr) => ({ ...curr, isbnOrDoi: e.target.value }))
-                    }
-                    placeholder="Opcional"
-                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
-              </div>
-            ) : manualDomain === 'games' ? (
-              <div className="space-y-2.5">
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Plataforma Jogada
-                    </span>
-                    <select
-                      value={manualDraft.platform || ''}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({ ...curr, platform: e.target.value }))
-                      }
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                    >
-                      <option value="">{GAME_PLATFORM_UNSET_LABEL}</option>
-                      {GAME_PLATFORMS.map((plat) => (
-                        <option key={plat} value={plat}>
-                          {plat}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Tipo de Edição
-                    </span>
-                    <select
-                      value={manualDraft.editionType || GAME_EDITION_TYPES[0]}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({ ...curr, editionType: e.target.value }))
-                      }
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                    >
-                      {GAME_EDITION_TYPES.map((ed) => (
-                        <option key={ed} value={ed}>
-                          {ed}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Loja / Launcher
-                    </span>
-                    <select
-                      value={manualDraft.storeOrLauncher || ''}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          storeOrLauncher: e.target.value,
-                        }))
-                      }
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                    >
-                      <option value="">A definir</option>
-                      {GAME_STORES_LAUNCHERS.map((st) => (
-                        <option key={st} value={st}>
-                          {st}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Conclusão
-                    </span>
-                    <select
-                      value={manualDraft.completionType || GAME_COMPLETION_TYPES[0]}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          completionType: e.target.value,
-                        }))
-                      }
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                    >
-                      {GAME_COMPLETION_TYPES.map((ct) => (
-                        <option key={ct} value={ct}>
-                          {ct}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Horas jogadas
-                    </span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      value={manualDraft.hoursPlayed ?? 0}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          hoursPlayed: Math.max(0, Number(e.target.value) || 0),
-                        }))
-                      }
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Nota (0–11)
-                    </span>
-                    <select
-                      value={
-                        manualDraft.gameRating11 !== null &&
-                        manualDraft.gameRating11 !== undefined
-                          ? String(manualDraft.gameRating11)
-                          : ''
-                      }
-                      onChange={(e) => {
-                        const val = e.target.value === '' ? null : Number(e.target.value);
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          gameRating11: val,
-                          rating: val !== null ? Math.min(100, Math.round(val * 10)) : null,
-                          ratingSource: val !== null ? 'manual' : null,
-                        }));
-                      }}
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    >
-                      <option value="">Sem nota</option>
-                      {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => (
-                        <option key={n} value={n}>
-                          {n === 11 ? '11 · Obra-Prima da Vida' : `${n}/11`}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                {manualDraft.gameRating11 === 11 && (
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-accent">
-                      Justificativa da Nota 11 (opcional)
-                    </span>
-                    <input
-                      type="text"
-                      value={manualDraft.masterpieceJustification || ''}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          masterpieceJustification: e.target.value,
-                        }))
-                      }
-                      placeholder="Por que é uma obra-prima excepcional da sua vida..."
-                      className="min-h-[40px] w-full rounded-[4px] border border-accent/50 bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
+
+                {manualDomain === 'cinema' && (
+                  <div className="flex flex-wrap gap-1">
+                    {GENRE_OPTIONS.slice(0, 6).map((g) => (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() =>
+                          setManualDraft((curr) => {
+                            const current = String(curr.genresText || '')
+                              .split(',')
+                              .map((x) => x.trim())
+                              .filter(Boolean);
+                            if (current.includes(g)) return curr;
+                            return {
+                              ...curr,
+                              genresText: [...current, g].slice(0, 3).join(', '),
+                            };
+                          })
+                        }
+                        className="rounded-[3px] border border-line bg-card px-2 py-1 text-[10px] text-muted hover:border-accent hover:text-ink"
+                      >
+                        + {g}
+                      </button>
+                    ))}
+                  </div>
                 )}
-              </div>
-            ) : (
-              <div className="space-y-2.5">
-                {manualDraft.workType === 'track' && (
-                  <div className="grid grid-cols-2 gap-2">
+
+                {manualDomain === 'reading' && (
+                  <>
                     <label className="block">
                       <span className="mb-1 block text-xs font-medium text-muted">
-                        Álbum vinculado
+                        Título Original
                       </span>
                       <input
                         type="text"
-                        value={manualDraft.albumName || ''}
+                        value={manualDraft.originalTitle || ''}
                         onChange={(e) =>
-                          setManualDraft((curr) => ({ ...curr, albumName: e.target.value }))
+                          setManualDraft((curr) => ({ ...curr, originalTitle: e.target.value }))
                         }
-                        placeholder="Ex: Metallica (1991)"
-                        className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        placeholder="Ex: Die Verwandlung"
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
                       />
                     </label>
                     <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">ISBN / DOI</span>
+                      <input
+                        type="text"
+                        value={manualDraft.isbnOrDoi || ''}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({ ...curr, isbnOrDoi: e.target.value }))
+                        }
+                        placeholder="Opcional"
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                  </>
+                )}
+
+                {manualDomain === 'games' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="block">
                       <span className="mb-1 block text-xs font-medium text-muted">
-                        Nota da Faixa (0–10)
+                        Loja / Launcher
                       </span>
                       <select
-                        value={
-                          manualDraft.trackRating10 !== null &&
-                          manualDraft.trackRating10 !== undefined
-                            ? String(manualDraft.trackRating10)
-                            : ''
-                        }
-                        onChange={(e) => {
-                          const val = e.target.value === '' ? null : Number(e.target.value);
+                        value={manualDraft.storeOrLauncher || ''}
+                        onChange={(e) =>
                           setManualDraft((curr) => ({
                             ...curr,
-                            trackRating10: val,
-                            rating: val !== null ? Math.round(val * 10) : null,
-                            ratingSource: val !== null ? 'manual' : null,
-                          }));
-                        }}
-                        className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                            storeOrLauncher: e.target.value,
+                          }))
+                        }
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
                       >
-                        <option value="">Sem nota</option>
-                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-                          <option key={n} value={n}>
-                            {n}/10
+                        <option value="">A definir</option>
+                        {GAME_STORES_LAUNCHERS.map((st) => (
+                          <option key={st} value={st}>
+                            {st}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        Tipo de conclusão
+                      </span>
+                      <select
+                        value={manualDraft.completionType || GAME_COMPLETION_TYPES[0]}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({
+                            ...curr,
+                            completionType: e.target.value,
+                          }))
+                        }
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                      >
+                        {GAME_COMPLETION_TYPES.map((ct) => (
+                          <option key={ct} value={ct}>
+                            {ct}
                           </option>
                         ))}
                       </select>
                     </label>
                   </div>
                 )}
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Formato
-                    </span>
-                    <select
-                      value={manualDraft.releaseFormat || MUSIC_RELEASE_FORMATS[0]}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          releaseFormat: e.target.value,
-                        }))
-                      }
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                    >
-                      {MUSIC_RELEASE_FORMATS.map((rf) => (
-                        <option key={rf} value={rf}>
-                          {rf}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Subgênero
-                    </span>
-                    <input
-                      type="text"
-                      value={manualDraft.subgenre || ''}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({ ...curr, subgenre: e.target.value }))
-                      }
-                      placeholder="Power Metal..."
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                </div>
-                {manualDraft.workType !== 'track' && (
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Faixa favorita
-                    </span>
-                    <input
-                      type="text"
-                      value={manualDraft.favoriteTrack || ''}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({ ...curr, favoriteTrack: e.target.value }))
-                      }
-                      placeholder="Opcional"
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
+
+                {manualDomain === 'music' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">Formato</span>
+                      <select
+                        value={manualDraft.releaseFormat || MUSIC_RELEASE_FORMATS[0]}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({
+                            ...curr,
+                            releaseFormat: e.target.value,
+                          }))
+                        }
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                      >
+                        {MUSIC_RELEASE_FORMATS.map((rf) => (
+                          <option key={rf} value={rf}>
+                            {rf}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">Subgênero</span>
+                      <input
+                        type="text"
+                        value={manualDraft.subgenre || ''}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({ ...curr, subgenre: e.target.value }))
+                        }
+                        placeholder="Power Metal..."
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                  </div>
                 )}
               </div>
             )}
-
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-muted">
-                {add.manualGenresLabel}
-              </span>
-              <input
-                type="text"
-                value={manualDraft.genresText || ''}
-                onChange={(e) =>
-                  setManualDraft((curr) => ({ ...curr, genresText: e.target.value }))
-                }
-                placeholder={add.manualGenresPlaceholder}
-                className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
-              />
-            </label>
-
-            <div className="flex flex-wrap gap-1">
-              {GENRE_OPTIONS.slice(0, 8).map((g) => (
-                <button
-                  key={g}
-                  type="button"
-                  onClick={() =>
-                    setManualDraft((curr) => {
-                      const current = String(curr.genresText || '')
-                        .split(',')
-                        .map((x) => x.trim())
-                        .filter(Boolean);
-                      if (current.includes(g)) return curr;
-                      return {
-                        ...curr,
-                        genresText: [...current, g].slice(0, 4).join(', '),
-                      };
-                    })
-                  }
-                  className="rounded-[3px] border border-line bg-app px-2 py-1 text-[10px] text-muted hover:border-accent hover:text-ink"
-                >
-                  + {g}
-                </button>
-              ))}
-            </div>
 
             <div className="flex gap-2 border-t border-line pt-3">
               <button
@@ -2926,7 +2556,7 @@ export function AddScreen({
                 type="submit"
                 className="min-h-[44px] flex-1 rounded-[4px] bg-accent text-xs font-semibold text-accent-ink hover:opacity-90"
               >
-                {add.drawerSaveLabel}
+                {manualVocab.addButtonLabel}
               </button>
             </div>
           </form>

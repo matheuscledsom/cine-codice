@@ -141,7 +141,7 @@ function buildCompactCardPayload({
     h: sanitizeCardHandle(profile?.handle || '@espectador'),
     ut: sanitizePlainText(profile?.userTag || '', 48),
     n: sanitizePlainText(
-      profile?.displayName || profile?.handle || 'Cinéfilo do Cine Códice',
+      profile?.displayName || profile?.handle || 'Perfil OmniPrism',
       55
     ),
     b: sanitizePlainText(profile?.bio || '', 160),

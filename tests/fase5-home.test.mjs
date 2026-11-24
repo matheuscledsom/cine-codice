@@ -358,15 +358,13 @@ describe('Fase 5 — Home (Hero 4 estados, Backfill 30d, Pílulas, Trilhos, Desc
       assert.equal(/[★✓✕]/u.test(src), false, `Símbolo proibido em ${name}`);
     }
 
-    // Hero estado vazio sem border-dashed + 1 botão "Catalogar Primeira Obra"
+    // Estado vazio direto sem border-dashed + painel "agora" (v2.3.0)
     assert.equal(homeSrc.includes('border-dashed'), false);
-    assert.match(homeSrc, /Catalogar Primeira Obra/);
-
-    // Scrim >= 70% de opacidade sobre imagem do Hero
-    assert.match(homeSrc, /rgba\(10,\s*12,\s*16,\s*0\.7[0-9]/);
-
-    // Alvos >= 44px e pílulas circulares 56px (h-14 w-14)
-    assert.match(homeSrc, /h-14 w-14/);
+    assert.match(homeSrc, /Em andamento/);
+    assert.match(homeSrc, /Próximos da fila/);
+    assert.match(homeSrc, /Concluídos recentemente/);
+    assert.match(homeSrc, /homeEmptySearchPlaceholder/);
+    assert.match(homeSrc, /min-h-\[44px\]/);
     assert.match(railSrc, /IntersectionObserver/);
 
     // Sem "Registrar Leitura Hoje" (R7) na Home
