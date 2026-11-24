@@ -1,3 +1,9 @@
+import { inferDomainFromWork } from '../config/domainConfig.js';
+import {
+  buildDomainFranchiseModel,
+  computeFranchiseScopeProgress,
+  inferFranchiseTier,
+} from '../lib/franchiseTier.js';
 import { isConfirmedUserRating } from '../lib/ratings.js';
 import { loadTmdbApiKey, normalizeTitleForDedup } from './cinemaApi.js';
 import { findFranchiseForItem } from './franchiseEngine.js';
@@ -236,7 +242,13 @@ export function buildDeterministicFranchiseOrUniverseModel(
 
   const decorated = rawNodes
     .filter((node) => isAllowedUniverseRelation(node.relationSource || {}))
-    .map((node) => decorateCatalogStatus(node, catalog))
+    .map((node) => {
+      const dec = decorateCatalogStatus(node, catalog);
+      return {
+        ...dec,
+        franchiseTier: inferFranchiseTier(dec.item || dec),
+      };
+    })
     .sort((a, b) => {
       const yA = Number(a.releaseYear) || 9999;
       const yB = Number(b.releaseYear) || 9999;
@@ -248,6 +260,7 @@ export function buildDeterministicFranchiseOrUniverseModel(
   const completedCount = decorated.filter((n) => n.isCompleted).length;
   const completionPct =
     totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+  const scopeProgress = computeFranchiseScopeProgress(decorated, 'cinema');
 
   if (isMovie) {
     const noun = totalCount === 1 ? 'filme' : 'filmes';
@@ -263,6 +276,7 @@ export function buildDeterministicFranchiseOrUniverseModel(
       completedCount,
       totalCount,
       completionPct,
+      scopeProgress,
       entries: decorated,
       groups: null,
       baseFranchise,
@@ -306,8 +320,32 @@ export function buildDeterministicFranchiseOrUniverseModel(
     completedCount,
     totalCount,
     completionPct,
+    scopeProgress,
     entries: decorated,
     groups,
     baseFranchise,
   };
+}
+
+/**
+ * Modelo unificado de Franquia & Escopos para Cinema/Séries, Livros e Games (v2.4.0 Fase 4.2).
+ */
+export function buildUnifiedFranchiseModel(
+  work,
+  allCatalogItems = [],
+  remoteCollectionParts = []
+) {
+  if (!work || typeof work !== 'object') return null;
+  const domain = inferDomainFromWork(work);
+  if (domain === 'reading' || domain === 'games') {
+    return buildDomainFranchiseModel(work, allCatalogItems);
+  }
+  if (domain === 'cinema') {
+    return buildDeterministicFranchiseOrUniverseModel(
+      work,
+      allCatalogItems,
+      remoteCollectionParts
+    );
+  }
+  return null;
 }

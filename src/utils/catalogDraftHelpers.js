@@ -15,6 +15,172 @@ import {
 } from './backlogHelpers.js';
 
 /**
+ * Campos enxutos da folha rápida v2.4.0 (Fase 4.1):
+ * - Nenhuma opção pré-selecionada quando status está vazio.
+ * - Fila ("Quero...") não pergunta nada.
+ * - Games em andamento pergunta "Onde você está jogando?" (plataformas da API + outra).
+ * - Leitura ("Lendo") pergunta página atual.
+ * - Concluído/Lido/Zerado/Ouvido exibe seletor 5 estrelas + botão discreto "Avaliar por 5 critérios".
+ * - Formato, dublagem, edição e tipo de conclusão ficam recolhidos na ficha completa.
+ */
+export function getQuickSheetLeanFields(domain = 'cinema', status = '') {
+  const cleanDomain = normalizeDomainId(domain);
+  const rawStatus = String(status || '').trim();
+  if (!rawStatus) {
+    return {
+      statusSelected: false,
+      askGamePlatform: false,
+      askCurrentPage: false,
+      askStarRating: false,
+      showConfirmFullPages: false,
+    };
+  }
+  const cleanStatus = normalizeCinemaStatus(rawStatus);
+  const isInProgress = cleanStatus === 'playing' || cleanStatus === 'rewatching';
+  const isCompleted = cleanStatus === 'completed';
+
+  return {
+    statusSelected: true,
+    askGamePlatform: cleanDomain === 'games' && isInProgress,
+    askCurrentPage: cleanDomain === 'reading' && isInProgress,
+    askStarRating: isCompleted,
+    showConfirmFullPages: cleanDomain === 'reading' && isCompleted,
+  };
+}
+
+const DUPLICATE_EXTERNAL_ID_KEYS = [
+  'tmdb',
+  'imdb',
+  'anilist',
+  'mal',
+  'tvmaze',
+  'openlibrary',
+  'googleBooks',
+  'isbn',
+  'doi',
+  'steam',
+  'cheapshark',
+  'freetogame',
+  'wikidata',
+  'itunes',
+  'itunesTrack',
+  'musicbrainz',
+  'musicbrainzRecording',
+];
+
+function normalizeDupTitle(raw) {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function collectExternalIdsForDup(work = {}) {
+  const ids = work.ids && typeof work.ids === 'object' ? work.ids : {};
+  const map = {};
+  for (const key of DUPLICATE_EXTERNAL_ID_KEYS) {
+    const val =
+      ids[key] ??
+      (key === 'tmdb'
+        ? work.tmdbId
+        : key === 'imdb'
+          ? work.imdbId
+          : key === 'anilist'
+            ? work.anilistId
+            : key === 'mal'
+              ? work.malId
+              : key === 'tvmaze'
+                ? work.tvmazeId
+                : key === 'isbn'
+                  ? work.isbn || work.isbnOrDoi
+                  : key === 'doi'
+                    ? work.doi
+                    : null);
+    if (val !== null && val !== undefined && String(val).trim() !== '') {
+      map[key] = String(val).trim().toLowerCase();
+    }
+  }
+  return map;
+}
+
+/**
+ * Detecta duplicata no catálogo por `external_ids` OU por `título + ano` (Fase 4.1).
+ */
+export function findCatalogDuplicate(candidate = {}, existingItems = []) {
+  if (!candidate || typeof candidate !== 'object') return null;
+  const list = (Array.isArray(existingItems) ? existingItems : []).filter(
+    (item) => item && item.inBacklog !== false
+  );
+  if (list.length === 0) return null;
+
+  const candDomain = inferDomainFromWork(candidate);
+  const candIds = collectExternalIdsForDup(candidate);
+
+  // 1. Verifica correspondência exata por external_ids (mesmo domínio)
+  for (const item of list) {
+    if (inferDomainFromWork(item) !== candDomain) continue;
+    const itemIds = collectExternalIdsForDup(item);
+    for (const [key, val] of Object.entries(candIds)) {
+      if (itemIds[key] && itemIds[key] === val) {
+        // Em Música, não confunde faixa com álbum usando apenas collectionId
+        if (
+          candDomain === 'music' &&
+          key === 'itunes' &&
+          candidate.workType !== item.workType
+        ) {
+          continue;
+        }
+        return {
+          match: item,
+          reason: 'external_id',
+          matchedKey: key,
+          label: `Já catalogado (ID ${key.toUpperCase()})`,
+        };
+      }
+    }
+  }
+
+  // 2. Verifica correspondência por título normalizado + ano
+  const candTitle = normalizeDupTitle(candidate.title);
+  if (!candTitle) return null;
+  const candYear = Number(candidate.releaseYear) || null;
+  const candEdition = String(candidate.editionType || 'Original').trim().toLowerCase();
+
+  for (const item of list) {
+    if (inferDomainFromWork(item) !== candDomain) continue;
+    const itemTitle = normalizeDupTitle(item.title);
+    if (!itemTitle || itemTitle !== candTitle) continue;
+
+    if (candDomain === 'music' && candidate.workType && item.workType && candidate.workType !== item.workType) {
+      continue;
+    }
+
+    const itemYear = Number(item.releaseYear) || null;
+    if (candDomain === 'games') {
+      const itemEdition = String(item.editionType || 'Original').trim().toLowerCase();
+      if (candEdition !== itemEdition) continue;
+      if (candYear && itemYear && Math.abs(candYear - itemYear) >= 3) continue;
+    } else if (candYear && itemYear && candYear !== itemYear) {
+      continue;
+    }
+
+    return {
+      match: item,
+      reason: 'title_year',
+      matchedKey: candYear ? `${candTitle}:${candYear}` : candTitle,
+      label: candYear
+        ? `Já catalogado (${candidate.title}, ${candYear})`
+        : `Já catalogado (${candidate.title})`,
+    };
+  }
+
+  return null;
+}
+
+/**
  * Retorna os campos condicionais visíveis na folha rápida de catalogação
  * de acordo com o domínio e o status selecionado.
  */

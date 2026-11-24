@@ -1,8 +1,13 @@
 import { CheckCircle2, GitBranch, Link2, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import {
+  FRANCHISE_TIER_OPTIONS,
+  getFranchiseTierMeta,
+  inferFranchiseTier,
+} from '../lib/franchiseTier';
 import { buildMissingFranchiseEntryDraft } from '../services/franchiseEngine';
 import {
-  buildDeterministicFranchiseOrUniverseModel,
+  buildUnifiedFranchiseModel,
   fetchTmdbCollectionParts,
 } from '../services/franchiseService';
 import { StatusBadge } from './StatusBadge';
@@ -31,9 +36,11 @@ export function FranchiseRadarPanel({
   const [relationType, setRelationType] = useState('SPIN_OFF');
   const [remoteCollectionParts, setRemoteCollectionParts] = useState([]);
   const [activeGroupTab, setActiveGroupTab] = useState('all');
+  const [activeTierTab, setActiveTierTab] = useState('all');
 
   useEffect(() => {
     setActiveGroupTab('all');
+    setActiveTierTab('all');
     setRemoteCollectionParts([]);
     const colId = item?.belongsToCollection?.id;
     if (item?.workType === 'movie' && colId) {
@@ -55,7 +62,7 @@ export function FranchiseRadarPanel({
   const model = useMemo(
     () =>
       item
-        ? buildDeterministicFranchiseOrUniverseModel(
+        ? buildUnifiedFranchiseModel(
             item,
             allItems,
             remoteCollectionParts
@@ -103,25 +110,35 @@ export function FranchiseRadarPanel({
 
   const effectiveFranchise = franchise || model.baseFranchise;
   const stats = effectiveFranchise?.stats || null;
+  const scopeProgress = model.scopeProgress || null;
+  const currentWorkTier = inferFranchiseTier(item);
 
-  const visibleEntries =
+  const groupFilteredEntries =
     model.mode === 'series-universe' && activeGroupTab !== 'all'
       ? model.groups?.find((g) => g.id === activeGroupTab)?.entries || []
       : model.entries;
 
+  const visibleEntries =
+    activeTierTab === 'all'
+      ? groupFilteredEntries
+      : groupFilteredEntries.filter(
+          (entry) => inferFranchiseTier(entry) === activeTierTab
+        );
+
   return (
     <section
       aria-label={model.sectionTitle}
-      className="mt-4 rounded-xl border border-line bg-app p-3.5 space-y-3"
+      data-testid="franchise-radar-panel"
+      className="mt-4 rounded-[6px] border border-line bg-app p-4 space-y-3"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <GitBranch className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
           <div className="min-w-0">
-            <h4 className="truncate text-xs font-semibold text-ink">
+            <h4 className="font-editorial truncate text-sm font-semibold text-ink">
               {model.sectionTitle} · {model.sagaName}
             </h4>
-            <p className="text-[11px] font-medium tabular-nums text-accent">
+            <p className="text-xs font-medium tabular-nums text-muted">
               {model.progressHeader}
             </p>
           </div>
@@ -129,7 +146,7 @@ export function FranchiseRadarPanel({
 
         <div className="flex items-center gap-1.5">
           {stats?.hasComparative && stats.rankLabel && (
-            <span className="rounded-[4px] border border-accent/40 bg-accent/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
+            <span className="text-xs font-semibold tabular-nums text-ink">
               {stats.rankLabel}
               {stats.franchiseAverageRating !== null
                 ? ` · Média ${stats.franchiseAverageRating}`
@@ -147,15 +164,114 @@ export function FranchiseRadarPanel({
         </div>
       </div>
 
+      {/* Dois indicadores transparentes: Linha Principal vs Universo Completo (v2.4.0 Fase 4.2) */}
+      {scopeProgress && (
+        <div
+          className="grid grid-cols-1 gap-2.5 border-y border-line py-3 sm:grid-cols-2"
+          data-testid="franchise-scope-progress"
+        >
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-2 text-xs tabular-nums">
+              <span className="font-semibold text-ink">Linha Principal</span>
+              <span className="font-semibold text-ink">
+                {scopeProgress.mainline.label} · {scopeProgress.mainline.pct}%
+              </span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+              <div
+                className="h-full bg-accent transition-all duration-200"
+                style={{ width: `${Math.min(100, scopeProgress.mainline.pct)}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-2 text-xs tabular-nums">
+              <span className="font-medium text-muted">Universo Completo</span>
+              <span className="font-medium text-muted">
+                {scopeProgress.universe.label} · {scopeProgress.universe.pct}%
+              </span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+              <div
+                className="h-full bg-muted transition-all duration-200"
+                style={{ width: `${Math.min(100, scopeProgress.universe.pct)}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Classificação de escopo da obra atual + filtro por escopo */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filtrar por escopo da franquia">
+          {[
+            { id: 'all', label: `Todos (${scopeProgress?.counts?.all ?? model.entries.length})` },
+            { id: 'mainline', label: `Linha Principal (${scopeProgress?.counts?.mainline ?? 0})` },
+            { id: 'spinoff', label: `Spin-off (${scopeProgress?.counts?.spinoff ?? 0})` },
+            { id: 'companion', label: `Guias & Extras (${scopeProgress?.counts?.companion ?? 0})` },
+          ].map((tab) => {
+            const active = activeTierTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setActiveTierTab(tab.id)}
+                className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium tabular-nums transition-colors ${
+                  active
+                    ? 'border-accent bg-accent text-accent-ink'
+                    : 'border-line bg-card text-muted hover:text-ink'
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {onUpdateItem && item?.id && (
+          <div className="flex flex-wrap items-center gap-1 text-[11px]">
+            <span className="text-subtle">Escopo desta obra:</span>
+            {FRANCHISE_TIER_OPTIONS.map((opt) => {
+              const active = currentWorkTier === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    onUpdateItem(item.id, { franchiseTier: opt.id });
+                    onShowToast?.({
+                      message: `Escopo definido: ${opt.shortLabel}`,
+                      type: 'success',
+                    });
+                  }}
+                  aria-pressed={active}
+                  title={opt.label}
+                  className={`min-h-[44px] rounded-[6px] border px-2 text-[11px] font-medium ${
+                    active
+                      ? 'border-accent bg-accent text-accent-ink'
+                      : 'border-line bg-card text-muted hover:text-ink'
+                  }`}
+                >
+                  {opt.shortLabel}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Abas / Grupos para Séries & Animes ("Obras do Mesmo Universo") */}
       {model.mode === 'series-universe' && Array.isArray(model.groups) && (
         <div className="flex flex-wrap gap-1.5">
           <button
             type="button"
             onClick={() => setActiveGroupTab('all')}
-            className={`min-h-[36px] rounded-[4px] border px-2.5 py-1 text-[11px] font-semibold tabular-nums ${
+            className={`min-h-[44px] rounded-[6px] border px-2.5 py-1 text-xs font-semibold tabular-nums ${
               activeGroupTab === 'all'
-                ? 'border-accent bg-accent/15 text-ink'
+                ? 'border-accent bg-accent text-accent-ink'
                 : 'border-line bg-card text-muted hover:text-ink'
             }`}
           >
@@ -166,9 +282,9 @@ export function FranchiseRadarPanel({
               key={grp.id}
               type="button"
               onClick={() => setActiveGroupTab(grp.id)}
-              className={`min-h-[36px] rounded-[4px] border px-2.5 py-1 text-[11px] font-medium tabular-nums ${
+              className={`min-h-[44px] rounded-[6px] border px-2.5 py-1 text-xs font-medium tabular-nums ${
                 activeGroupTab === grp.id
-                  ? 'border-accent bg-accent/15 text-ink'
+                  ? 'border-accent bg-accent text-accent-ink'
                   : 'border-line bg-card text-muted hover:text-ink'
               }`}
             >

@@ -2051,6 +2051,7 @@ export function App() {
                   onBatchUpdateItems={batchUpdateItems}
                   onBatchRemoveItems={handleBatchRemoveWithCloud}
                   onRestoreRemovedItems={handleRestoreRemovedWithCloud}
+                  onUpdateItem={handleUpdateItem}
                   onStartPickedWork={handleStartPickedWork}
                   onSelectItem={(item) => setSelectedItemId(item.id)}
                   onOpenCommandPalette={() => setPaletteOpen(true)}

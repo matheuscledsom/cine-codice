@@ -5,6 +5,7 @@ import {
   CheckSquare,
   Command,
   Dices,
+  Disc3,
   FolderPlus,
   LayoutGrid,
   LayoutList,
@@ -14,7 +15,6 @@ import {
   RotateCcw,
   Search,
   SlidersHorizontal,
-  Star,
   Trash2,
   User,
   X,
@@ -34,6 +34,7 @@ import { CollectionCreatorBar } from '../components/CollectionCreatorBar';
 import { CoverArt } from '../components/CoverArt';
 import { DomainSwitcherBar } from '../components/DomainSwitcherBar';
 import { ResponsiveSheet } from '../components/ResponsiveSheet';
+import { StarRatingDisplay } from '../components/StarRatingPicker';
 import { StatusBadge } from '../components/StatusBadge';
 import { WorkCard } from '../components/WorkCard';
 import {
@@ -41,6 +42,16 @@ import {
   computeCatalogVisibleSlice,
 } from '../lib/catalogPagination';
 
+const EntitySheetModal = lazy(() =>
+  import('../components/EntitySheetModal').then((m) => ({
+    default: m.EntitySheetModal,
+  }))
+);
+const MusicDiscographyView = lazy(() =>
+  import('../components/MusicDiscographyView').then((m) => ({
+    default: m.MusicDiscographyView,
+  }))
+);
 const OfflineBookPickerModal = lazy(() =>
   import('../components/OfflineBookPickerModal').then((m) => ({
     default: m.OfflineBookPickerModal,
@@ -108,6 +119,7 @@ function loadSavedViewMode() {
   try {
     const val = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
     if (val === 'shelf' && !isFlagEnabled('spineShelf')) return 'grid';
+    if (val === 'discography') return 'discography';
     return VIEW_MODES.some((m) => m.id === val) ? val : 'grid';
   } catch {
     return 'grid';
@@ -128,6 +140,7 @@ export function ListScreen({
   onBatchUpdateItems,
   onBatchRemoveItems,
   onRestoreRemovedItems,
+  onUpdateItem,
   onStartPickedWork,
   onSelectItem,
   onOpenCommandPalette,
@@ -158,6 +171,7 @@ export function ListScreen({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [collectionManagerOpen, setCollectionManagerOpen] = useState(false);
   const [rouletteOpen, setRouletteOpen] = useState(false);
+  const [activeEntity, setActiveEntity] = useState(null);
   const [localQuery, setLocalQuery] = useState('');
   const [creatorFilterBanner, setCreatorFilterBanner] = useState('');
   const [moreCreatorState, setMoreCreatorState] = useState({
@@ -554,23 +568,75 @@ export function ListScreen({
 
   const handleBatchStatusChange = (nextStatus) => {
     if (!nextStatus || selectedIds.length === 0 || !onBatchUpdateItems) return;
+    const prevSnapshots = backlogItems
+      .filter((it) => selectedIds.includes(String(it.id)))
+      .map((it) => ({
+        id: it.id,
+        status: it.status,
+        completedDate: it.completedDate || null,
+        completedAt: it.completedAt || null,
+      }));
+    const count = selectedIds.length;
     onBatchUpdateItems(selectedIds, { status: nextStatus });
     const statusLabel =
       getStatusConfigForDomain(nextStatus, selectedDomain)?.label || nextStatus;
     showToast({
-      message: `${selectedIds.length} obra(s) movida(s) para ${statusLabel}.`,
+      message: `${count} obra(s) movida(s) para ${statusLabel}.`,
       type: 'success',
+      duration: 8000,
+      action:
+        onUpdateItem && prevSnapshots.length > 0
+          ? {
+              label: 'Desfazer',
+              onClick: () => {
+                prevSnapshots.forEach((snap) => {
+                  onUpdateItem(snap.id, {
+                    status: snap.status,
+                    completedDate: snap.completedDate,
+                    completedAt: snap.completedAt,
+                  });
+                });
+                showToast({
+                  message: `Alteração de status desfeita para ${prevSnapshots.length} obra(s).`,
+                  type: 'info',
+                });
+              },
+            }
+          : undefined,
     });
     clearSelectionMode();
   };
 
   const handleBatchAssignCollection = (collectionId) => {
     if (!collectionId || selectedIds.length === 0 || !onBatchUpdateItems) return;
+    const prevSnapshots = backlogItems
+      .filter((it) => selectedIds.includes(String(it.id)))
+      .map((it) => ({
+        id: it.id,
+        collectionIds: Array.isArray(it.collectionIds) ? [...it.collectionIds] : [],
+      }));
+    const count = selectedIds.length;
     onBatchUpdateItems(selectedIds, { addCollectionId: collectionId });
     const colName = collections.find((c) => c.id === collectionId)?.name || 'Coleção';
     showToast({
-      message: `${selectedIds.length} obra(s) adicionada(s) a "${colName}".`,
+      message: `${count} obra(s) adicionada(s) a "${colName}".`,
       type: 'success',
+      duration: 8000,
+      action:
+        onUpdateItem && prevSnapshots.length > 0
+          ? {
+              label: 'Desfazer',
+              onClick: () => {
+                prevSnapshots.forEach((snap) => {
+                  onUpdateItem(snap.id, { collectionIds: snap.collectionIds });
+                });
+                showToast({
+                  message: `Coleção desfeita para ${prevSnapshots.length} obra(s).`,
+                  type: 'info',
+                });
+              },
+            }
+          : undefined,
     });
     setBatchColTarget('');
     clearSelectionMode();
@@ -622,8 +688,22 @@ export function ListScreen({
 
   const visibleViewModes = useMemo(() => {
     const spineEnabled = isFlagEnabled('spineShelf');
-    return VIEW_MODES.filter((m) => m.id !== 'shelf' || spineEnabled);
-  }, []);
+    const base = VIEW_MODES.filter((m) => m.id !== 'shelf' || spineEnabled);
+    if (selectedDomain === 'music') {
+      return [
+        ...base.slice(0, 2),
+        { id: 'discography', label: 'Discografia', icon: Disc3 },
+        ...base.slice(2),
+      ];
+    }
+    return base;
+  }, [selectedDomain]);
+
+  useEffect(() => {
+    if (selectedDomain !== 'music' && layoutMode === 'discography') {
+      setLayoutMode('grid');
+    }
+  }, [selectedDomain, layoutMode]);
 
   const extraFilterCount = useMemo(() => {
     let count = 0;
@@ -884,15 +964,16 @@ export function ListScreen({
           type="button"
           onClick={() => setFiltersOpen(true)}
           aria-expanded={filtersOpen}
-          aria-label="Abrir filtros avançados e ordenação"
-          className={`relative inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[4px] border px-3 py-1.5 text-xs font-medium transition-colors ${
+          aria-label="Filtrar e ordenar catálogo"
+          data-testid="list-filter-button"
+          className={`relative inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[6px] border px-3 py-1.5 text-xs font-medium transition-colors ${
             extraFilterCount > 0
               ? 'border-accent bg-accent/15 text-ink'
               : 'border-line bg-card text-muted hover:text-ink'
           }`}
         >
           <SlidersHorizontal className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-          <span className="hidden sm:inline">Filtros</span>
+          <span className="hidden sm:inline">Filtrar</span>
           {extraFilterCount > 0 && (
             <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold tabular-nums text-accent-ink">
               {extraFilterCount}
@@ -1207,6 +1288,23 @@ export function ListScreen({
             Limpar filtros
           </button>
         </div>
+      ) : selectedDomain === 'music' && layoutMode === 'discography' ? (
+        <Suspense
+          fallback={
+            <div className="space-y-2 py-4">
+              <div className="h-24 animate-pulse rounded-[6px] border border-line bg-card" />
+              <div className="h-24 animate-pulse rounded-[6px] border border-line bg-card" />
+            </div>
+          }
+        >
+          <MusicDiscographyView
+            items={filteredAndSortedItems}
+            onSelectItem={handleWorkCardClick}
+            onUpdateItem={onUpdateItem}
+            onOpenEntity={(ent) => setActiveEntity(ent)}
+            onShowToast={showToast}
+          />
+        </Suspense>
       ) : layoutMode === 'shelf' ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2 px-0.5">
@@ -1259,11 +1357,19 @@ export function ListScreen({
                     {isSelected && <Check className="h-3.5 w-3.5" strokeWidth={2} />}
                   </span>
                 )}
-                <CoverArt item={item} compact className="h-16 w-11 shrink-0 rounded-[3px]" />
+                <CoverArt
+                  item={item}
+                  compact
+                  className={
+                    itemDomain === 'music'
+                      ? 'h-12 w-12 shrink-0 rounded-[4px]'
+                      : 'h-16 w-11 shrink-0 rounded-[4px]'
+                  }
+                />
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-xs font-semibold text-ink">
+                      <p className="truncate font-editorial text-sm font-semibold text-ink">
                         {titles.primary}
                       </p>
                       {titles.secondary && (
@@ -1272,12 +1378,12 @@ export function ListScreen({
                         </p>
                       )}
                     </div>
-                    {typeof item.rating === 'number' && (
-                      <span className="inline-flex shrink-0 items-center gap-1 rounded-[3px] border border-line bg-app px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
-                        <Star className="h-3 w-3 fill-current" strokeWidth={1.5} />
-                        {item.rating}
-                      </span>
-                    )}
+                    <StarRatingDisplay
+                      work={item}
+                      size="sm"
+                      showNumeric
+                      className="shrink-0"
+                    />
                   </div>
 
                   <p className="truncate text-[11px] text-muted">
@@ -1343,11 +1449,11 @@ export function ListScreen({
         </div>
       )}
 
-      {/* Drawer de Filtros Avançados & Ordenação */}
+      {/* Folha única de Filtros e Ordenação ("Filtrar") */}
       <ResponsiveSheet
         isOpen={filtersOpen}
         onClose={() => setFiltersOpen(false)}
-        title="Filtros & Ordenação"
+        title="Filtrar"
       >
         <div className="space-y-4 p-1">
           <div>
@@ -1708,6 +1814,30 @@ export function ListScreen({
           />
         </Suspense>
       )}
+
+      {/* Página / Folha de Entidade (Autor, Diretor, Estúdio, Elenco, Banda) */}
+      <Suspense fallback={null}>
+        {activeEntity && (
+          <EntitySheetModal
+            entity={activeEntity}
+            allItems={items}
+            tmdbKey={tmdbKey}
+            onClose={() => setActiveEntity(null)}
+            onSelectWork={(work) => {
+              setActiveEntity(null);
+              onSelectItem?.(work);
+            }}
+            onQuickCatalogCandidate={(cand) => {
+              onAddItem?.({
+                ...cand,
+                status: 'queued',
+                inBacklog: true,
+              });
+              setActiveEntity(null);
+            }}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

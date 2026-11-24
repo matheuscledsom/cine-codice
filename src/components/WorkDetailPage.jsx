@@ -48,6 +48,8 @@ import {
 import { SOCIAL_ENABLED } from '../config/flags';
 import { useToast } from '../context/ToastContext';
 import { formatNextAiringBadge } from '../lib/episodeStats';
+import { extractWorkEntities } from '../lib/entityHelpers';
+import { FRANCHISE_TIER_OPTIONS } from '../lib/franchiseTier';
 import { computeWorkCritiqueBadge } from '../lib/ratingBadges';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
 import {
@@ -87,10 +89,14 @@ import { playTactileSound } from '../utils/soundEffects';
 import { CollectionCreatorBar } from './CollectionCreatorBar';
 import { CoverArt } from './CoverArt';
 import { SmartCatalogButton } from './SmartCatalogButton';
+import { StarRatingPicker } from './StarRatingPicker';
 import { StatusBadge } from './StatusBadge';
 import { TechnicalAtmosphereSection } from './TechnicalAtmosphereSection';
 import { WorkTypeSelector } from './WorkTypeSelector';
 
+const EntitySheetModal = lazy(() =>
+  import('./EntitySheetModal').then((m) => ({ default: m.EntitySheetModal }))
+);
 const EpisodeListTab = lazy(() =>
   import('./EpisodeListTab').then((m) => ({ default: m.EpisodeListTab }))
 );
@@ -162,6 +168,7 @@ export function WorkDetailPage({
   const [moreDetailsOpen, setMoreDetailsOpen] = useState(false);
   const [isEditDrawerOpen, setIsEditDrawerOpen] = useState(false);
   const [editMoreDetailsOpen, setEditMoreDetailsOpen] = useState(false);
+  const [activeEntity, setActiveEntity] = useState(null);
   const [activeTrackRatingKey, setActiveTrackRatingKey] = useState(null);
   const [pendingPagesFillPrompt, setPendingPagesFillPrompt] = useState(false);
   const [top4PickerOpen, setTop4PickerOpen] = useState(false);
@@ -416,7 +423,9 @@ export function WorkDetailPage({
     if (!item) return undefined;
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
-        if (isEditDrawerOpen) {
+        if (activeEntity) {
+          setActiveEntity(null);
+        } else if (isEditDrawerOpen) {
           setIsEditDrawerOpen(false);
         } else {
           onClose?.();
@@ -425,7 +434,7 @@ export function WorkDetailPage({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [item, isEditDrawerOpen, onClose]);
+  }, [item, activeEntity, isEditDrawerOpen, onClose]);
 
   const franchise = useMemo(
     () => (item ? findFranchiseForItem(item, allItems.length > 0 ? allItems : [item]) : null),
@@ -918,22 +927,32 @@ export function WorkDetailPage({
                 {metadataParts.join(' · ')}
               </p>
 
-              {/* Diretor / Estúdio clicável para filtrar catálogo */}
-              {clickableCreators.length > 0 && onFilterByCreator && (
-                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  {clickableCreators.map((creatorName) => (
-                    <button
-                      key={creatorName}
-                      type="button"
-                      onClick={() => onFilterByCreator(creatorName)}
-                      aria-label={`Filtrar catálogo e buscar mais títulos de ${creatorName}`}
-                      className="inline-flex min-h-[44px] items-center rounded-lg border border-line bg-app px-3 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
-                    >
-                      {creatorName}
-                    </button>
-                  ))}
-                </div>
-              )}
+              {/* Entidades clicáveis: Autor, Diretor, Estúdio, Elenco, Banda (v2.4.0 Fase 4.4) */}
+              {(() => {
+                const entities = extractWorkEntities(item);
+                if (entities.length === 0) return null;
+                return (
+                  <div
+                    className="flex flex-wrap items-center gap-1.5 pt-1"
+                    data-testid="work-clickable-entities"
+                  >
+                    {entities.map((ent) => (
+                      <button
+                        key={`${ent.role}:${ent.name}`}
+                        type="button"
+                        onClick={() => setActiveEntity(ent)}
+                        aria-label={`Abrir página de ${ent.roleLabel} ${ent.name}`}
+                        className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-app px-3 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent"
+                      >
+                        <span className="text-[10px] uppercase tracking-wider text-subtle">
+                          {ent.roleLabel}
+                        </span>
+                        <span>{ent.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
@@ -1406,7 +1425,7 @@ export function WorkDetailPage({
 
               <section
                 aria-label="Sua avaliação pessoal"
-                className="rounded-2xl border border-line bg-card p-5 space-y-4"
+                className="rounded-[6px] border border-line bg-card p-5 space-y-4"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -1414,134 +1433,33 @@ export function WorkDetailPage({
                       Sua Avaliação Pessoal
                     </h2>
                     <p className="mt-0.5 text-xs text-subtle">
-                      {workDomain === 'games'
-                        ? 'Escala 0–11 (11 = obra-prima excepcional da vida)'
-                        : workDomain === 'music' && item.workType === 'track'
-                          ? 'Toque para avaliar a faixa na escala 0–10'
-                          : 'Toque para avaliar na escala 0–100'}
+                      5 estrelas com meia estrela · avaliação opcional por 5 critérios
                     </p>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xl font-bold tabular-nums text-accent">
-                      {workDomain === 'games'
-                        ? item.gameRating11 !== null && item.gameRating11 !== undefined
-                          ? `${item.gameRating11}/11`
-                          : typeof item.rating === 'number'
-                            ? `${Math.round((item.rating / 10) * 10) / 10}/11`
-                            : '—'
-                        : workDomain === 'music' && item.workType === 'track'
-                          ? item.trackRating10 !== null && item.trackRating10 !== undefined
-                            ? `${item.trackRating10}/10`
-                            : typeof item.rating === 'number'
-                              ? `${Math.round((item.rating / 10) * 10) / 10}/10`
-                              : '—'
-                          : typeof item.rating === 'number'
-                            ? `${item.rating}/100`
-                            : '—'}
-                    </span>
                   </div>
                 </div>
 
-                {workDomain === 'games' ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((score11) => {
-                      const active = item.gameRating11 === score11;
-                      return (
-                        <button
-                          key={score11}
-                          type="button"
-                          onClick={() => {
-                            const mapped100 = Math.min(100, Math.round(score11 * 10));
-                            onUpdateItem(item.id, {
-                              gameRating11: score11,
-                              rating: mapped100,
-                              ratingSource: 'manual',
-                              verdict: score11 === 11 ? 'Obra-Prima' : getVerdictForScore(mapped100),
-                            });
-                            playTactileSound('page');
-                          }}
-                          className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
-                            active
-                              ? 'border-accent bg-accent text-accent-ink'
-                              : score11 === 11
-                                ? 'border-accent/55 bg-accent/10 text-accent hover:bg-accent/20'
-                                : 'border-line bg-app text-ink hover:border-accent'
-                          }`}
-                        >
-                          {score11 === 11 ? '11 · Vida' : score11}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : workDomain === 'music' && item.workType === 'track' ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((score10) => {
-                      const active = item.trackRating10 === score10;
-                      return (
-                        <button
-                          key={score10}
-                          type="button"
-                          onClick={() => {
-                            const mapped100 = score10 * 10;
-                            onUpdateItem(item.id, {
-                              trackRating10: score10,
-                              rating: mapped100,
-                              ratingSource: 'manual',
-                              verdict: getVerdictForScore(mapped100),
-                            });
-                            playTactileSound('page');
-                          }}
-                          className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
-                            active
-                              ? 'border-accent bg-accent text-accent-ink'
-                              : 'border-line bg-app text-ink hover:border-accent'
-                          }`}
-                        >
-                          {score10}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap gap-1.5">
-                    {QUICK_PERSONAL_SCORES.map((score) => {
-                      const active = item.rating === score && item.ratingSource !== 'legacy-default';
-                      return (
-                        <button
-                          key={score}
-                          type="button"
-                          onClick={() => handleSetPersonalScore(score)}
-                          className={`min-h-[44px] min-w-[44px] rounded-xl border px-3 text-xs font-semibold tabular-nums transition-colors ${
-                            active
-                              ? 'border-accent bg-accent text-accent-ink'
-                              : 'border-line bg-app text-ink hover:border-accent'
-                          }`}
-                        >
-                          {score}
-                        </button>
-                      );
-                    })}
-                    {typeof item.rating === 'number' && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleSetPersonalScore(item.rating - 1)}
-                          className="min-h-[44px] rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-muted hover:border-accent hover:text-ink"
-                        >
-                          -1
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleSetPersonalScore(item.rating + 1)}
-                          className="min-h-[44px] rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-muted hover:border-accent hover:text-ink"
-                        >
-                          +1
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
+                <StarRatingPicker
+                  domain={workDomain}
+                  rating={item.rating}
+                  ratingSource={item.ratingSource}
+                  reviewCriteria={item.reviewCriteria}
+                  reviewCriteria5={item.reviewCriteria5}
+                  ratingManualOverride={item.ratingManualOverride}
+                  lifeWork={item.lifeWork}
+                  gameRating11={item.gameRating11}
+                  onChange={(patch) => {
+                    onUpdateItem(item.id, {
+                      ...patch,
+                      verdict:
+                        patch.lifeWork
+                          ? 'Obra-Prima'
+                          : patch.rating !== null && patch.rating !== undefined
+                            ? getVerdictForScore(patch.rating)
+                            : null,
+                    });
+                    playTactileSound('page');
+                  }}
+                />
 
                 <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
                   <button
@@ -1726,7 +1644,23 @@ export function WorkDetailPage({
                         {workDomain === 'cinema' ? 'Estúdio / Rede' : 'Selo / Editora / Publicadora'}
                       </dt>
                       <dd className="mt-0.5 font-semibold text-ink">
-                        {item.studio || '—'}
+                        {item.studio ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setActiveEntity({
+                                name: item.studio,
+                                role: 'studio',
+                                domain: workDomain,
+                              })
+                            }
+                            className="text-left underline-offset-2 hover:text-accent hover:underline"
+                          >
+                            {item.studio}
+                          </button>
+                        ) : (
+                          '—'
+                        )}
                       </dd>
                     </div>
                     {workDomain === 'reading' && (
@@ -1829,8 +1763,8 @@ export function WorkDetailPage({
               )}
             </section>
 
-            {/* Radar de Franquia, Sagas & Universo (Cinema) */}
-            {workDomain === 'cinema' && (
+            {/* Radar de Franquia, Sagas & Universo (Cinema, Livros e Games) */}
+            {(workDomain === 'cinema' || workDomain === 'reading' || workDomain === 'games') && (
               <Suspense fallback={null}>
                 <FranchiseRadarPanel
                   item={item}
@@ -2973,6 +2907,43 @@ export function WorkDetailPage({
                     </>
                   )}
 
+                  {(workDomain === 'cinema' || workDomain === 'reading' || workDomain === 'games') && (
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Franquia / Série
+                        </span>
+                        <input
+                          type="text"
+                          value={item.franchiseName || ''}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, { franchiseName: e.target.value })
+                          }
+                          placeholder="Ex.: Duna, Zelda, Senhor dos Anéis..."
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Escopo na Franquia
+                        </span>
+                        <select
+                          value={item.franchiseTier || 'mainline'}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, { franchiseTier: e.target.value })
+                          }
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        >
+                          {FRANCHISE_TIER_OPTIONS.map((opt) => (
+                            <option key={opt.id} value={opt.id}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  )}
+
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
                       URL da Capa
@@ -3238,6 +3209,26 @@ export function WorkDetailPage({
           </div>
         </div>
       )}
+
+      {/* Página / Folha de Entidade (Autor, Diretor, Estúdio, Elenco, Banda) — v2.4.0 Fase 4.4 */}
+      <Suspense fallback={null}>
+        {activeEntity && (
+          <EntitySheetModal
+            entity={activeEntity}
+            allItems={allItems}
+            tmdbKey={tmdbKey}
+            onClose={() => setActiveEntity(null)}
+            onSelectWork={(work) => {
+              setActiveEntity(null);
+              onSelectItem?.(work);
+            }}
+            onQuickCatalogCandidate={(cand) => {
+              onQuickCatalogItem?.(cand);
+              setActiveEntity(null);
+            }}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }
