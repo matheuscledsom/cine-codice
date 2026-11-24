@@ -71,7 +71,7 @@ function makeEpisodeReviewCompositeKey(workId, seasonNumber, episodeNumber) {
 
 export const RELATIONAL_SCHEMA_META_KEY = '__omniprism_schema_meta__';
 
-const VALID_FRANCHISE_TIERS = new Set(['mainline', 'spinoff', 'companion']);
+const VALID_FRANCHISE_TIERS = new Set(['mainline', 'spinoff', 'companion', 'unclassified']);
 
 function normalizeFranchiseTierValue(raw) {
   const clean = String(raw || '').trim().toLowerCase();
@@ -300,6 +300,16 @@ export function normalizeRelationalWorkRecord(work = {}) {
     franchiseTier: normalizeFranchiseTierValue(
       work.franchiseTier ?? work.progress_data?.franchiseTier
     ),
+    editionOf: (() => {
+      const clean = String(work.editionOf ?? work.progress_data?.editionOf ?? '').trim();
+      return clean && clean !== String(work.id || '') ? clean : null;
+    })(),
+    releasedEpisodesCount:
+      Number(work.releasedEpisodesCount) > 0
+        ? Math.floor(Number(work.releasedEpisodesCount))
+        : null,
+    releasedEpisodesSource: String(work.releasedEpisodesSource || '').trim() || null,
+    releasedEpisodesFetchedAt: work.releasedEpisodesFetchedAt || null,
     franchiseName: String(work.franchiseName || '').trim(),
     overview,
     synopsis: overview,

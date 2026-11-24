@@ -47,9 +47,16 @@ import {
 } from '../config/domainConfig';
 import { SOCIAL_ENABLED } from '../config/flags';
 import { useToast } from '../context/ToastContext';
+import { formatAnimeEpisodeCountLabel } from '../lib/animeEpisodes';
+import {
+  buildEditionLinkPatch,
+  findEditionsOfWork,
+  getEditionBaseWorkId,
+  resolveBaseWorkForEdition,
+} from '../lib/bookEditions';
 import { formatNextAiringBadge } from '../lib/episodeStats';
 import { extractWorkEntities } from '../lib/entityHelpers';
-import { FRANCHISE_TIER_OPTIONS } from '../lib/franchiseTier';
+import { ALL_FRANCHISE_TIER_OPTIONS } from '../lib/franchiseTier';
 import { computeWorkCritiqueBadge } from '../lib/ratingBadges';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
 import {
@@ -695,12 +702,24 @@ export function WorkDetailPage({
     playTactileSound('page');
   };
 
+  const animeReleasedInfo =
+    workDomain === 'cinema' && item.workType === 'anime'
+      ? formatAnimeEpisodeCountLabel(item)
+      : null;
+
+  const editionBaseWork =
+    workDomain === 'reading' ? resolveBaseWorkForEdition(item, allItems) : null;
+  const linkedBookEditions =
+    workDomain === 'reading' ? findEditionsOfWork(item.id, allItems) : [];
+
   const metadataParts = [
     domainMeta.shortLabel,
     item.releaseYear ? String(item.releaseYear) : null,
     creatorLabel || null,
     workDomain === 'cinema'
-      ? durationBadge || (episodic ? `${Math.max(1, Number(item.totalSeasons) || 1)} temp.` : null)
+      ? animeReleasedInfo?.kind === 'released-so-far' && animeReleasedInfo.label
+        ? animeReleasedInfo.label
+        : durationBadge || (episodic ? `${Math.max(1, Number(item.totalSeasons) || 1)} temp.` : null)
       : domainQuickMetric,
     workFormatLabel,
   ].filter(Boolean);
@@ -1763,6 +1782,60 @@ export function WorkDetailPage({
               )}
             </section>
 
+            {/* Relação separada editionOf para Livros (v2.5.0 Fase A) */}
+            {workDomain === 'reading' && (editionBaseWork || linkedBookEditions.length > 0) && (
+              <section
+                aria-label="Edições desta obra"
+                data-testid="book-editions-relation"
+                className="rounded-[6px] border border-line bg-card p-4 space-y-2.5"
+              >
+                {editionBaseWork && (
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                        Edição vinculada
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => onSelectItem?.(editionBaseWork)}
+                        className="mt-0.5 inline-flex min-h-[44px] items-center text-left font-editorial text-sm font-semibold text-ink hover:text-accent"
+                      >
+                        Edição de: {editionBaseWork.title}
+                      </button>
+                      <p className="text-[11px] text-subtle">
+                        Conta nas estatísticas do autor sem alterar o progresso da obra base.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {linkedBookEditions.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                      Outras edições catalogadas ({linkedBookEditions.length})
+                    </p>
+                    <div className="divide-y divide-line rounded-[6px] border border-line bg-app">
+                      {linkedBookEditions.map((ed) => (
+                        <button
+                          key={ed.id}
+                          type="button"
+                          onClick={() => onSelectItem?.(ed)}
+                          className="flex min-h-[44px] w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-card"
+                        >
+                          <span className="truncate font-editorial font-medium text-ink">
+                            {ed.title}
+                          </span>
+                          <span className="shrink-0 text-[11px] tabular-nums text-subtle">
+                            {[ed.bookFormat, ed.releaseYear].filter(Boolean).join(' · ') || 'Edição'}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
+
             {/* Radar de Franquia, Sagas & Universo (Cinema, Livros e Games) */}
             {(workDomain === 'cinema' || workDomain === 'reading' || workDomain === 'games') && (
               <Suspense fallback={null}>
@@ -1770,6 +1843,7 @@ export function WorkDetailPage({
                   item={item}
                   allItems={allItems}
                   franchise={franchise}
+                  tmdbKey={tmdbKey}
                   onSelectItem={onSelectItem}
                   onQuickCatalogItem={onQuickCatalogItem}
                   onUpdateItem={onUpdateItem}
@@ -2934,7 +3008,7 @@ export function WorkDetailPage({
                           }
                           className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
                         >
-                          {FRANCHISE_TIER_OPTIONS.map((opt) => (
+                          {ALL_FRANCHISE_TIER_OPTIONS.map((opt) => (
                             <option key={opt.id} value={opt.id}>
                               {opt.label}
                             </option>
@@ -2942,6 +3016,42 @@ export function WorkDetailPage({
                         </select>
                       </label>
                     </div>
+                  )}
+
+                  {workDomain === 'reading' && (
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium text-muted">
+                        Edição de outra obra (editionOf)
+                      </span>
+                      <select
+                        value={getEditionBaseWorkId(item)}
+                        onChange={(e) => {
+                          const patch = buildEditionLinkPatch(item, e.target.value, allItems);
+                          if (patch) onUpdateItem(item.id, patch);
+                        }}
+                        className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      >
+                        <option value="">Obra base (não é edição de outra obra)</option>
+                        {allItems
+                          .filter(
+                            (cand) =>
+                              cand &&
+                              cand.inBacklog !== false &&
+                              cand.id !== item.id &&
+                              inferDomainFromWork(cand) === 'reading' &&
+                              getEditionBaseWorkId(cand) !== String(item.id)
+                          )
+                          .map((cand) => (
+                            <option key={cand.id} value={cand.id}>
+                              {cand.title}
+                              {cand.releaseYear ? ` (${cand.releaseYear})` : ''}
+                            </option>
+                          ))}
+                      </select>
+                      <span className="mt-1 block text-[11px] text-subtle">
+                        Conta nas estatísticas do autor e nunca altera o progresso da obra base.
+                      </span>
+                    </label>
                   )}
 
                   <label className="block">

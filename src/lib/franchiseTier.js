@@ -12,6 +12,15 @@
  */
 
 import { inferDomainFromWork, normalizeDomainId } from '../config/domainConfig.js';
+import { isBookEdition } from './bookEditions.js';
+
+export const UNCLASSIFIED_FRANCHISE_TIER = 'unclassified';
+
+export const UNCLASSIFIED_TIER_META = Object.freeze({
+  id: 'unclassified',
+  label: 'Não classificado (aguarda confirmação)',
+  shortLabel: 'Não classificado',
+});
 
 export const FRANCHISE_TIER_OPTIONS = Object.freeze([
   Object.freeze({
@@ -31,7 +40,14 @@ export const FRANCHISE_TIER_OPTIONS = Object.freeze([
   }),
 ]);
 
-const VALID_TIERS = new Set(['mainline', 'spinoff', 'companion']);
+export const ALL_FRANCHISE_TIER_OPTIONS = Object.freeze([
+  ...FRANCHISE_TIER_OPTIONS,
+  UNCLASSIFIED_TIER_META,
+]);
+
+// Nunca usar 'edition' em franchiseTier: edições de livros usam a relação separada `editionOf`.
+const CONFIRMED_TIERS = new Set(['mainline', 'spinoff', 'companion']);
+const VALID_TIERS = new Set(['mainline', 'spinoff', 'companion', 'unclassified']);
 
 const COMPANION_RELATION_TYPES = new Set([
   'SPECIAL',
@@ -57,6 +73,7 @@ const SPINOFF_TITLE_REGEX =
 
 export function normalizeFranchiseTier(raw) {
   const clean = String(raw || '').trim().toLowerCase();
+  if (clean === 'edition') return '';
   return VALID_TIERS.has(clean) ? clean : '';
 }
 
@@ -68,7 +85,17 @@ export function inferFranchiseTier(entry = {}) {
       entry.work?.franchiseTier ??
       entry.work?.progress_data?.franchiseTier
   );
-  if (explicit) return explicit;
+  if (explicit && CONFIRMED_TIERS.has(explicit)) return explicit;
+
+  // Sugestões de universo (TMDB keyword/discover) NUNCA são classificadas automaticamente
+  // como mainline ou spinoff: o padrão é 'unclassified' até confirmação explícita do usuário.
+  if (
+    explicit === UNCLASSIFIED_FRANCHISE_TIER ||
+    entry.isUniverseSuggestion === true ||
+    entry.sourceKind === 'tmdb_keyword_discover'
+  ) {
+    return UNCLASSIFIED_FRANCHISE_TIER;
+  }
 
   const relType = String(entry.relationType || entry.work?.relationType || '')
     .trim()
@@ -94,6 +121,7 @@ export function inferFranchiseTier(entry = {}) {
 
 export function getFranchiseTierMeta(tierId) {
   const clean = normalizeFranchiseTier(tierId) || 'mainline';
+  if (clean === UNCLASSIFIED_FRANCHISE_TIER) return UNCLASSIFIED_TIER_META;
   return (
     FRANCHISE_TIER_OPTIONS.find((opt) => opt.id === clean) || FRANCHISE_TIER_OPTIONS[0]
   );
@@ -122,18 +150,23 @@ function isEntryCompleted(entry) {
  * - Universo Completo (`mainline` + `spinoff` + `companion`)
  */
 export function computeFranchiseScopeProgress(entries = [], domain = 'cinema') {
-  const safeEntries = (Array.isArray(entries) ? entries : []).filter(Boolean);
+  // Edições (`editionOf`) nunca alteram o progresso da obra base nem inflam a série.
+  const safeEntries = (Array.isArray(entries) ? entries : []).filter(
+    (entry) => entry && !isBookEdition(entry.work || entry)
+  );
   const grouped = {
     mainline: [],
     spinoff: [],
     companion: [],
+    unclassified: [],
   };
 
   for (const entry of safeEntries) {
     const tier = inferFranchiseTier(entry);
-    grouped[tier].push({
+    const bucket = grouped[tier] ? tier : 'mainline';
+    grouped[bucket].push({
       ...entry,
-      franchiseTier: tier,
+      franchiseTier: bucket,
       completed: isEntryCompleted(entry),
     });
   }
@@ -147,7 +180,8 @@ export function computeFranchiseScopeProgress(entries = [], domain = 'cinema') {
   const universeCompleted =
     mainlineCompleted +
     grouped.spinoff.filter((e) => e.completed).length +
-    grouped.companion.filter((e) => e.completed).length;
+    grouped.companion.filter((e) => e.completed).length +
+    grouped.unclassified.filter((e) => e.completed).length;
   const universePct =
     universeTotal > 0 ? Math.round((universeCompleted / universeTotal) * 100) : 0;
 
@@ -167,10 +201,15 @@ export function computeFranchiseScopeProgress(entries = [], domain = 'cinema') {
       pct: universePct,
       label: `${universeCompleted}/${universeTotal}`,
     },
+    unclassified: {
+      completed: grouped.unclassified.filter((e) => e.completed).length,
+      total: grouped.unclassified.length,
+    },
     counts: {
       mainline: mainlineTotal,
       spinoff: grouped.spinoff.length,
       companion: grouped.companion.length,
+      unclassified: grouped.unclassified.length,
       all: universeTotal,
     },
     grouped,
@@ -199,7 +238,7 @@ export function buildDomainFranchiseModel(item = {}, allItems = []) {
   if (!normKey && manualLinks.length === 0) return null;
 
   const catalogWorks = (Array.isArray(allItems) ? allItems : []).filter(
-    (w) => w && w.inBacklog !== false && inferDomainFromWork(w) === domain
+    (w) => w && w.inBacklog !== false && inferDomainFromWork(w) === domain && !isBookEdition(w)
   );
 
   const byId = new Map();

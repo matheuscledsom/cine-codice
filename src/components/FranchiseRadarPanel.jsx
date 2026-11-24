@@ -1,14 +1,18 @@
-import { CheckCircle2, GitBranch, Link2, Plus, Trash2 } from 'lucide-react';
+import { CheckCircle2, Compass, GitBranch, Link2, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import {
   FRANCHISE_TIER_OPTIONS,
+  UNCLASSIFIED_FRANCHISE_TIER,
   getFranchiseTierMeta,
   inferFranchiseTier,
 } from '../lib/franchiseTier';
 import { buildMissingFranchiseEntryDraft } from '../services/franchiseEngine';
 import {
   buildUnifiedFranchiseModel,
+  buildUniverseSuggestionsModel,
   fetchTmdbCollectionParts,
+  fetchTmdbUniverseSuggestionsByKeyword,
+  fetchTmdbWorkKeywords,
 } from '../services/franchiseService';
 import { StatusBadge } from './StatusBadge';
 
@@ -25,6 +29,7 @@ export function FranchiseRadarPanel({
   item,
   allItems = [],
   franchise = null,
+  tmdbKey = '',
   onSelectItem,
   onQuickCatalogItem,
   onUpdateItem,
@@ -37,15 +42,24 @@ export function FranchiseRadarPanel({
   const [remoteCollectionParts, setRemoteCollectionParts] = useState([]);
   const [activeGroupTab, setActiveGroupTab] = useState('all');
   const [activeTierTab, setActiveTierTab] = useState('all');
+  const [universeOpen, setUniverseOpen] = useState(false);
+  const [universeKeywords, setUniverseKeywords] = useState([]);
+  const [activeKeyword, setActiveKeyword] = useState(null);
+  const [universeSuggestionsRaw, setUniverseSuggestionsRaw] = useState([]);
+  const [loadingUniverse, setLoadingUniverse] = useState(false);
 
   useEffect(() => {
     setActiveGroupTab('all');
     setActiveTierTab('all');
     setRemoteCollectionParts([]);
+    setUniverseOpen(false);
+    setUniverseKeywords([]);
+    setActiveKeyword(null);
+    setUniverseSuggestionsRaw([]);
     const colId = item?.belongsToCollection?.id;
     if (item?.workType === 'movie' && colId) {
       let cancelled = false;
-      fetchTmdbCollectionParts(colId)
+      fetchTmdbCollectionParts(colId, { apiKey: tmdbKey })
         .then((parts) => {
           if (!cancelled && Array.isArray(parts) && parts.length > 0) {
             setRemoteCollectionParts(parts);
@@ -57,7 +71,48 @@ export function FranchiseRadarPanel({
       };
     }
     return undefined;
-  }, [item?.id, item?.workType, item?.belongsToCollection?.id]);
+  }, [item?.id, item?.workType, item?.belongsToCollection?.id, tmdbKey]);
+
+  const universeSuggestions = useMemo(
+    () => buildUniverseSuggestionsModel(universeSuggestionsRaw, allItems),
+    [universeSuggestionsRaw, allItems]
+  );
+
+  const handleLoadUniverseKeywords = async () => {
+    if (!item || loadingUniverse) return;
+    setUniverseOpen(true);
+    setLoadingUniverse(true);
+    try {
+      const kws = await fetchTmdbWorkKeywords(item, { apiKey: tmdbKey });
+      setUniverseKeywords(kws);
+      const preferred = kws.find((k) => k.isUniverseHint) || kws[0] || null;
+      if (preferred) {
+        setActiveKeyword(preferred);
+        const res = await fetchTmdbUniverseSuggestionsByKeyword(preferred.id, {
+          keywordName: preferred.name,
+          apiKey: tmdbKey,
+        });
+        setUniverseSuggestionsRaw(res.suggestions || []);
+      }
+    } finally {
+      setLoadingUniverse(false);
+    }
+  };
+
+  const handlePickUniverseKeyword = async (kw) => {
+    if (!kw?.id || loadingUniverse) return;
+    setActiveKeyword(kw);
+    setLoadingUniverse(true);
+    try {
+      const res = await fetchTmdbUniverseSuggestionsByKeyword(kw.id, {
+        keywordName: kw.name,
+        apiKey: tmdbKey,
+      });
+      setUniverseSuggestionsRaw(res.suggestions || []);
+    } finally {
+      setLoadingUniverse(false);
+    }
+  };
 
   const model = useMemo(
     () =>
@@ -458,6 +513,167 @@ export function FranchiseRadarPanel({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Sugestões de Universo via TMDB keyword/discover (padrão: Não classificado até confirmação) */}
+      {(item.tmdbId || item.ids?.tmdb) && (item.workType === 'movie' || item.workType === 'series') && (
+        <div
+          className="space-y-2.5 border-t border-line pt-3"
+          data-testid="tmdb-universe-suggestions"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink">
+                <Compass className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                <span>Sugestões de Universo (TMDB)</span>
+              </p>
+              <p className="text-[11px] text-subtle">
+                Coleções cobrem sequências diretas; sugestões por palavra-chave entram como &quot;Não classificado&quot; até você confirmar.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleLoadUniverseKeywords}
+              disabled={loadingUniverse}
+              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-ink hover:border-accent disabled:opacity-55"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 text-accent ${loadingUniverse ? 'animate-spin' : ''}`}
+                strokeWidth={1.5}
+              />
+              <span>{universeOpen ? 'Atualizar sugestões' : 'Explorar universo'}</span>
+            </button>
+          </div>
+
+          {universeOpen && (
+            <div className="space-y-2.5">
+              {universeKeywords.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {universeKeywords.slice(0, 8).map((kw) => {
+                    const isPicked = activeKeyword?.id === kw.id;
+                    return (
+                      <button
+                        key={kw.id}
+                        type="button"
+                        onClick={() => handlePickUniverseKeyword(kw)}
+                        className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium ${
+                          isPicked
+                            ? 'border-accent bg-accent text-accent-ink'
+                            : 'border-line bg-card text-muted hover:text-ink'
+                        }`}
+                      >
+                        {kw.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {loadingUniverse ? (
+                <div className="h-14 animate-pulse rounded-[6px] border border-line bg-card" />
+              ) : universeSuggestions.length === 0 ? (
+                <p className="text-xs text-muted">
+                  Nenhuma sugestão encontrada para esta palavra-chave no TMDB.
+                </p>
+              ) : (
+                <div className="divide-y divide-line rounded-[6px] border border-line bg-card">
+                  {universeSuggestions.slice(0, 12).map((sug) => {
+                    const tierMeta = getFranchiseTierMeta(sug.franchiseTier);
+                    return (
+                      <div
+                        key={sug.id}
+                        className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="truncate text-xs font-medium text-ink">
+                              {sug.title}
+                            </span>
+                            <span className="rounded-[4px] border border-line bg-app px-1.5 py-0.5 text-[10px] text-muted">
+                              {tierMeta.shortLabel}
+                            </span>
+                          </div>
+                          <p className="text-[10px] tabular-nums text-subtle">
+                            {[
+                              sug.workType === 'series' ? 'Série' : 'Filme',
+                              sug.releaseYear,
+                              sug.catalogStateLabel,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </p>
+                        </div>
+
+                        {sug.isCataloged && sug.item && onUpdateItem ? (
+                          <div className="flex flex-wrap items-center gap-1">
+                            {FRANCHISE_TIER_OPTIONS.map((opt) => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => {
+                                  onUpdateItem(sug.item.id, {
+                                    franchiseTier: opt.id,
+                                    franchiseName:
+                                      sug.item.franchiseName ||
+                                      activeKeyword?.name ||
+                                      model.sagaName,
+                                  });
+                                  onShowToast?.({
+                                    message: `"${sug.title}" confirmado como ${opt.shortLabel}`,
+                                    type: 'success',
+                                  });
+                                }}
+                                className={`min-h-[44px] rounded-[6px] border px-2 text-[10px] font-medium ${
+                                  sug.franchiseTier === opt.id
+                                    ? 'border-accent bg-accent text-accent-ink'
+                                    : 'border-line bg-app text-muted hover:text-ink'
+                                }`}
+                              >
+                                {opt.shortLabel}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          onQuickCatalogItem && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onQuickCatalogItem({
+                                  title: sug.title,
+                                  originalTitle: sug.originalTitle,
+                                  tmdbId: sug.tmdbId,
+                                  ids: sug.tmdbId ? { tmdb: sug.tmdbId } : undefined,
+                                  domain: 'cinema',
+                                  workType: sug.workType,
+                                  releaseYear: sug.releaseYear,
+                                  coverUrl: sug.coverUrl,
+                                  backdropUrl: sug.backdropUrl,
+                                  synopsis: sug.synopsis,
+                                  franchiseName: activeKeyword?.name || model.sagaName,
+                                  franchiseTier: UNCLASSIFIED_FRANCHISE_TIER,
+                                  status: 'queued',
+                                  inBacklog: true,
+                                });
+                                onShowToast?.({
+                                  message: `"${sug.title}" adicionado como Não classificado`,
+                                  type: 'success',
+                                });
+                              }}
+                              className="inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[6px] border border-line bg-app px-3 text-xs font-medium text-ink hover:border-accent"
+                            >
+                              <Plus className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                              <span>Adicionar</span>
+                            </button>
+                          )
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </section>

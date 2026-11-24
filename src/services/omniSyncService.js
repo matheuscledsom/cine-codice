@@ -307,11 +307,21 @@ export function mapLocalWorkToCatalogRow(
       reviewCriteria5: work.reviewCriteria5 ?? null,
       ratingManualOverride: Boolean(work.ratingManualOverride),
       lifeWork: Boolean(work.lifeWork || Number(work.gameRating11) >= 11),
-      franchiseTier: ['mainline', 'spinoff', 'companion'].includes(
+      franchiseTier: ['mainline', 'spinoff', 'companion', 'unclassified'].includes(
         String(work.franchiseTier || '').trim().toLowerCase()
       )
         ? String(work.franchiseTier).trim().toLowerCase()
         : '',
+      editionOf: (() => {
+        const clean = String(work.editionOf ?? work.progress_data?.editionOf ?? '').trim();
+        return clean && clean !== String(work.id || '') ? clean : null;
+      })(),
+      releasedEpisodesCount:
+        Number(work.releasedEpisodesCount) > 0
+          ? Math.floor(Number(work.releasedEpisodesCount))
+          : null,
+      releasedEpisodesSource: String(work.releasedEpisodesSource || '').trim() || null,
+      releasedEpisodesFetchedAt: work.releasedEpisodesFetchedAt || null,
       verdict: work.verdict ?? null,
       externalRatings: cleanExternalRatings,
       atmosphere: Array.isArray(work.atmosphere) ? work.atmosphere : [],
@@ -499,11 +509,18 @@ export function mapCatalogRowToLocalWork(row = {}) {
     reviewCriteria5: pd.reviewCriteria5 ?? null,
     ratingManualOverride: Boolean(pd.ratingManualOverride),
     lifeWork: Boolean(pd.lifeWork || Number(pd.game_rating_11) >= 11),
-    franchiseTier: ['mainline', 'spinoff', 'companion'].includes(
+    franchiseTier: ['mainline', 'spinoff', 'companion', 'unclassified'].includes(
       String(pd.franchiseTier || '').trim().toLowerCase()
     )
       ? String(pd.franchiseTier).trim().toLowerCase()
       : '',
+    editionOf: String(pd.editionOf || '').trim() || null,
+    releasedEpisodesCount:
+      Number(pd.releasedEpisodesCount) > 0
+        ? Math.floor(Number(pd.releasedEpisodesCount))
+        : null,
+    releasedEpisodesSource: String(pd.releasedEpisodesSource || '').trim() || null,
+    releasedEpisodesFetchedAt: pd.releasedEpisodesFetchedAt || null,
     verdict: pd.verdict ?? null,
     externalRatings,
     ids: {

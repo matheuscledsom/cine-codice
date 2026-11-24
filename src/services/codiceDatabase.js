@@ -304,11 +304,21 @@ export function buildCodiceDatabase({
         rawItem.reviewCriteria5 && typeof rawItem.reviewCriteria5 === 'object'
           ? rawItem.reviewCriteria5
           : null,
-      franchiseTier: ['mainline', 'spinoff', 'companion'].includes(
+      franchiseTier: ['mainline', 'spinoff', 'companion', 'unclassified'].includes(
         String(rawItem.franchiseTier || '').trim().toLowerCase()
       )
         ? String(rawItem.franchiseTier).trim().toLowerCase()
         : '',
+      editionOf: (() => {
+        const clean = String(rawItem.editionOf ?? rawItem.progress_data?.editionOf ?? '').trim();
+        return clean && clean !== String(rawItem.id || '') ? clean : null;
+      })(),
+      releasedEpisodesCount:
+        Number(rawItem.releasedEpisodesCount) > 0
+          ? Math.floor(Number(rawItem.releasedEpisodesCount))
+          : null,
+      releasedEpisodesSource: String(rawItem.releasedEpisodesSource || '').trim() || null,
+      releasedEpisodesFetchedAt: rawItem.releasedEpisodesFetchedAt || null,
       masterpieceJustification: String(rawItem.masterpieceJustification || '').trim().slice(0, 400),
       hoursPlayed: Math.max(0, Number(rawItem.hoursPlayed) || 0),
       completionType: String(rawItem.completionType || '').trim(),

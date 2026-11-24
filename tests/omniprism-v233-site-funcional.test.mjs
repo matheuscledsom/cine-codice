@@ -380,13 +380,15 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
       return makeJsonResponse({ error: 'not found' }, 404);
     };
 
-    // Rotas proibidas no TMDB -> 403
+    // Rotas proibidas no TMDB -> 403 (discover sem with_keywords e collection sem id numerico seguem bloqueados)
     for (const forbiddenPath of [
       ['configuration'],
       ['account', '1'],
       ['discover', 'movie'],
+      ['discover', 'tv'],
       ['search', 'person'],
-      ['collection', '10'],
+      ['collection', 'invalid'],
+      ['keyword', 'abc'],
     ]) {
       const blocked = await handleTmdbProxyRequest(
         {

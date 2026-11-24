@@ -15,9 +15,12 @@ export const OMDB_UPSTREAM_BASE = 'https://www.omdbapi.com/';
 export const SEARCH_CACHE_TTL_SECONDS = 600; // 10 minutos
 export const DETAIL_CACHE_TTL_SECONDS = 86400; // 24 horas
 
-const SECRET_PARAM_RE = /^(api_?key|apikey|access_token|token)$/i;
+const SECRET_PARAM_RE = /^(api_?key|apikey|access_token|token|key)$/i;
 const SAFE_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
-const ALLOWED_TMDB_SEARCH_TARGETS = new Set(['movie', 'tv', 'multi']);
+const NUMERIC_ID_RE = /^\d+$/;
+const TMDB_KEYWORDS_PARAM_RE = /^\d+(?:[,|]\d+)*$/;
+const ALLOWED_TMDB_SEARCH_TARGETS = new Set(['movie', 'tv', 'multi', 'collection']);
+const ALLOWED_TMDB_DISCOVER_TARGETS = new Set(['movie', 'tv']);
 const ALLOWED_OMDB_PARAMS = new Map([
   ['i', 'i'],
   ['t', 't'],
@@ -170,7 +173,7 @@ export async function verifySupabaseAuth(request, env, { fetchImpl = fetch } = {
   }
 }
 
-export function validateTmdbPath(rawPathname = '', paramsPath = null) {
+export function validateTmdbPath(rawPathname = '', paramsPath = null, searchParams = null) {
   const pathname = String(rawPathname || '');
   const lowerRaw = pathname.toLowerCase();
   if (
@@ -210,6 +213,36 @@ export function validateTmdbPath(rawPathname = '', paramsPath = null) {
         allowed: true,
         kind: 'search',
         ttlSeconds: SEARCH_CACHE_TTL_SECONDS,
+        cleanPath: `${head}/${second}`,
+      };
+    }
+    return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
+  }
+
+  if (head === 'discover') {
+    if (segments.length === 2 && ALLOWED_TMDB_DISCOVER_TARGETS.has(second)) {
+      const rawKeywords =
+        searchParams && typeof searchParams.get === 'function'
+          ? String(searchParams.get('with_keywords') || '').trim()
+          : '';
+      if (rawKeywords && TMDB_KEYWORDS_PARAM_RE.test(rawKeywords)) {
+        return {
+          allowed: true,
+          kind: 'search',
+          ttlSeconds: SEARCH_CACHE_TTL_SECONDS,
+          cleanPath: `${head}/${second}`,
+        };
+      }
+    }
+    return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
+  }
+
+  if (head === 'collection' || head === 'keyword') {
+    if (segments.length === 2 && NUMERIC_ID_RE.test(second)) {
+      return {
+        allowed: true,
+        kind: 'detail',
+        ttlSeconds: DETAIL_CACHE_TTL_SECONDS,
         cleanPath: `${head}/${second}`,
       };
     }

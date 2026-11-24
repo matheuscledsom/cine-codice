@@ -19,8 +19,11 @@ import { getSupabaseClient } from './supabaseClient.js';
 export const TMDB_DIRECT_API_BASE = 'https://api.themoviedb.org/3';
 export const OMDB_DIRECT_API_BASE = 'https://www.omdbapi.com';
 
-const ALLOWED_PROXY_TMDB_RE = /^(?:search\/(?:movie|tv|multi)|(?:movie|tv|find)\/[a-zA-Z0-9_/-]+)$/;
-const SECRET_QUERY_KEY_RE = /^(api_?key|apikey|access_token|token)$/i;
+const ALLOWED_PROXY_TMDB_RE =
+  /^(?:search\/(?:movie|tv|multi|collection)|(?:collection|keyword)\/\d+|(?:movie|tv|find)\/[a-zA-Z0-9_/-]+)$/;
+const ALLOWED_PROXY_TMDB_DISCOVER_RE = /^discover\/(?:movie|tv)$/;
+const TMDB_KEYWORDS_RE = /^\d+(?:[,|]\d+)*$/;
+const SECRET_QUERY_KEY_RE = /^(api_?key|apikey|access_token|token|key)$/i;
 
 export function isDevRuntime() {
   try {
@@ -37,10 +40,18 @@ export function shouldUseApiProxy({ forceProxy = null, isDev = isDevRuntime() } 
   return true;
 }
 
-export function isProxySupportedTmdbPath(rawPath = '') {
+export function isProxySupportedTmdbPath(rawPath = '', params = null) {
   const clean = String(rawPath || '').trim().replace(/^\/+/, '');
   if (!clean || clean.includes('..') || clean.includes('//')) return false;
-  return ALLOWED_PROXY_TMDB_RE.test(clean);
+  if (ALLOWED_PROXY_TMDB_RE.test(clean)) return true;
+  if (ALLOWED_PROXY_TMDB_DISCOVER_RE.test(clean)) {
+    const rawKw =
+      params instanceof URLSearchParams
+        ? String(params.get('with_keywords') || '').trim()
+        : String(params?.with_keywords || '').trim();
+    return Boolean(rawKw && TMDB_KEYWORDS_RE.test(rawKw));
+  }
+  return false;
 }
 
 export async function getSupabaseAccessToken({
@@ -119,7 +130,7 @@ export async function fetchTmdbViaProxyOrDirect(
   let proxyStatus = null;
 
   if (
-    isProxySupportedTmdbPath(cleanPath) &&
+    isProxySupportedTmdbPath(cleanPath, cleanParams) &&
     shouldUseApiProxy({ forceProxy, isDev })
   ) {
     const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });

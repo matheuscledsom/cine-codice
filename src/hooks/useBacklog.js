@@ -305,11 +305,21 @@ function normalizeItem(rawItem, spectatorDna = null) {
     lifeWork,
     ratingManualOverride,
     reviewCriteria5,
-    franchiseTier: ['mainline', 'spinoff', 'companion'].includes(
+    franchiseTier: ['mainline', 'spinoff', 'companion', 'unclassified'].includes(
       String(rawItem.franchiseTier || '').trim().toLowerCase()
     )
       ? String(rawItem.franchiseTier).trim().toLowerCase()
       : '',
+    editionOf: (() => {
+      const clean = String(rawItem.editionOf ?? rawItem.progress_data?.editionOf ?? '').trim();
+      return clean && clean !== String(rawItem.id || '') ? clean : null;
+    })(),
+    releasedEpisodesCount:
+      Number(rawItem.releasedEpisodesCount) > 0
+        ? Math.floor(Number(rawItem.releasedEpisodesCount))
+        : null,
+    releasedEpisodesSource: String(rawItem.releasedEpisodesSource || '').trim() || null,
+    releasedEpisodesFetchedAt: rawItem.releasedEpisodesFetchedAt || null,
     externalRatings,
     reviewCriteria,
     verdict: rating !== null ? (rawItem.verdict || getVerdictForScore(rating)) : (rawItem.verdict || null),
