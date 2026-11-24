@@ -124,9 +124,11 @@ export const BACKDROP_RETRY_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAX_MEMORY_CACHE_ENTRIES_PER_STORE = 300;
 
 export const RELATIONAL_DB_NAME = 'cine_codice_relational_v2';
-export const RELATIONAL_DB_VERSION = 1;
+export const RELATIONAL_DB_VERSION = 2;
 export const PRE_V12_BACKUP_KEY = 'cine_codice_backup_pre_v1_2';
 export const RELATIONAL_MIGRATED_KEY = 'cine_codice_relational_v2_migrated';
+export const RELATIONAL_SCHEMA_VERSION_KEY = 'omniprism_relational_schema_version_v1';
+export const PRE_SCHEMA_MIGRATION_BACKUP_KEY = 'omniprism_backup_pre_schema_migration_v1';
 
 export const RELATIONAL_STORES = Object.freeze({
   works: 'works',

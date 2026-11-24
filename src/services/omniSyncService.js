@@ -304,6 +304,14 @@ export function mapLocalWorkToCatalogRow(
       track_count: trackCount,
       ratingSource: work.ratingSource ?? null,
       reviewCriteria: work.reviewCriteria ?? null,
+      reviewCriteria5: work.reviewCriteria5 ?? null,
+      ratingManualOverride: Boolean(work.ratingManualOverride),
+      lifeWork: Boolean(work.lifeWork || Number(work.gameRating11) >= 11),
+      franchiseTier: ['mainline', 'spinoff', 'companion'].includes(
+        String(work.franchiseTier || '').trim().toLowerCase()
+      )
+        ? String(work.franchiseTier).trim().toLowerCase()
+        : '',
       verdict: work.verdict ?? null,
       externalRatings: cleanExternalRatings,
       atmosphere: Array.isArray(work.atmosphere) ? work.atmosphere : [],
@@ -488,6 +496,14 @@ export function mapCatalogRowToLocalWork(row = {}) {
         : Math.max(0, Math.min(100, Math.round(Number(row.rating)))),
     ratingSource: pd.ratingSource ?? (row.rating !== null && row.rating !== undefined ? 'manual' : null),
     reviewCriteria: pd.reviewCriteria ?? null,
+    reviewCriteria5: pd.reviewCriteria5 ?? null,
+    ratingManualOverride: Boolean(pd.ratingManualOverride),
+    lifeWork: Boolean(pd.lifeWork || Number(pd.game_rating_11) >= 11),
+    franchiseTier: ['mainline', 'spinoff', 'companion'].includes(
+      String(pd.franchiseTier || '').trim().toLowerCase()
+    )
+      ? String(pd.franchiseTier).trim().toLowerCase()
+      : '',
     verdict: pd.verdict ?? null,
     externalRatings,
     ids: {

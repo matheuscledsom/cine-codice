@@ -4,10 +4,15 @@ import {
   importEpisodeEvaluations,
 } from '../api/cacheDb';
 import {
+  saveAutoSnapshot,
+  verifyAutoSnapshotIntegrity,
+} from '../services/backupEngine';
+import {
   getAllRelationalWorks,
   migrateLegacyToRelationalDb,
   putRelationalSessions,
   putRelationalWorks,
+  runRelationalSchemaMigrations,
 } from '../services/relationalDb';
 import {
   domainConfig,
@@ -18,6 +23,11 @@ import {
 import { initialItems } from '../data/mockData';
 import { applyCanonicalIdsToWork } from '../lib/idBridge';
 import { classifyLegacyRatingSource } from '../lib/migrations';
+import {
+  calculateCriteriaRating,
+  isFiveCriteriaRecord,
+  resolveLifeWorkFlag,
+} from '../lib/ratingModel';
 import { normalizeExternalRatings } from '../lib/ratings';
 import { safeSetLocalStorageJson } from '../lib/storagePersistence';
 import {
@@ -111,8 +121,13 @@ function normalizeItem(rawItem, spectatorDna = null) {
 
   const gameRating11 = domain === 'games' ? normalizeGameRating11(rawItem.gameRating11) : null;
   const trackRating10 = domain === 'music' ? normalizeTrackRating10(rawItem.trackRating10) : null;
+  const lifeWork = resolveLifeWorkFlag(rawItem);
+  const ratingManualOverride = Boolean(rawItem.ratingManualOverride);
 
   const reviewCriteria = rawItem.reviewCriteria || null;
+  const reviewCriteria5 = rawItem.reviewCriteria5 || (
+    isFiveCriteriaRecord(reviewCriteria, domain) ? reviewCriteria : null
+  );
   const derivedFromDomainScale =
     gameRating11 !== null
       ? Math.min(100, Math.round(gameRating11 * 10))
@@ -120,13 +135,20 @@ function normalizeItem(rawItem, spectatorDna = null) {
         ? Math.min(100, Math.round(trackRating10 * 10))
         : null;
 
-  const computedRating = reviewCriteria
-    ? calculateSmartRating(reviewCriteria, spectatorDna)
-    : normalizeRating(rawItem.rating) ?? derivedFromDomainScale;
+  const explicitRating = normalizeRating(rawItem.rating);
+  let computedRating = explicitRating ?? derivedFromDomainScale;
+  if (!ratingManualOverride) {
+    if (reviewCriteria5) {
+      const calc5 = calculateCriteriaRating(reviewCriteria5, domain);
+      computedRating = calc5.suggestedScore100 ?? explicitRating ?? derivedFromDomainScale;
+    } else if (reviewCriteria) {
+      computedRating = calculateSmartRating(reviewCriteria, spectatorDna);
+    }
+  }
 
   const rating = isCompleted
-    ? computedRating ?? normalizeRating(rawItem.rating) ?? derivedFromDomainScale
-    : normalizeRating(rawItem.rating) ?? derivedFromDomainScale;
+    ? computedRating ?? explicitRating ?? derivedFromDomainScale
+    : explicitRating ?? computedRating ?? derivedFromDomainScale;
 
   const durationMinutes = normalizeNullablePositiveInt(rawItem.durationMinutes);
   const totalSeconds =
@@ -280,6 +302,14 @@ function normalizeItem(rawItem, spectatorDna = null) {
       : [],
     rating,
     ratingSource,
+    lifeWork,
+    ratingManualOverride,
+    reviewCriteria5,
+    franchiseTier: ['mainline', 'spinoff', 'companion'].includes(
+      String(rawItem.franchiseTier || '').trim().toLowerCase()
+    )
+      ? String(rawItem.franchiseTier).trim().toLowerCase()
+      : '',
     externalRatings,
     reviewCriteria,
     verdict: rating !== null ? (rawItem.verdict || getVerdictForScore(rating)) : (rawItem.verdict || null),
@@ -342,9 +372,17 @@ function applyStatusTransitionDefaults(merged, nextStatus, prevItem, spectatorDn
       merged.currentSeconds = merged.totalSeconds;
     }
 
-    if (merged.reviewCriteria) {
-      merged.rating = calculateSmartRating(merged.reviewCriteria, spectatorDna);
-      merged.ratingSource = 'manual';
+    if (!merged.ratingManualOverride && merged.reviewCriteria5) {
+      const calc5 = calculateCriteriaRating(merged.reviewCriteria5, merged.domain);
+      if (calc5.suggestedScore100 !== null) {
+        merged.rating = calc5.suggestedScore100;
+        merged.ratingSource = 'manual';
+      }
+    } else if (!merged.ratingManualOverride && merged.reviewCriteria) {
+      merged.rating = isFiveCriteriaRecord(merged.reviewCriteria, merged.domain)
+        ? calculateCriteriaRating(merged.reviewCriteria, merged.domain).suggestedScore100
+        : calculateSmartRating(merged.reviewCriteria, spectatorDna);
+      merged.ratingSource = merged.rating !== null ? 'manual' : null;
     } else if (merged.rating !== null && merged.rating !== undefined && merged.rating !== '') {
       merged.ratingSource = classifyLegacyRatingSource(merged);
     } else {
@@ -493,6 +531,17 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
           episodeEvaluations: evals,
           collections,
         });
+        const schemaRes = await runRelationalSchemaMigrations({
+          items,
+          sessions: readingSessions,
+          episodeEvaluations: evals,
+          collections,
+          saveSnapshotFn: saveAutoSnapshot,
+          verifySnapshotFn: verifyAutoSnapshotIntegrity,
+        });
+        if (active && schemaRes?.migrated && Array.isArray(schemaRes.items) && schemaRes.items.length > 0) {
+          setItems(schemaRes.items.map((w) => normalizeItem(w, spectatorDna)));
+        }
       } catch {
         // Silencioso para não travar inicialização
       } finally {
@@ -688,8 +737,13 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
             if (!Object.prototype.hasOwnProperty.call(updates, 'verdict')) {
               merged.verdict = getVerdictForScore(merged.rating);
             }
-          } else if (Object.prototype.hasOwnProperty.call(updates, 'reviewCriteria')) {
-            const score = calculateSmartRating(updates.reviewCriteria, spectatorDna);
+          } else if (
+            !merged.ratingManualOverride &&
+            Object.prototype.hasOwnProperty.call(updates, 'reviewCriteria')
+          ) {
+            const score = isFiveCriteriaRecord(updates.reviewCriteria, merged.domain)
+              ? calculateCriteriaRating(updates.reviewCriteria, merged.domain).suggestedScore100
+              : calculateSmartRating(updates.reviewCriteria, spectatorDna);
             merged.rating = score;
             merged.ratingSource =
               updates.ratingSource ?? (score !== null ? 'manual' : null);

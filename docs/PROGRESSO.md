@@ -28,6 +28,7 @@
 
 ## Linha do Tempo das Fases — Ciclo v2.4.0 ("Refino & Profundidade")
 - [x] **Fase 0 (v2.4.0) — Baseline e Documentacao** — criada branch `feat/v2.4.0-refino` a partir de `main` (`a201f06`), linha de base medida (`152/152` testes em `3.06s`, bundle principal `456.02 kB`), criados [`docs/PLANO_v2.4.0.md`](./PLANO_v2.4.0.md) e [`docs/DESIGN.md`](./DESIGN.md).
+- [x] **Fase 1 (v2.4.0) — Fundacao, Seguranca e Modelo de Notas (5 Estrelas + 5 Criterios)** — migracoes aditivas versionadas no IndexedDB (`v1 -> v2`) com snapshot automatico pre-migracao e pre-mesclagem (`runRelationalSchemaMigrations`, `restoreSnapshotWithSafety`), modelo unico de nota em [`src/lib/ratingModel.js`](../src/lib/ratingModel.js) + [`src/components/StarRatingPicker.jsx`](../src/components/StarRatingPicker.jsx) (`0..100` interno, `0.5..5.0` estrelas, `lifeWork` retrocompativel com nota `11` de Games, 5 criterios por dominio sem tratar ausente como zero e sobrescrita manual livre), auditoria [`docs/SEGURANCA.md`](./SEGURANCA.md), Error Boundary global com exportacao de backup de emergencia + log local de 50 erros ([`src/lib/errorLogger.js`](../src/lib/errorLogger.js)), links `rel="noopener noreferrer"`, headers endurecidos em `public/_headers` e rascunhos locais RLS (`supabase/migrations/20261124_rls_catalog_works.sql`, `supabase/verify_rls.sql`).
 
 ---
 

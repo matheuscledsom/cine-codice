@@ -298,6 +298,17 @@ export function buildCodiceDatabase({
         Number.isFinite(Number(rawItem.gameRating11))
           ? Math.max(0, Math.min(11, Math.round(Number(rawItem.gameRating11) * 10) / 10))
           : null,
+      lifeWork: Boolean(rawItem.lifeWork || Number(rawItem.gameRating11) >= 11),
+      ratingManualOverride: Boolean(rawItem.ratingManualOverride),
+      reviewCriteria5:
+        rawItem.reviewCriteria5 && typeof rawItem.reviewCriteria5 === 'object'
+          ? rawItem.reviewCriteria5
+          : null,
+      franchiseTier: ['mainline', 'spinoff', 'companion'].includes(
+        String(rawItem.franchiseTier || '').trim().toLowerCase()
+      )
+        ? String(rawItem.franchiseTier).trim().toLowerCase()
+        : '',
       masterpieceJustification: String(rawItem.masterpieceJustification || '').trim().slice(0, 400),
       hoursPlayed: Math.max(0, Number(rawItem.hoursPlayed) || 0),
       completionType: String(rawItem.completionType || '').trim(),

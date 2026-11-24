@@ -21,12 +21,20 @@ import {
 import { stripApiKeysFromUrl } from '../api/httpClient.js';
 import {
   CACHE_TTL_MS,
+  PRE_SCHEMA_MIGRATION_BACKUP_KEY,
   PRE_V12_BACKUP_KEY,
   RELATIONAL_DB_NAME,
   RELATIONAL_DB_VERSION,
   RELATIONAL_MIGRATED_KEY,
+  RELATIONAL_SCHEMA_VERSION_KEY,
   RELATIONAL_STORES,
 } from '../api/limits.js';
+import {
+  gameRating11ToInternal,
+  isFiveCriteriaRecord,
+  normalizeCriteria5,
+  resolveLifeWorkFlag,
+} from '../lib/ratingModel.js';
 import {
   getSeasonEpisodeCount,
   isEpisodicWork,
@@ -61,6 +69,15 @@ function makeEpisodeReviewCompositeKey(workId, seasonNumber, episodeNumber) {
   return `${String(workId)}::${Math.max(1, Math.round(Number(seasonNumber) || 1))}::${Math.max(1, Math.round(Number(episodeNumber) || 1))}`;
 }
 
+export const RELATIONAL_SCHEMA_META_KEY = '__omniprism_schema_meta__';
+
+const VALID_FRANCHISE_TIERS = new Set(['mainline', 'spinoff', 'companion']);
+
+function normalizeFranchiseTierValue(raw) {
+  const clean = String(raw || '').trim().toLowerCase();
+  return VALID_FRANCHISE_TIERS.has(clean) ? clean : '';
+}
+
 export function openRelationalDb(idbFactory = null) {
   const factory =
     idbFactory || (typeof indexedDB !== 'undefined' ? indexedDB : null);
@@ -71,48 +88,53 @@ export function openRelationalDb(idbFactory = null) {
   return new Promise((resolve) => {
     try {
       const req = factory.open(RELATIONAL_DB_NAME, RELATIONAL_DB_VERSION);
-      req.onupgradeneeded = () => {
+      req.onupgradeneeded = (event) => {
         try {
           const db = req.result;
-          if (!db.objectStoreNames.contains(RELATIONAL_STORES.works)) {
-            const worksStore = db.createObjectStore(RELATIONAL_STORES.works, {
-              keyPath: 'id',
-            });
-            worksStore.createIndex('by_status', 'status', { unique: false });
-            worksStore.createIndex('by_format', 'workType', { unique: false });
-            worksStore.createIndex('by_franchise', 'franchiseName', { unique: false });
-            worksStore.createIndex('by_updatedAt', 'updatedAt', { unique: false });
-            worksStore.createIndex('by_favoriteRank', 'favoriteRank', { unique: false });
-          }
+          const oldVersion = Number(event?.oldVersion || 0);
+          if (oldVersion < 1) {
+            if (!db.objectStoreNames.contains(RELATIONAL_STORES.works)) {
+              const worksStore = db.createObjectStore(RELATIONAL_STORES.works, {
+                keyPath: 'id',
+              });
+              worksStore.createIndex('by_status', 'status', { unique: false });
+              worksStore.createIndex('by_format', 'workType', { unique: false });
+              worksStore.createIndex('by_franchise', 'franchiseName', { unique: false });
+              worksStore.createIndex('by_updatedAt', 'updatedAt', { unique: false });
+              worksStore.createIndex('by_favoriteRank', 'favoriteRank', { unique: false });
+            }
 
-          if (!db.objectStoreNames.contains(RELATIONAL_STORES.seasonProgress)) {
-            const spStore = db.createObjectStore(RELATIONAL_STORES.seasonProgress, {
-              keyPath: ['workId', 'seasonNumber'],
-            });
-            spStore.createIndex('by_workId', 'workId', { unique: false });
-          }
+            if (!db.objectStoreNames.contains(RELATIONAL_STORES.seasonProgress)) {
+              const spStore = db.createObjectStore(RELATIONAL_STORES.seasonProgress, {
+                keyPath: ['workId', 'seasonNumber'],
+              });
+              spStore.createIndex('by_workId', 'workId', { unique: false });
+            }
 
-          if (!db.objectStoreNames.contains(RELATIONAL_STORES.episodeReviews)) {
-            const erStore = db.createObjectStore(RELATIONAL_STORES.episodeReviews, {
-              keyPath: ['workId', 'seasonNumber', 'episodeNumber'],
-            });
-            erStore.createIndex('by_workId', 'workId', { unique: false });
-          }
+            if (!db.objectStoreNames.contains(RELATIONAL_STORES.episodeReviews)) {
+              const erStore = db.createObjectStore(RELATIONAL_STORES.episodeReviews, {
+                keyPath: ['workId', 'seasonNumber', 'episodeNumber'],
+              });
+              erStore.createIndex('by_workId', 'workId', { unique: false });
+            }
 
-          if (!db.objectStoreNames.contains(RELATIONAL_STORES.sessionsLog)) {
-            const slStore = db.createObjectStore(RELATIONAL_STORES.sessionsLog, {
-              keyPath: 'id',
-            });
-            slStore.createIndex('by_workId', 'workId', { unique: false });
-            slStore.createIndex('by_date', 'date', { unique: false });
-          }
+            if (!db.objectStoreNames.contains(RELATIONAL_STORES.sessionsLog)) {
+              const slStore = db.createObjectStore(RELATIONAL_STORES.sessionsLog, {
+                keyPath: 'id',
+              });
+              slStore.createIndex('by_workId', 'workId', { unique: false });
+              slStore.createIndex('by_date', 'date', { unique: false });
+            }
 
-          if (!db.objectStoreNames.contains(RELATIONAL_STORES.apiCache)) {
-            const acStore = db.createObjectStore(RELATIONAL_STORES.apiCache, {
-              keyPath: 'cacheKey',
-            });
-            acStore.createIndex('by_expiresAt', 'expiresAt', { unique: false });
+            if (!db.objectStoreNames.contains(RELATIONAL_STORES.apiCache)) {
+              const acStore = db.createObjectStore(RELATIONAL_STORES.apiCache, {
+                keyPath: 'cacheKey',
+              });
+              acStore.createIndex('by_expiresAt', 'expiresAt', { unique: false });
+            }
           }
+          // v1 -> v2 é estritamente aditiva nos documentos armazenados em `works`,
+          // preservando todas as 5 stores, índices e dados existentes sem exclusão.
         } catch {
           // Modo privado pode restringir schema IndexedDB
         }
@@ -249,6 +271,21 @@ export function normalizeRelationalWorkRecord(work = {}) {
   const favoriteRank =
     Number.isInteger(rankNum) && rankNum >= 1 && rankNum <= 4 ? rankNum : null;
 
+  const lifeWork = resolveLifeWorkFlag(work);
+  const legacyGameConv =
+    work.rating === null || work.rating === undefined || work.rating === ''
+      ? gameRating11ToInternal(work.gameRating11)
+      : { score100: null };
+  const resolvedRating =
+    work.rating !== null && work.rating !== undefined && work.rating !== '' && Number.isFinite(Number(work.rating))
+      ? Math.max(0, Math.min(100, Math.round(Number(work.rating))))
+      : legacyGameConv.score100;
+  const reviewCriteria5 = work.reviewCriteria5
+    ? normalizeCriteria5(work.reviewCriteria5, domain)
+    : isFiveCriteriaRecord(work.reviewCriteria, domain)
+      ? normalizeCriteria5(work.reviewCriteria, domain)
+      : null;
+
   return {
     ...work,
     id: String(work.id || ''),
@@ -256,6 +293,13 @@ export function normalizeRelationalWorkRecord(work = {}) {
     workType,
     mediaType: workType,
     status: work.status || 'queued',
+    rating: resolvedRating,
+    lifeWork,
+    ratingManualOverride: Boolean(work.ratingManualOverride),
+    reviewCriteria5,
+    franchiseTier: normalizeFranchiseTierValue(
+      work.franchiseTier ?? work.progress_data?.franchiseTier
+    ),
     franchiseName: String(work.franchiseName || '').trim(),
     overview,
     synopsis: overview,
@@ -800,6 +844,7 @@ export async function migrateLegacyToRelationalDb({
   if (worksRes.ok && storage && typeof storage.setItem === 'function') {
     try {
       storage.setItem(RELATIONAL_MIGRATED_KEY, '1.2-relational');
+      storage.setItem(RELATIONAL_SCHEMA_VERSION_KEY, String(RELATIONAL_DB_VERSION));
     } catch {
       // Silencioso
     }
@@ -819,5 +864,223 @@ export async function migrateLegacyToRelationalDb({
       episodeReviews: normalizedReviews.length,
       sessions: safeSessions.length,
     },
+  };
+}
+
+/**
+ * Registro versionado de migrações estritamente aditivas do IndexedDB (v2.4.0).
+ * Cada passo preserva 100% dos campos legados e apenas preenche ou normaliza campos novos.
+ */
+export const RELATIONAL_ADDITIVE_MIGRATIONS = Object.freeze([
+  Object.freeze({
+    version: 1,
+    id: 'v1-relational-base',
+    description: 'Infere domínio padrão (cinema) e normaliza estrutura relacional base sem apagar campos antigos.',
+    migrateWork(work = {}) {
+      const domain = inferDomainFromWork(work);
+      return {
+        ...work,
+        domain,
+        workType: normalizeWorkTypeForDomain(work.workType || work.mediaType, domain),
+      };
+    },
+  }),
+  Object.freeze({
+    version: 2,
+    id: 'v2-rating-model-and-franchise-tier',
+    description:
+      'Adiciona lifeWork (compatível com gameRating11=11), rating interno 0..100, ratingManualOverride e franchiseTier de forma aditiva.',
+    migrateWork(work = {}) {
+      return normalizeRelationalWorkRecord(work);
+    },
+  }),
+]);
+
+export function readStoredRelationalSchemaVersion(
+  storage = typeof localStorage !== 'undefined' ? localStorage : null
+) {
+  if (!storage || typeof storage.getItem !== 'function') return 0;
+  try {
+    const raw = storage.getItem(RELATIONAL_SCHEMA_VERSION_KEY);
+    if (raw !== null && raw !== '') {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+    }
+    if (storage.getItem(RELATIONAL_MIGRATED_KEY) === '1.2-relational') {
+      return 1;
+    }
+  } catch {
+    // Fallback seguro
+  }
+  return 0;
+}
+
+/**
+ * Executa migrações aditivas do schema IndexedDB com snapshot automático prévio:
+ * 1) Identifica versão atual vs RELATIONAL_DB_VERSION.
+ * 2) Grava snapshot automático antes de migrar (IndexedDB via saveSnapshotFn + localStorage) e verifica integridade.
+ * 3) Aplica cada migração aditiva em ordem sem perder nenhum campo existente.
+ * 4) Atualiza o marcador de versão de forma idempotente.
+ */
+export async function runRelationalSchemaMigrations({
+  items = [],
+  sessions = [],
+  episodeEvaluations = [],
+  profile = null,
+  collections = [],
+  idbFactory = null,
+  storage = typeof localStorage !== 'undefined' ? localStorage : null,
+  saveSnapshotFn = null,
+  verifySnapshotFn = null,
+  fromVersionOverride = null,
+  force = false,
+} = {}) {
+  const safeItems = Array.isArray(items) ? items.filter((w) => w && w.id) : [];
+  const safeSessions = Array.isArray(sessions) ? sessions : [];
+  const safeReviews = Array.isArray(episodeEvaluations) ? episodeEvaluations : [];
+  const fromVersion =
+    fromVersionOverride !== null && fromVersionOverride !== undefined
+      ? Math.max(0, Math.floor(Number(fromVersionOverride) || 0))
+      : readStoredRelationalSchemaVersion(storage);
+
+  if (!force && fromVersion >= RELATIONAL_DB_VERSION) {
+    return {
+      ok: true,
+      alreadyUpToDate: true,
+      migrated: false,
+      aborted: false,
+      fromVersion,
+      toVersion: RELATIONAL_DB_VERSION,
+      appliedVersions: [],
+      snapshotSaved: false,
+      items: safeItems,
+    };
+  }
+
+  const pendingSteps = RELATIONAL_ADDITIVE_MIGRATIONS.filter(
+    (step) => force || step.version > fromVersion
+  );
+
+  // 1. Snapshot automático obrigatório antes de migrar
+  let snapshotSaved = false;
+  let snapshotId = null;
+  const preMigrationWorkspace = {
+    schemaVersion: `relational-v${fromVersion}`,
+    targetSchemaVersion: RELATIONAL_DB_VERSION,
+    createdAt: new Date().toISOString(),
+    itemsCount: safeItems.length,
+    items: safeItems,
+    profile,
+    collections,
+    readingSessions: safeSessions,
+    episodeEvaluations: safeReviews,
+  };
+
+  if (typeof saveSnapshotFn === 'function') {
+    try {
+      const snapRes = await saveSnapshotFn(preMigrationWorkspace, {
+        reason: 'pre-schema-migration',
+        label: `Snapshot pré-migração schema v${fromVersion} -> v${RELATIONAL_DB_VERSION}`,
+        force: true,
+      });
+      snapshotId = snapRes?.snapshot?.id || null;
+      if (!snapshotId) {
+        return {
+          ok: false,
+          migrated: false,
+          aborted: true,
+          reason: 'snapshot-failed',
+          fromVersion,
+          toVersion: RELATIONAL_DB_VERSION,
+          items: safeItems,
+        };
+      }
+      if (typeof verifySnapshotFn === 'function') {
+        const verified = await verifySnapshotFn(snapshotId, preMigrationWorkspace);
+        if (!verified?.ok) {
+          return {
+            ok: false,
+            migrated: false,
+            aborted: true,
+            reason: verified?.reason || 'snapshot-verify-failed',
+            fromVersion,
+            toVersion: RELATIONAL_DB_VERSION,
+            snapshotId,
+            items: safeItems,
+          };
+        }
+      }
+      snapshotSaved = true;
+    } catch (err) {
+      return {
+        ok: false,
+        migrated: false,
+        aborted: true,
+        reason: err?.message || 'snapshot-error',
+        fromVersion,
+        toVersion: RELATIONAL_DB_VERSION,
+        items: safeItems,
+      };
+    }
+  }
+
+  if (storage && typeof storage.setItem === 'function') {
+    try {
+      storage.setItem(PRE_SCHEMA_MIGRATION_BACKUP_KEY, JSON.stringify(preMigrationWorkspace));
+      const readBackRaw = storage.getItem(PRE_SCHEMA_MIGRATION_BACKUP_KEY);
+      const readBack = readBackRaw ? JSON.parse(readBackRaw) : null;
+      if (readBack && Number(readBack.itemsCount) === safeItems.length) {
+        snapshotSaved = true;
+      }
+    } catch {
+      // Cota de localStorage cheia: segue se snapshot via saveSnapshotFn já foi confirmado
+    }
+  }
+
+  // 2. Execução das migrações estritamente aditivas
+  let migratedItems = safeItems.map((item) => ({ ...item }));
+  const appliedVersions = [];
+  for (const step of pendingSteps) {
+    migratedItems = migratedItems.map((work) => step.migrateWork(work));
+    appliedVersions.push(step.version);
+  }
+
+  // 3. Persistência no IndexedDB relacional
+  const worksRes = await putRelationalWorks(migratedItems, { idbFactory, replace: true });
+  if (safeSessions.length > 0) {
+    await putRelationalSessions(safeSessions, { idbFactory, replace: false });
+  }
+  await setApiCacheEntry(
+    RELATIONAL_SCHEMA_META_KEY,
+    {
+      schemaVersion: RELATIONAL_DB_VERSION,
+      migratedFrom: fromVersion,
+      appliedVersions,
+      migratedAt: new Date().toISOString(),
+    },
+    { ttlMs: 365 * 24 * 60 * 60 * 1000, idbFactory }
+  );
+
+  if (worksRes.ok && storage && typeof storage.setItem === 'function') {
+    try {
+      storage.setItem(RELATIONAL_SCHEMA_VERSION_KEY, String(RELATIONAL_DB_VERSION));
+      storage.setItem(RELATIONAL_MIGRATED_KEY, '1.2-relational');
+    } catch {
+      // Silencioso
+    }
+  }
+
+  return {
+    ok: worksRes.ok,
+    alreadyUpToDate: false,
+    migrated: true,
+    aborted: false,
+    fromVersion,
+    toVersion: RELATIONAL_DB_VERSION,
+    appliedVersions,
+    snapshotSaved,
+    snapshotId,
+    persisted: Boolean(worksRes.persisted),
+    items: migratedItems,
   };
 }

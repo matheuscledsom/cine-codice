@@ -174,7 +174,7 @@ function ApiKeyRow({
         <a
           href={entry.docsUrl}
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
           className="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
         >
           <span>Obter chave em {entry.docsLabel}</span>

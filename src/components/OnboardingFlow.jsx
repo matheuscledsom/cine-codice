@@ -648,7 +648,7 @@ export function OnboardingFlow({
                 <a
                   href="https://aistudio.google.com/apikey"
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="mt-2 inline-flex items-center gap-1.5 font-semibold text-accent hover:underline"
                 >
                   <KeyRound className="h-3.5 w-3.5" strokeWidth={1.5} />
