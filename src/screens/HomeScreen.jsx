@@ -1,13 +1,9 @@
 import {
   ArrowRight,
-  BookOpen,
   CalendarClock,
   CheckCircle2,
-  Film,
   Flame,
-  Gamepad2,
   GitBranch,
-  Music,
   Palette,
   PauseCircle,
   Play,
@@ -18,6 +14,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BackupReminderBanner } from '../components/BackupReminderBanner';
 import { CoverArt } from '../components/CoverArt';
+import { DomainSwitcherBar } from '../components/DomainSwitcherBar';
 import { HomeRail } from '../components/HomeRail';
 import { InstallAppBanner } from '../components/InstallAppBanner';
 import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
@@ -25,10 +22,15 @@ import { OmniLogo } from '../components/OmniLogo';
 import { RecommendationsSection } from '../components/RecommendationsSection';
 import { ReleaseHistoryModal } from '../components/ReleaseHistoryModal';
 import { VectorIcon } from '../components/VectorIcon';
-import { OMNIPRISM_DOMAINS, domainConfig, getWorkTypeConfig } from '../config/domainConfig';
+import {
+  domainConfig,
+  getDomainMeta,
+  getWorkTypeConfig,
+  getWorkTypeLabel,
+  inferDomainFromWork,
+} from '../config/domainConfig';
 import { CODICE_RELEASE } from '../config/versioning';
 import { useToast } from '../context/ToastContext';
-import { buildDomainPortalPalette } from '../utils/themeTokens';
 import {
   buildCompactStreakChip,
   buildHomeLiveSummary,
@@ -122,15 +124,10 @@ function SessionCircularPill({
   );
 }
 
-const DOMAIN_PORTAL_ICONS = {
-  Film,
-  BookOpen,
-  Gamepad2,
-  Music,
-};
-
 export function HomeScreen({
   items = [],
+  activeDomain = 'cinema',
+  onSelectDomain,
   profile = null,
   streakProps = null,
   readingSessions = [],
@@ -155,8 +152,9 @@ export function HomeScreen({
   onOpenThemeStudio,
 }) {
   const { showToast } = useToast();
-  const { ui, cardFields } = domainConfig;
+  const { ui } = domainConfig;
   const calmMode = Boolean(profile?.calmMode);
+  const activeDomainMeta = useMemo(() => getDomainMeta(activeDomain), [activeDomain]);
 
   const [releaseModalOpen, setReleaseModalOpen] = useState(false);
   const [rouletteOpen, setRouletteOpen] = useState(false);
@@ -167,14 +165,19 @@ export function HomeScreen({
   const backfillAttemptedRef = useRef(new Set());
   const advanceLockRef = useRef(new Map());
 
+  const domainItems = useMemo(
+    () => items.filter((item) => item && inferDomainFromWork(item) === activeDomain),
+    [items, activeDomain]
+  );
+
   const backlogItems = useMemo(
-    () => items.filter((item) => item && item.inBacklog !== false),
-    [items]
+    () => domainItems.filter((item) => item && item.inBacklog !== false),
+    [domainItems]
   );
 
   const hero = useMemo(
-    () => selectHeroPresentation(items, { loading }),
-    [items, loading]
+    () => selectHeroPresentation(domainItems, { loading }),
+    [domainItems, loading]
   );
 
   const heroVisual = useMemo(() => {
@@ -195,7 +198,9 @@ export function HomeScreen({
   // Backfill único em segundo plano de backdropUrl (Regra Extra 2: máx 2, sem OMDb, cooldown 30 dias)
   useEffect(() => {
     const candidate = hero.work;
-    if (!candidate?.id || !onUpdateItem) return undefined;
+    if (!candidate?.id || !onUpdateItem || inferDomainFromWork(candidate) !== 'cinema') {
+      return undefined;
+    }
     if (backfillAttemptedRef.current.has(candidate.id)) return undefined;
     if (!shouldBackfillHeroBackdrop(candidate)) return undefined;
 
@@ -225,19 +230,19 @@ export function HomeScreen({
   }, [hero.work, tmdbKey, onUpdateItem]);
 
   const sessionPills = useMemo(
-    () => buildHomeSessionPills(items, { maxCount: 12 }),
-    [items]
+    () => (activeDomain === 'cinema' ? buildHomeSessionPills(domainItems, { maxCount: 12 }) : { pills: [], hasMore: false, totalCount: 0 }),
+    [activeDomain, domainItems]
   );
 
   const localRails = useMemo(
     () =>
       buildHomeLocalRails({
-        items,
+        items: domainItems,
         readingSessions,
         dailyLogs,
         excludeHeroWorkId: hero.state === 'active' ? hero.work?.id : null,
       }),
-    [items, readingSessions, dailyLogs, hero.state, hero.work?.id]
+    [domainItems, readingSessions, dailyLogs, hero.state, hero.work?.id]
   );
 
   const streakChip = useMemo(
@@ -302,19 +307,15 @@ export function HomeScreen({
     [hero.work]
   );
 
-  const liveSummary = useMemo(() => buildHomeLiveSummary(items), [items]);
+  const liveSummary = useMemo(() => {
+    if (activeDomain === 'cinema') return buildHomeLiveSummary(domainItems);
+    const activeCount = backlogItems.filter((w) => w.status === 'playing' || w.status === 'rewatching').length;
+    const completedCount = backlogItems.filter((w) => w.status === 'completed').length;
+    return `${backlogItems.length} ${backlogItems.length === 1 ? 'obra' : 'obras'} em ${activeDomainMeta.label} · ${activeCount} em andamento · ${completedCount} concluídas`;
+  }, [activeDomain, activeDomainMeta.label, backlogItems, domainItems]);
   const heroNextEpisodeTitle = useMemo(
     () => (hero.work ? resolveHeroNextEpisodeTitle(hero.work) : ''),
     [hero.work]
-  );
-
-  const domainPortals = useMemo(
-    () =>
-      OMNIPRISM_DOMAINS.map((domain) => ({
-        ...domain,
-        palette: buildDomainPortalPalette(domain.tintHex, themeMode),
-      })),
-    [themeMode]
   );
 
   return (
@@ -347,7 +348,7 @@ export function HomeScreen({
                 {domainConfig.appName}
               </h1>
               <span className="text-xs font-medium text-muted">
-                {domainConfig.appSubtitle}
+                {activeDomainMeta.label} · {activeDomainMeta.badge}
               </span>
             </div>
           </div>
@@ -412,73 +413,13 @@ export function HomeScreen({
         )}
       </header>
 
-      {/* Barra compacta: Portal de 4 Domínios OmniPrism com cores semânticas OKLCH */}
-      <section
-        aria-label="Portais de Domínio OmniPrism"
-        className="grid grid-cols-2 gap-2 sm:grid-cols-4"
-      >
-        {domainPortals.map((portal) => {
-          const PortalIcon = DOMAIN_PORTAL_ICONS[portal.icon] || Film;
-          const isActive = portal.status === 'active';
-          return (
-            <button
-              key={portal.id}
-              type="button"
-              aria-current={isActive ? 'true' : undefined}
-              onClick={() => {
-                if (isActive) {
-                  onNavigateList?.();
-                } else {
-                  showToast({
-                    message: `${portal.label}: núcleo pronto no banco multi-domínio OmniPrism (em breve).`,
-                    type: 'info',
-                  });
-                }
-              }}
-              style={{
-                backgroundColor: isActive ? portal.palette.surface : undefined,
-                borderColor: isActive ? portal.palette.accent : portal.palette.border,
-              }}
-              className={`group flex min-h-[56px] flex-col justify-between gap-1.5 rounded-[6px] border px-3 py-2 text-left transition-colors ${
-                isActive ? 'shadow-sm' : 'bg-card hover:bg-elevated/60'
-              }`}
-            >
-              <div className="flex w-full items-center justify-between gap-1.5">
-                <span className="inline-flex min-w-0 items-center gap-1.5">
-                  <span
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px]"
-                    style={{
-                      backgroundColor: portal.palette.elevated,
-                      color: portal.palette.accent,
-                    }}
-                  >
-                    <PortalIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
-                  </span>
-                  <span className="truncate text-xs font-semibold text-ink">
-                    {portal.label}
-                  </span>
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between gap-1">
-                <span
-                  className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
-                  style={{
-                    backgroundColor: isActive
-                      ? portal.palette.accent
-                      : portal.palette.elevated,
-                    color: isActive
-                      ? portal.palette.accentContrast
-                      : portal.palette.accent,
-                  }}
-                >
-                  {portal.badge}
-                </span>
-              </div>
-            </button>
-          );
-        })}
-      </section>
+      {/* Barra interativa: Portal de 4 Domínios OmniPrism com paleta semântica OKLCH */}
+      <DomainSwitcherBar
+        activeDomain={activeDomain}
+        onSelectDomain={onSelectDomain}
+        items={items}
+        themeMode={themeMode}
+      />
 
       <InstallAppBanner variant="home" />
 
@@ -506,10 +447,14 @@ export function HomeScreen({
             <OmniLogo size={28} className="text-ink" />
           </div>
           <h2 className="mt-4 text-base font-semibold tracking-tight text-ink">
-            {ui.home.emptyBacklogTitle}
+            {activeDomain === 'cinema'
+              ? ui.home.emptyBacklogTitle
+              : `Seu catálogo de ${activeDomainMeta.label} está vazio`}
           </h2>
           <p className="mx-auto mt-1.5 max-w-sm text-xs leading-relaxed text-muted">
-            {ui.home.emptyBacklogDescription}
+            {activeDomain === 'cinema'
+              ? ui.home.emptyBacklogDescription
+              : activeDomainMeta.description}
           </p>
           <button
             type="button"
@@ -587,8 +532,16 @@ export function HomeScreen({
                   <span>
                     {hero.state === 'queued'
                       ? 'Sugestão da Fila Quero Ver'
-                      : getWorkTypeConfig(hero.work.workType).shortLabel}
-                    {hero.work.audioFormat ? ` · ${hero.work.audioFormat}` : ''}
+                      : getWorkTypeLabel(hero.work, activeDomain)}
+                    {activeDomain === 'cinema' && hero.work.audioFormat
+                      ? ` · ${hero.work.audioFormat}`
+                      : activeDomain === 'games' && hero.work.platform
+                        ? ` · ${hero.work.platform}`
+                        : activeDomain === 'reading' && hero.work.bookFormat
+                          ? ` · ${hero.work.bookFormat}`
+                          : activeDomain === 'music' && hero.work.subgenre
+                            ? ` · ${hero.work.subgenre}`
+                            : ''}
                   </span>
                 </span>
                 {hero.hasKnownTotal && typeof hero.progressPct === 'number' && (
@@ -647,7 +600,7 @@ export function HomeScreen({
                     <Play className="h-4 w-4" strokeWidth={1.5} />
                     <span>Começar</span>
                   </button>
-                ) : hero.state === 'active' && heroAdvancePlan && onQuickAdvanceWork ? (
+                ) : hero.state === 'active' && activeDomain === 'cinema' && heroAdvancePlan && onQuickAdvanceWork ? (
                   <button
                     type="button"
                     disabled={advancingWorkId === hero.work.id}
@@ -948,9 +901,9 @@ export function HomeScreen({
       )}
 
       {/* Trilho 3: Sugestões do DNA / Quero Ver + botão "O que assistir hoje?" (Roleta) + Curador opcional */}
-      {backlogItems.length > 0 && (
+      {activeDomain === 'cinema' && backlogItems.length > 0 && (
         <RecommendationsSection
-          items={items}
+          items={domainItems}
           profile={profile}
           tmdbKey={tmdbKey}
           geminiKey={geminiKey}

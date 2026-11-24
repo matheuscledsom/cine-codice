@@ -14,6 +14,10 @@
  */
 
 import {
+  OMNIPRISM_DOMAINS,
+  inferDomainFromWork,
+} from '../config/domainConfig.js';
+import {
   getWatchedEpisodesCount,
   isEpisodicWork,
 } from '../utils/backlogHelpers.js';
@@ -345,4 +349,71 @@ export function computeRecentActivityWorks(items = [], limit = 8) {
         hasScene,
       };
     });
+}
+
+/**
+ * Resumo estatístico consolidado dos 4 mundos OmniPrism:
+ * Cinema & Séries, Leitura & Acadêmico, Games e Música.
+ */
+export function computeDomainBreakdownMetrics(items = []) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false
+  );
+
+  return OMNIPRISM_DOMAINS.map((dom) => {
+    const domainWorks = backlog.filter((w) => inferDomainFromWork(w) === dom.id);
+    const completedWorks = domainWorks.filter((w) => w.status === 'completed').length;
+    const rated = domainWorks.filter((w) => isConfirmedUserRating(w));
+    const ratingSum = rated.reduce((sum, w) => sum + Number(w.rating || 0), 0);
+    const averageRating = rated.length > 0 ? Math.round(ratingSum / rated.length) : null;
+    const favoritesCount = domainWorks.filter(
+      (w) =>
+        Boolean(w.isFavorite) ||
+        (Number.isInteger(Number(w.favoriteRank)) &&
+          Number(w.favoriteRank) >= 1 &&
+          Number(w.favoriteRank) <= 4)
+    ).length;
+
+    let progressSummary = '';
+    if (dom.id === 'reading') {
+      const pages = domainWorks.reduce(
+        (sum, w) => sum + Math.max(0, Number(w.pagesRead) || 0),
+        0
+      );
+      progressSummary = `${pages} págs lidas`;
+    } else if (dom.id === 'games') {
+      const hours = domainWorks.reduce(
+        (sum, w) => sum + Math.max(0, Number(w.hoursPlayed) || 0),
+        0
+      );
+      const rounded = Number.isInteger(hours) ? hours : Number(hours.toFixed(1));
+      progressSummary = `${rounded}h jogadas`;
+    } else if (dom.id === 'music') {
+      const listens = domainWorks.reduce(
+        (sum, w) => sum + Math.max(0, Number(w.listenCount) || 0),
+        0
+      );
+      progressSummary = `${listens} audições`;
+    } else {
+      const eps = domainWorks.reduce(
+        (sum, w) => sum + (isEpisodicWork(w) ? getWatchedEpisodesCount(w) : 0),
+        0
+      );
+      progressSummary = `${eps} eps`;
+    }
+
+    return {
+      domainId: dom.id,
+      label: dom.label,
+      shortLabel: dom.shortLabel,
+      tintHex: dom.tintHex,
+      totalWorks: domainWorks.length,
+      completedWorks,
+      ratedWorksCount: rated.length,
+      averageRating,
+      averageRatingLabel: averageRating !== null ? String(averageRating) : '—',
+      favoritesCount,
+      progressSummary,
+    };
+  });
 }

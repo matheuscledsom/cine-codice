@@ -20,7 +20,6 @@ import {
   X,
 } from 'lucide-react';
 import {
-  memo,
   startTransition,
   useDeferredValue,
   useEffect,
@@ -30,28 +29,33 @@ import {
 } from 'react';
 import { CollectionCreatorBar } from '../components/CollectionCreatorBar';
 import { CoverArt } from '../components/CoverArt';
+import { DomainSwitcherBar } from '../components/DomainSwitcherBar';
 import { OfflineBookPickerModal } from '../components/OfflineBookPickerModal';
 import { ResponsiveSheet } from '../components/ResponsiveSheet';
 import { StatusBadge } from '../components/StatusBadge';
-import { VectorIcon } from '../components/VectorIcon';
+import { WorkCard } from '../components/WorkCard';
 import {
+  OMNIPRISM_DOMAINS,
   domainConfig,
+  getDomainMeta,
+  getMediaTypesForDomain,
   getStatusConfig,
   getStatusList,
-  getWorkTypeConfig,
+  getWorkTypeLabel,
+  inferDomainFromWork,
+  normalizeDomainId,
+  normalizeWorkTypeForDomain,
 } from '../config/domainConfig';
 import { isFlagEnabled } from '../config/flags';
 import { useToast } from '../context/ToastContext';
 import { SpineRenderer } from '../graphics/SpineRenderer';
 import { searchCinemaMedia } from '../services/cinemaApi';
 import {
-  calculateWorkProgress,
   formatCatalogCardFormatBadge,
   formatFlexibleProgressMetric,
   getDisplayTitles,
   getHypeMeta,
   getWatchedMinutes,
-  isEpisodicWork,
 } from '../utils/backlogHelpers';
 import {
   buildCollectionMosaicCoverDataUri,
@@ -97,124 +101,13 @@ function loadSavedViewMode() {
   }
 }
 
-const MemoGridCard = memo(function MemoGridCard({
-  item,
-  titleMode,
-  priority = false,
-  selectionMode = false,
-  selected = false,
-  onSelectItem,
-  onLongPressItem,
-}) {
-  const status = getStatusConfig(item.status);
-  const workMeta = getWorkTypeConfig(item.workType);
-  const itemPct = calculateWorkProgress(item);
-  const formatBadge = formatCatalogCardFormatBadge(item);
-  const pressTimerRef = useRef(null);
-  const longPressedRef = useRef(false);
-
-  const titles = getDisplayTitles(item, titleMode);
-  const creatorLabel = item.director || item.studio || item.author || workMeta.shortLabel;
-
-  const clearPress = () => {
-    if (pressTimerRef.current) {
-      clearTimeout(pressTimerRef.current);
-      pressTimerRef.current = null;
-    }
-  };
-
-  return (
-    <div className="group flex flex-col text-left" style={{ contain: 'layout paint' }}>
-      <button
-        type="button"
-        onClick={() => {
-          if (longPressedRef.current) {
-            longPressedRef.current = false;
-            return;
-          }
-          onSelectItem(item);
-        }}
-        onPointerDown={() => {
-          if (!onLongPressItem) return;
-          longPressedRef.current = false;
-          clearPress();
-          pressTimerRef.current = setTimeout(() => {
-            longPressedRef.current = true;
-            onLongPressItem(item);
-          }, 520);
-        }}
-        onPointerUp={clearPress}
-        onPointerCancel={clearPress}
-        onPointerLeave={clearPress}
-        aria-pressed={selectionMode ? selected : undefined}
-        className="text-left focus:outline-none"
-      >
-        <div className="relative overflow-hidden rounded-[4px]">
-          <CoverArt
-            item={item}
-            compact
-            priority={priority}
-            className={`aspect-[2/3] w-full rounded-[4px] transition-transform duration-150 group-hover:scale-[1.02] group-hover:border-accent/60 ${
-              selected ? 'ring-2 ring-accent' : ''
-            }`}
-          />
-
-          {selectionMode && (
-            <span
-              className={`absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-[4px] border ${
-                selected
-                  ? 'border-accent bg-accent text-accent-ink'
-                  : 'border-white/70 bg-black/55 text-white'
-              }`}
-            >
-              {selected && <Check className="h-3.5 w-3.5" strokeWidth={2} />}
-            </span>
-          )}
-
-          {!selectionMode && (
-            <span
-              data-testid="catalog-format-badge"
-              className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded-[3px] border border-white/15 bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-white backdrop-blur-xs"
-            >
-              <span>{formatBadge.label}</span>
-            </span>
-          )}
-
-          {typeof item.rating === 'number' && (
-            <span className="absolute right-1.5 top-1.5 rounded-[3px] border border-line bg-app/90 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink">
-              {item.rating}
-            </span>
-          )}
-
-          {/* Fita de progresso na base do pôster */}
-          {(itemPct > 0 || item.status === 'completed') && (
-            <div className="absolute inset-x-0 bottom-0 h-[3px] bg-black/50">
-              <div
-                className="h-full transition-all duration-200"
-                style={{
-                  width: `${item.status === 'completed' ? 100 : Math.min(100, itemPct)}%`,
-                  backgroundColor: status?.color || 'var(--accent-color)',
-                }}
-              />
-            </div>
-          )}
-        </div>
-
-        <div className="mt-1.5 space-y-0.5 px-0.5">
-          <p className="line-clamp-2 text-[11px] font-semibold leading-snug text-ink transition-colors group-hover:text-accent">
-            {titles.primary}
-          </p>
-          <p className="truncate text-[10px] text-muted">{creatorLabel}</p>
-        </div>
-      </button>
-    </div>
-  );
-});
-
 export function ListScreen({
   items = [],
   profile = null,
   collections = [],
+  activeDomain = 'cinema',
+  onSelectDomain,
+  themeMode = 'dark',
   onCreateCollection,
   onDeleteCollection,
   onMoveCollection,
@@ -234,6 +127,11 @@ export function ListScreen({
   onAddItem,
 }) {
   const { showToast } = useToast();
+  const [selectedDomain, setSelectedDomain] = useState(() => normalizeDomainId(activeDomain));
+  useEffect(() => {
+    setSelectedDomain(normalizeDomainId(activeDomain));
+    setSelectedWorkType('all');
+  }, [activeDomain]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [batchColTarget, setBatchColTarget] = useState('');
@@ -290,6 +188,11 @@ export function ListScreen({
     [items]
   );
 
+  const domainScopedItems = useMemo(() => {
+    if (selectedDomain === 'all') return backlogItems;
+    return backlogItems.filter((item) => inferDomainFromWork(item) === selectedDomain);
+  }, [backlogItems, selectedDomain]);
+
   useEffect(() => {
     if (
       selectedCollectionId !== 'all' &&
@@ -325,7 +228,7 @@ export function ListScreen({
 
   const availableGenres = useMemo(() => {
     const map = new Map();
-    backlogItems.forEach((item) => {
+    domainScopedItems.forEach((item) => {
       if (Array.isArray(item.genres)) {
         item.genres.forEach((g) => {
           const clean = String(g || '').trim();
@@ -337,36 +240,45 @@ export function ListScreen({
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'pt-BR'))
       .slice(0, 16)
       .map(([name, count]) => ({ name, count }));
-  }, [backlogItems]);
+  }, [domainScopedItems]);
 
   const availableFormats = useMemo(() => {
     const map = new Map();
-    backlogItems.forEach((item) => {
+    domainScopedItems.forEach((item) => {
       const fmt = String(item.format || '').trim();
       if (fmt) map.set(fmt, (map.get(fmt) || 0) + 1);
     });
     return Array.from(map.entries())
       .sort((a, b) => b[1] - a[1])
       .map(([name, count]) => ({ name, count }));
-  }, [backlogItems]);
+  }, [domainScopedItems]);
 
   const availableAudioTags = useMemo(() => {
     const map = new Map();
-    backlogItems.forEach((item) => {
+    domainScopedItems.forEach((item) => {
       const tag = String(item.audioFormat || '').trim();
       if (tag) map.set(tag, (map.get(tag) || 0) + 1);
     });
     return Array.from(map.entries())
       .sort((a, b) => b[1] - a[1])
       .map(([name, count]) => ({ name, count }));
-  }, [backlogItems]);
+  }, [domainScopedItems]);
 
   const syncFilteredItems = useMemo(() => {
     const q = deferredQuery.trim().toLowerCase();
-    const filtered = backlogItems.filter((item) => {
+    const filtered = domainScopedItems.filter((item) => {
       if (selectedStatus !== 'all' && item.status !== selectedStatus) return false;
-      if (selectedWorkType !== 'all' && (item.workType || 'movie') !== selectedWorkType) {
-        return false;
+      if (selectedWorkType !== 'all') {
+        if (selectedWorkType.startsWith('domain:')) {
+          const domFilter = selectedWorkType.slice('domain:'.length);
+          if (inferDomainFromWork(item) !== domFilter) return false;
+        } else if (selectedDomain === 'all') {
+          if ((item.workType || 'movie') !== selectedWorkType) return false;
+        } else if (
+          normalizeWorkTypeForDomain(item.workType, selectedDomain) !== selectedWorkType
+        ) {
+          return false;
+        }
       }
       if (selectedCollectionId !== 'all') {
         const cols = Array.isArray(item.collectionIds) ? item.collectionIds.map(String) : [];
@@ -389,7 +301,19 @@ export function ListScreen({
 
       const inTitle = String(item.title || '').toLowerCase().includes(q);
       const inOrig = String(item.originalTitle || '').toLowerCase().includes(q);
-      const inCreator = [item.director, item.studio, item.author]
+      const inCreator = [item.creator, item.director, item.studio, item.author]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q);
+      const inDomainMeta = [
+        item.platform,
+        item.storeOrLauncher,
+        item.buildOrCharacter,
+        item.subgenre,
+        item.favoriteTrack,
+        item.isbnOrDoi,
+      ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -404,7 +328,16 @@ export function ListScreen({
       const inTags = Array.isArray(item.tags)
         ? item.tags.some((t) => String(t).toLowerCase().includes(q))
         : false;
-      return inTitle || inOrig || inCreator || inFranchise || inImdb || inGenres || inTags;
+      return (
+        inTitle ||
+        inOrig ||
+        inCreator ||
+        inDomainMeta ||
+        inFranchise ||
+        inImdb ||
+        inGenres ||
+        inTags
+      );
     });
 
     return [...filtered].sort((a, b) => {
@@ -420,11 +353,17 @@ export function ListScreen({
         const dA =
           Number(a.durationMinutes) ||
           getWatchedMinutes(a) ||
-          (Number(a.totalEpisodes) || 0) * 24;
+          (Number(a.totalEpisodes) || 0) * 24 ||
+          (Number(a.hoursPlayed) || 0) * 60 ||
+          Number(a.totalPages) ||
+          0;
         const dB =
           Number(b.durationMinutes) ||
           getWatchedMinutes(b) ||
-          (Number(b.totalEpisodes) || 0) * 24;
+          (Number(b.totalEpisodes) || 0) * 24 ||
+          (Number(b.hoursPlayed) || 0) * 60 ||
+          Number(b.totalPages) ||
+          0;
         return dB - dA;
       }
       if (sortBy === 'title') {
@@ -435,7 +374,8 @@ export function ListScreen({
       return timeB - timeA;
     });
   }, [
-    backlogItems,
+    domainScopedItems,
+    selectedDomain,
     selectedStatus,
     selectedWorkType,
     selectedCollectionId,
@@ -448,12 +388,16 @@ export function ListScreen({
   ]);
 
   useEffect(() => {
-    if (backlogItems.length <= WORKER_ITEM_THRESHOLD) {
+    if (
+      domainScopedItems.length <= WORKER_ITEM_THRESHOLD ||
+      selectedWorkType.startsWith('domain:') ||
+      selectedDomain !== 'cinema'
+    ) {
       setWorkerResult(null);
       return undefined;
     }
     let active = true;
-    queryLibraryIndex(backlogItems, {
+    queryLibraryIndex(domainScopedItems, {
       selectedStatus,
       selectedWorkType,
       selectedCollectionId,
@@ -475,7 +419,8 @@ export function ListScreen({
       active = false;
     };
   }, [
-    backlogItems,
+    domainScopedItems,
+    selectedDomain,
     selectedStatus,
     selectedWorkType,
     selectedCollectionId,
@@ -489,13 +434,14 @@ export function ListScreen({
   ]);
 
   const filteredAndSortedItems =
-    backlogItems.length > WORKER_ITEM_THRESHOLD && Array.isArray(workerResult)
+    domainScopedItems.length > WORKER_ITEM_THRESHOLD && Array.isArray(workerResult)
       ? workerResult
       : syncFilteredItems;
 
   useEffect(() => {
     setVisibleLimit(LIST_WINDOW_BATCH);
   }, [
+    selectedDomain,
     selectedStatus,
     selectedWorkType,
     selectedCollectionId,
@@ -672,32 +618,48 @@ export function ListScreen({
   ]);
 
   const filterTabs = [
-    { id: 'all', label: list.allTabLabel, count: backlogItems.length },
+    { id: 'all', label: list.allTabLabel, count: domainScopedItems.length },
     ...statuses.map((status) => ({
       id: status.id,
       label: status.label,
-      count: backlogItems.filter((item) => item.status === status.id).length,
+      count: domainScopedItems.filter((item) => item.status === status.id).length,
     })),
   ];
 
-  const formatQuickTabs = [
-    { id: 'all', label: 'Todos', count: backlogItems.length },
-    {
-      id: 'movie',
-      label: 'Filmes',
-      count: backlogItems.filter((item) => (item.workType || 'movie') === 'movie').length,
-    },
-    {
-      id: 'series',
-      label: 'Séries',
-      count: backlogItems.filter((item) => item.workType === 'series').length,
-    },
-    {
-      id: 'anime',
-      label: 'Animes',
-      count: backlogItems.filter((item) => item.workType === 'anime').length,
-    },
-  ];
+  const formatQuickTabs = useMemo(() => {
+    if (selectedDomain === 'all') {
+      return [
+        { id: 'all', label: 'Todos', count: domainScopedItems.length },
+        ...OMNIPRISM_DOMAINS.map((dom) => ({
+          id: `domain:${dom.id}`,
+          label: dom.shortLabel,
+          count: domainScopedItems.filter((it) => inferDomainFromWork(it) === dom.id).length,
+        })),
+      ];
+    }
+    const domainTypes = getMediaTypesForDomain(selectedDomain);
+    return [
+      { id: 'all', label: 'Todos', count: domainScopedItems.length },
+      ...domainTypes.map((wt) => ({
+        id: wt.id,
+        label: wt.pluralLabel || wt.label,
+        count: domainScopedItems.filter(
+          (it) => normalizeWorkTypeForDomain(it.workType, selectedDomain) === wt.id
+        ).length,
+      })),
+    ];
+  }, [domainScopedItems, selectedDomain]);
+
+  const handleDomainSelect = (nextDomain) => {
+    setSelectedWorkType('all');
+    if (nextDomain === 'all') {
+      setSelectedDomain('all');
+      return;
+    }
+    const clean = normalizeDomainId(nextDomain);
+    setSelectedDomain(clean);
+    onSelectDomain?.(clean);
+  };
 
   const clearAllFilters = () => {
     setSelectedStatus('all');
@@ -852,6 +814,15 @@ export function ListScreen({
           </button>
         </div>
       </header>
+
+      <DomainSwitcherBar
+        compact
+        includeAll
+        activeDomain={selectedDomain}
+        onSelectDomain={handleDomainSelect}
+        items={backlogItems}
+        themeMode={themeMode}
+      />
 
       {/* Elemento 2: Busca + Botão de Filtros + Seletor Grade/Lista/Estante */}
       <div className="flex items-center gap-2">
@@ -1205,11 +1176,17 @@ export function ListScreen({
       )}
 
       {/* Conteúdo Principal */}
-      {backlogItems.length === 0 ? (
+      {domainScopedItems.length === 0 ? (
         <div className="rounded-[6px] border border-line bg-card px-6 py-10 text-center">
-          <p className="text-sm font-semibold text-ink">{list.emptyBacklogTitle}</p>
+          <p className="text-sm font-semibold text-ink">
+            {selectedDomain === 'all'
+              ? list.emptyBacklogTitle
+              : `Nenhuma obra em ${getDomainMeta(selectedDomain).label}`}
+          </p>
           <p className="mt-1 text-xs text-muted">
-            Comece buscando filmes, séries ou animes no botão Catalogar.
+            {selectedDomain === 'all'
+              ? 'Comece catalogando obras em qualquer um dos 4 mundos no botão Catalogar.'
+              : `Comece catalogando obras de ${getDomainMeta(selectedDomain).label} no botão Catalogar.`}
           </p>
           {onNavigateAdd && (
             <button
@@ -1261,7 +1238,9 @@ export function ListScreen({
         <div className="divide-y divide-line rounded-[6px] border border-line bg-card">
           {visibleItems.map((item) => {
             const titles = getDisplayTitles(item, titleMode);
-            const workMeta = getWorkTypeConfig(item.workType);
+            const itemDomain = inferDomainFromWork(item);
+            const formatBadge = formatCatalogCardFormatBadge(item);
+            const workLabel = getWorkTypeLabel(item, itemDomain);
             const isSelected = selectedIds.includes(String(item.id));
             return (
               <button
@@ -1306,9 +1285,16 @@ export function ListScreen({
 
                   <p className="truncate text-[11px] text-muted">
                     {[
-                      item.director || item.studio || workMeta.shortLabel,
+                      formatBadge?.label || workLabel,
+                      item.creator || item.director || item.studio || item.author,
                       item.releaseYear,
-                      item.audioFormat,
+                      itemDomain === 'games'
+                        ? item.completionType || item.storeOrLauncher
+                        : itemDomain === 'reading'
+                          ? item.bookFormat
+                          : itemDomain === 'music'
+                            ? item.subgenre || item.releaseFormat
+                            : item.audioFormat,
                     ]
                       .filter(Boolean)
                       .join(' · ')}
@@ -1334,7 +1320,7 @@ export function ListScreen({
       ) : (
         <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4 lg:grid-cols-5">
           {visibleItems.map((item, idx) => (
-            <MemoGridCard
+            <WorkCard
               key={item.id}
               item={item}
               titleMode={titleMode}
@@ -1368,12 +1354,11 @@ export function ListScreen({
       >
         <div className="space-y-4 p-1">
           <div>
-            <p className="mb-1.5 text-xs font-medium text-muted">Formato Audiovisual</p>
+            <p className="mb-1.5 text-xs font-medium text-muted">
+              Tipo {selectedDomain !== 'all' ? `· ${getDomainMeta(selectedDomain).shortLabel}` : '· Todos'}
+            </p>
             <div className="flex flex-wrap gap-1.5">
-              {[
-                { id: 'all', label: list.allTypesLabel },
-                ...domainConfig.workTypes.map((w) => ({ id: w.id, label: w.shortLabel })),
-              ].map((opt) => (
+              {formatQuickTabs.map((opt) => (
                 <button
                   key={opt.id}
                   type="button"

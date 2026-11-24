@@ -1,10 +1,13 @@
 import {
   Award,
   BarChart2,
+  BookOpen,
   Camera,
   Clapperboard,
   Film,
+  Gamepad2,
   Layers,
+  Music,
   PenLine,
   Plus,
   Quote,
@@ -35,12 +38,14 @@ import { useToast } from '../context/ToastContext';
 import { useAiConfig } from '../hooks/useAiConfig';
 import {
   buildProfilePersonalFeed,
+  computeDomainBreakdownMetrics,
   computeProfileMetrics,
   computeRatingHistogram,
   computeRecentActivityWorks,
   resolveProfileHeroBackdrop,
   resolveTop4Favorites,
 } from '../lib/profileMetrics';
+import { buildDomainPortalPalette } from '../utils/themeTokens';
 import {
   evaluateReaderTitles,
   pinTitleBadge,
@@ -75,6 +80,9 @@ export function ProfileScreen({
   streakCount = 0,
   storedReaderBooksCount = 0,
   themeProps,
+  activeDomain = 'cinema',
+  onSelectDomain,
+  themeMode = 'dark',
   geminiKey = '',
   hasGeminiKey = false,
   aiConfig = null,
@@ -199,6 +207,12 @@ export function ProfileScreen({
   const ratingHistogram = useMemo(() => computeRatingHistogram(items), [items]);
   const recentActivityWorks = useMemo(
     () => computeRecentActivityWorks(items, 8),
+    [items]
+  );
+  const resolvedThemeMode =
+    themeProps?.mode || themeProps?.palette?.mode || themeMode || 'dark';
+  const domainBreakdown = useMemo(
+    () => computeDomainBreakdownMetrics(items),
     [items]
   );
 
@@ -666,6 +680,97 @@ export function ProfileScreen({
               </span>
             </div>
           </div>
+
+          {/* RESUMO CONSOLIDADO DOS 4 MUNDOS OMNIPRISM */}
+          <section
+            aria-label="Resumo dos 4 mundos OmniPrism"
+            className="rounded-2xl border border-line bg-card p-4 space-y-3"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="h-4 w-4 text-accent" strokeWidth={1.5} />
+                <h2 className="text-xs font-bold uppercase tracking-wider text-ink">
+                  Resumo dos 4 Mundos · OmniPrism
+                </h2>
+              </div>
+              <span className="text-[11px] tabular-nums text-subtle">
+                {profileMetrics.totalWorks} obras totais
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+              {domainBreakdown.map((dom) => {
+                const portalPalette = buildDomainPortalPalette(dom.tintHex, resolvedThemeMode);
+                const isActive = activeDomain === dom.domainId;
+                const DomIcon =
+                  dom.domainId === 'reading'
+                    ? BookOpen
+                    : dom.domainId === 'games'
+                      ? Gamepad2
+                      : dom.domainId === 'music'
+                        ? Music
+                        : Film;
+                return (
+                  <button
+                    key={dom.domainId}
+                    type="button"
+                    onClick={() => onSelectDomain?.(dom.domainId)}
+                    className={`flex min-h-[44px] flex-col justify-between gap-2 rounded-xl border p-3 text-left transition-colors ${
+                      isActive ? 'bg-app' : 'bg-app/70 hover:bg-app'
+                    }`}
+                    style={{
+                      borderColor: isActive ? portalPalette.accent : portalPalette.border,
+                    }}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink">
+                        <DomIcon
+                          className="h-3.5 w-3.5 shrink-0"
+                          strokeWidth={1.75}
+                          style={{ color: portalPalette.accent }}
+                        />
+                        <span className="truncate">{dom.shortLabel}</span>
+                      </span>
+                      <span
+                        className="rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums"
+                        style={{
+                          backgroundColor: portalPalette.elevated,
+                          color: portalPalette.accent,
+                        }}
+                      >
+                        {dom.totalWorks} obras
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1 border-t border-line pt-2 text-[10px]">
+                      <div>
+                        <span className="block text-subtle">Concluídas</span>
+                        <span className="font-semibold tabular-nums text-ink">
+                          {dom.completedWorks}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="block text-subtle">Média</span>
+                        <span className="font-semibold tabular-nums text-ink">
+                          {dom.averageRatingLabel}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="block text-subtle">Favoritos</span>
+                        <span className="font-semibold tabular-nums text-ink">
+                          {dom.favoritesCount}
+                        </span>
+                      </div>
+                    </div>
+
+                    <p className="text-[10px] tabular-nums text-muted">
+                      {dom.progressSummary}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
 
           {/* ATIVIDADE RECENTE (Letterboxd / Serializd — Pôsteres 2:3 com Nota & Selo) */}
           {recentActivityWorks.length > 0 && (

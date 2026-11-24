@@ -1,4 +1,8 @@
-import { domainConfig } from '../config/domainConfig.js';
+import {
+  domainConfig,
+  getWorkTypeLabel,
+  inferDomainFromWork,
+} from '../config/domainConfig.js';
 import {
   computeWeightedDnaRating,
   createDefaultCriteriaScores,
@@ -122,6 +126,8 @@ export function parseTimeInputToSeconds(rawValue) {
 
 export function isEpisodicWork(item) {
   if (!item) return false;
+  const domain = inferDomainFromWork(item);
+  if (domain !== 'cinema') return false;
   if (item.workType === 'series' || item.workType === 'anime') {
     if (String(item.animeFormat || '').toLowerCase() === 'filme') {
       return Number(item.totalEpisodes) > 1;
@@ -222,6 +228,39 @@ export function calculateWorkProgress(item) {
   if (!item) return 0;
   if (item.status === 'completed') return 100;
 
+  const domain = inferDomainFromWork(item);
+
+  if (domain === 'reading') {
+    const pagesRead = Math.max(0, Number(item.pagesRead) || 0);
+    const totalPages = Number(item.totalPages) || 0;
+    if (totalPages > 0) {
+      return Math.max(0, Math.min(100, Math.round((pagesRead / totalPages) * 100)));
+    }
+    if (Number(item.progressPercent) > 0) {
+      return roundProgressPct(item.progressPercent);
+    }
+    return 0;
+  }
+
+  if (domain === 'games') {
+    if (
+      item.progressPercent !== null &&
+      item.progressPercent !== undefined &&
+      item.progressPercent !== '' &&
+      !Number.isNaN(Number(item.progressPercent))
+    ) {
+      return roundProgressPct(item.progressPercent);
+    }
+    return 0;
+  }
+
+  if (domain === 'music') {
+    if (Number(item.listenCount) > 0 && item.status !== 'queued') {
+      return 100;
+    }
+    return 0;
+  }
+
   if (isEpisodicWork(item)) {
     return calculateEpisodicProgress(item);
   }
@@ -305,11 +344,87 @@ export function getSeasonEpisodeCount(item = {}, seasonNumber = 1) {
 }
 
 export function formatCatalogCardFormatBadge(item = {}) {
+  const domain = inferDomainFromWork(item);
+
+  if (domain === 'reading') {
+    const shortType = getWorkTypeLabel(item, 'reading');
+    const pagesRead = Math.max(0, Number(item?.pagesRead) || 0);
+    const totalPages = Number(item?.totalPages) || 0;
+    const chaptersRead = Math.max(0, Number(item?.chaptersRead) || 0);
+    if (totalPages > 0) {
+      return {
+        domain,
+        workType: item?.workType || 'book',
+        label: `Pág. ${pagesRead}/${totalPages}`,
+        shortType,
+        detail: `${pagesRead}/${totalPages}`,
+      };
+    }
+    if (chaptersRead > 0) {
+      return {
+        domain,
+        workType: item?.workType || 'manga',
+        label: `${shortType} · Cap. ${chaptersRead}`,
+        shortType,
+        detail: `Cap. ${chaptersRead}`,
+      };
+    }
+    return {
+      domain,
+      workType: item?.workType || 'book',
+      label: item?.bookFormat ? `${shortType} · ${item.bookFormat}` : shortType,
+      shortType,
+      detail: item?.bookFormat || '',
+    };
+  }
+
+  if (domain === 'games') {
+    const shortType = getWorkTypeLabel(item, 'games');
+    const platform = String(item?.platform || '').trim() || 'PC';
+    const hours = Math.max(0, Number(item?.hoursPlayed) || 0);
+    const compRaw = String(item?.completionType || '').trim();
+    const compShort = compRaw.includes('100%')
+      ? '100%'
+      : compRaw.includes('História')
+        ? 'História'
+        : compRaw.includes('Multiplayer')
+          ? 'Ranked'
+          : compRaw || '';
+    const parts = [platform];
+    if (hours > 0) parts.push(`${hours}h`);
+    if (compShort) parts.push(compShort);
+    return {
+      domain,
+      workType: item?.workType || 'game',
+      label: parts.join(' · '),
+      shortType,
+      detail: compShort,
+    };
+  }
+
+  if (domain === 'music') {
+    const shortType = getWorkTypeLabel(item, 'music');
+    const favTrack = String(item?.favoriteTrack || '').trim();
+    const subgenre = String(item?.subgenre || '').trim();
+    const listens = Math.max(0, Number(item?.listenCount) || 0);
+    const detail = favTrack
+      ? 'Faixa fav.'
+      : subgenre || (listens > 0 ? `${listens}x` : '');
+    return {
+      domain,
+      workType: item?.workType || 'album',
+      label: detail ? `${shortType} · ${detail}` : shortType,
+      shortType,
+      detail,
+    };
+  }
+
   const workType = item?.workType || 'movie';
   if (workType === 'anime') {
     const audioRaw = String(item?.audioFormat || '').toLowerCase();
     const audioCode = audioRaw.includes('dub') ? 'DUB' : 'LEG';
     return {
+      domain: 'cinema',
       workType: 'anime',
       label: `Anime · ${audioCode}`,
       shortType: 'Anime',
@@ -325,6 +440,7 @@ export function formatCatalogCardFormatBadge(item = {}) {
           ? Number(item.totalEpisodes)
           : 1;
     return {
+      domain: 'cinema',
       workType: 'series',
       label: `Série · T${season} E${ep}`,
       shortType: 'Série',
@@ -337,6 +453,7 @@ export function formatCatalogCardFormatBadge(item = {}) {
     const m = mins % 60;
     const durText = h > 0 ? `${h}h ${m}m` : `${m}m`;
     return {
+      domain: 'cinema',
       workType: 'movie',
       label: `Filme · ${durText}`,
       shortType: 'Filme',
@@ -344,6 +461,7 @@ export function formatCatalogCardFormatBadge(item = {}) {
     };
   }
   return {
+    domain: 'cinema',
     workType: 'movie',
     label: 'Filme',
     shortType: 'Filme',
@@ -490,6 +608,45 @@ export function advanceMovieSeconds(item = {}, addMinutes = 15) {
 
 export function formatFlexibleProgressMetric(item) {
   if (!item) return '00:00:00';
+  const domain = inferDomainFromWork(item);
+
+  if (domain === 'reading') {
+    const pagesRead = Math.max(0, Number(item.pagesRead) || 0);
+    const totalPages = Number(item.totalPages) || 0;
+    const chaptersRead = Math.max(0, Number(item.chaptersRead) || 0);
+    const pct = calculateWorkProgress(item);
+    if (totalPages > 0) {
+      return `Pág. ${pagesRead}/${totalPages} (${pct}%)`;
+    }
+    if (chaptersRead > 0) {
+      return `Cap. ${chaptersRead}`;
+    }
+    if (pagesRead > 0) {
+      return `${pagesRead} págs lidas`;
+    }
+    return item.bookFormat || 'Não iniciado';
+  }
+
+  if (domain === 'games') {
+    const platform = String(item.platform || '').trim();
+    const hours = Math.max(0, Number(item.hoursPlayed) || 0);
+    const comp = String(item.completionType || '').trim();
+    const parts = [platform || 'PC', hours > 0 ? `${hours}h` : null, comp || null].filter(Boolean);
+    return parts.join(' · ') || 'Não iniciado';
+  }
+
+  if (domain === 'music') {
+    const fav = String(item.favoriteTrack || '').trim();
+    const listens = Math.max(0, Number(item.listenCount) || 0);
+    const relFmt = String(item.releaseFormat || '').trim();
+    const parts = [
+      fav ? `Faixa: ${fav}` : null,
+      listens > 0 ? `${listens} ${listens === 1 ? 'escuta' : 'escutas'}` : null,
+      !fav && relFmt ? relFmt : null,
+    ].filter(Boolean);
+    return parts.join(' · ') || 'Na fila';
+  }
+
   if (isEpisodicWork(item)) {
     const sCur = item.currentSeason || 1;
     const sTot = item.totalSeasons || 1;
@@ -699,6 +856,20 @@ export function isLoanOverdue(item, thresholdDays = 30) {
 
 export function getWorkDurationBadge(item) {
   if (!item) return '';
+  const domain = inferDomainFromWork(item);
+  if (domain === 'reading') {
+    const totalPages = Number(item.totalPages) || 0;
+    return totalPages > 0 ? `${totalPages} págs` : '';
+  }
+  if (domain === 'games') {
+    const hours = Number(item.hoursPlayed) || 0;
+    return hours > 0 ? `${hours}h jogadas` : '';
+  }
+  if (domain === 'music') {
+    const count =
+      Number(item.trackCount) || (Array.isArray(item.tracks) ? item.tracks.length : 0);
+    return count > 0 ? `${count} faixas` : '';
+  }
   if (isEpisodicWork(item)) {
     const seasons = Math.max(1, Number(item.totalSeasons) || 1);
     const totalEps = Number(item.totalEpisodes) || 0;

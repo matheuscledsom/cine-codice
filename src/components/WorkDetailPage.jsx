@@ -29,7 +29,19 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { domainConfig, getStatusList } from '../config/domainConfig';
+import {
+  BOOK_FORMATS,
+  GAME_COMPLETION_TYPES,
+  GAME_PLATFORMS,
+  GAME_STORES_LAUNCHERS,
+  MUSIC_RELEASE_FORMATS,
+  domainConfig,
+  getDomainMeta,
+  getStatusList,
+  getWorkTypeLabel,
+  inferDomainFromWork,
+  normalizeDomainId,
+} from '../config/domainConfig';
 import { SOCIAL_ENABLED } from '../config/flags';
 import { useToast } from '../context/ToastContext';
 import { formatNextAiringBadge } from '../lib/episodeStats';
@@ -43,6 +55,7 @@ import { findFranchiseForItem } from '../services/franchiseEngine';
 import {
   advanceEpisodeProgress,
   createExpandedSeasonPatch,
+  formatFlexibleProgressMetric,
   getDisplayTitles,
   getTodayLocalISO,
   getVerdictForScore,
@@ -142,6 +155,7 @@ export function WorkDetailPage({
 
   const runEnrichmentForWork = async (targetItem, { forceRefresh = false } = {}) => {
     if (!targetItem?.id) return;
+    if (normalizeDomainId(inferDomainFromWork(targetItem)) !== 'cinema') return;
     enrichAbortRef.current?.abort();
     const controller = new AbortController();
     enrichAbortRef.current = controller;
@@ -330,6 +344,11 @@ export function WorkDetailPage({
 
     const current = latestItemRef.current;
     if (!current?.id) return undefined;
+    if (normalizeDomainId(inferDomainFromWork(current)) !== 'cinema') {
+      return () => {
+        enrichAbortRef.current?.abort();
+      };
+    }
 
     const badges = getPresentExternalRatingBadges(current.externalRatings);
     const missingSeasons =
@@ -416,23 +435,22 @@ export function WorkDetailPage({
   const verdictMeta = item.verdict ? getVerdictMeta(item.verdict) : null;
   const quotesCount = Array.isArray(item.quotes) ? item.quotes.length : 0;
   const displayTitles = getDisplayTitles(item, 'bilingual');
-  const creatorLabel = item.director || item.studio || item.author || '';
-  const episodic = isEpisodicWork(item);
+  const workDomain = normalizeDomainId(inferDomainFromWork(item));
+  const domainMeta = getDomainMeta(workDomain);
+  const creatorLabel = item.creator || item.director || item.studio || item.author || '';
+  const episodic = workDomain === 'cinema' && isEpisodicWork(item);
   const nextAiringBadge = episodic ? formatNextAiringBadge(item) : null;
   const durationBadge = getWorkDurationBadge(item);
-  const workFormatLabel =
-    item.workType === 'anime'
-      ? 'Anime'
-      : item.workType === 'series'
-        ? 'Série'
-        : 'Filme';
+  const workFormatLabel = getWorkTypeLabel(item, workDomain);
+  const domainQuickMetric =
+    workDomain !== 'cinema' ? formatFlexibleProgressMetric(item) : null;
 
   const synopsisText = String(item.synopsis || item.overview || '').trim();
   const isLongSynopsis = synopsisText.length > 260;
 
   const clickableCreators = Array.from(
     new Set(
-      [item.director, item.studio, item.author]
+      [item.creator, item.director, item.studio, item.author]
         .filter(Boolean)
         .flatMap((raw) =>
           String(raw)
@@ -453,6 +471,54 @@ export function WorkDetailPage({
       : null;
 
   const handlePrimaryContextualAction = () => {
+    if (workDomain === 'reading') {
+      const totalPages = Number(item.totalPages) || 0;
+      const currentPages = Math.max(0, Number(item.pagesRead) || 0);
+      const nextPages =
+        totalPages > 0 ? Math.min(totalPages, currentPages + 10) : currentPages + 10;
+      const done = totalPages > 0 && nextPages >= totalPages;
+      onUpdateItem(item.id, {
+        pagesRead: nextPages,
+        status: done ? 'completed' : 'playing',
+        ...(done ? { completedAt: getTodayLocalISO(), progress: 100 } : {}),
+      });
+      playTactileSound(done ? 'complete' : 'page');
+      showToast({
+        message: totalPages > 0 ? `Leitura: Pág. ${nextPages}/${totalPages}` : `Leitura: Pág. ${nextPages}`,
+        type: 'success',
+      });
+      return;
+    }
+
+    if (workDomain === 'games') {
+      const nextHours = Number((Math.max(0, Number(item.hoursPlayed) || 0) + 1).toFixed(1));
+      onUpdateItem(item.id, {
+        hoursPlayed: nextHours,
+        status: item.status === 'queued' ? 'playing' : item.status,
+      });
+      playTactileSound('page');
+      showToast({
+        message: `${item.title}: ${nextHours}h jogadas (${item.platform || 'PC'})`,
+        type: 'success',
+      });
+      return;
+    }
+
+    if (workDomain === 'music') {
+      const nextListens = Math.max(0, Number(item.listenCount) || 0) + 1;
+      onUpdateItem(item.id, {
+        listenCount: nextListens,
+        status: item.status === 'queued' ? 'completed' : item.status,
+        ...(item.status === 'queued' ? { completedAt: getTodayLocalISO() } : {}),
+      });
+      playTactileSound('page');
+      showToast({
+        message: `${item.title}: audição #${nextListens} registrada`,
+        type: 'success',
+      });
+      return;
+    }
+
     if (episodic) {
       const patch = advanceEpisodeProgress(item, 1, { allowExpandSeasons: true });
       playTactileSound(patch.status === 'completed' ? 'complete' : 'page');
@@ -537,9 +603,12 @@ export function WorkDetailPage({
   };
 
   const metadataParts = [
+    domainMeta.shortLabel,
     item.releaseYear ? String(item.releaseYear) : null,
     creatorLabel || null,
-    durationBadge || (episodic ? `${Math.max(1, Number(item.totalSeasons) || 1)} temp.` : null),
+    workDomain === 'cinema'
+      ? durationBadge || (episodic ? `${Math.max(1, Number(item.totalSeasons) || 1)} temp.` : null)
+      : domainQuickMetric,
     workFormatLabel,
   ].filter(Boolean);
 
@@ -791,7 +860,27 @@ export function WorkDetailPage({
               onClick={handlePrimaryContextualAction}
               className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-xs font-semibold tabular-nums text-accent-ink transition-opacity hover:opacity-90"
             >
-              {episodic ? (
+              {workDomain === 'reading' ? (
+                <>
+                  <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                  <span>
+                    +10 págs ({Number(item.pagesRead || 0)}
+                    {Number(item.totalPages) > 0 ? `/${item.totalPages}` : ''})
+                  </span>
+                </>
+              ) : workDomain === 'games' ? (
+                <>
+                  <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                  <span>
+                    +1h jogada ({Number(item.hoursPlayed || 0)}h · {item.platform || 'PC'})
+                  </span>
+                </>
+              ) : workDomain === 'music' ? (
+                <>
+                  <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                  <span>+1 escuta ({Number(item.listenCount || 0)}x)</span>
+                </>
+              ) : episodic ? (
                 <>
                   <Plus className="h-4 w-4 shrink-0" strokeWidth={1.5} />
                   <span>
@@ -931,7 +1020,15 @@ export function WorkDetailPage({
           >
             <ListVideo className="h-4 w-4 shrink-0" strokeWidth={1.5} />
             <span className="truncate">
-              {episodic ? 'Temporadas & Episódios' : 'Sessão & Duração'}
+              {workDomain === 'reading'
+                ? 'Leitura & Páginas'
+                : workDomain === 'games'
+                  ? 'Plataforma & Horas'
+                  : workDomain === 'music'
+                    ? 'Faixas & Escutas'
+                    : episodic
+                      ? 'Temporadas & Episódios'
+                      : 'Sessão & Duração'}
             </span>
           </button>
 
@@ -1011,26 +1108,120 @@ export function WorkDetailPage({
               )}
             </section>
 
-            {/* Notas do Público & Sua Avaliação Pessoal */}
+            {/* Notas do Público / Ficha do Domínio & Sua Avaliação Pessoal */}
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <div className="rounded-2xl border border-line bg-card p-4">
-                <ExternalRatingsPanel
-                  item={item}
-                  loading={ratingsLoading}
-                  failedSources={ratingsMeta.failedSources}
-                  omdbMissingKey={ratingsMeta.omdbMissingKey}
-                  isOfflineCache={ratingsMeta.isOfflineCache}
-                  cacheDateLabel={ratingsMeta.cacheDateLabel}
-                  hasAttempted={ratingsMeta.hasAttempted}
-                  onRetryRefresh={() => {
-                    autoEnrichedIdsRef.current.add(item.id);
-                    runEnrichmentForWork(item, { forceRefresh: true });
-                  }}
-                  onOpenApiSettings={() => {
-                    onClose?.();
-                    onOpenGeminiSettings?.();
-                  }}
-                />
+                {workDomain === 'cinema' ? (
+                  <ExternalRatingsPanel
+                    item={item}
+                    loading={ratingsLoading}
+                    failedSources={ratingsMeta.failedSources}
+                    omdbMissingKey={ratingsMeta.omdbMissingKey}
+                    isOfflineCache={ratingsMeta.isOfflineCache}
+                    cacheDateLabel={ratingsMeta.cacheDateLabel}
+                    hasAttempted={ratingsMeta.hasAttempted}
+                    onRetryRefresh={() => {
+                      autoEnrichedIdsRef.current.add(item.id);
+                      runEnrichmentForWork(item, { forceRefresh: true });
+                    }}
+                    onOpenApiSettings={() => {
+                      onClose?.();
+                      onOpenGeminiSettings?.();
+                    }}
+                  />
+                ) : (
+                  <div className="space-y-3 p-1">
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
+                        Ficha · {domainMeta.label}
+                      </h2>
+                      <span className="rounded-[4px] border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold text-accent">
+                        {workFormatLabel}
+                      </span>
+                    </div>
+                    {workDomain === 'reading' && (
+                      <dl className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Progresso</dt>
+                          <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                            Pág. {Number(item.pagesRead || 0)}
+                            {Number(item.totalPages) > 0 ? ` / ${item.totalPages}` : ''}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Capítulos</dt>
+                          <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                            {Number(item.chaptersRead || 0)} cap.
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Formato</dt>
+                          <dd className="mt-0.5 font-semibold text-ink">
+                            {item.bookFormat || 'Físico'}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">ISBN / DOI</dt>
+                          <dd className="mt-0.5 truncate font-semibold tabular-nums text-ink">
+                            {item.isbnOrDoi || '—'}
+                          </dd>
+                        </div>
+                      </dl>
+                    )}
+                    {workDomain === 'games' && (
+                      <dl className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Plataforma</dt>
+                          <dd className="mt-0.5 font-semibold text-ink">
+                            {item.platform || 'PC'}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Tempo jogado</dt>
+                          <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                            {Number(item.hoursPlayed || 0)}h
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Conclusão</dt>
+                          <dd className="mt-0.5 font-semibold text-ink">
+                            {item.completionType || 'História Principal'}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Launcher / Build</dt>
+                          <dd className="mt-0.5 truncate font-semibold text-ink">
+                            {[item.storeOrLauncher, item.buildOrCharacter].filter(Boolean).join(' · ') || '—'}
+                          </dd>
+                        </div>
+                      </dl>
+                    )}
+                    {workDomain === 'music' && (
+                      <dl className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Formato / Subgênero</dt>
+                          <dd className="mt-0.5 truncate font-semibold text-ink">
+                            {[item.releaseFormat || 'Álbum de Estúdio', item.subgenre]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </dd>
+                        </div>
+                        <div className="rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Audições</dt>
+                          <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                            {Number(item.listenCount || 0)} escutas
+                          </dd>
+                        </div>
+                        <div className="col-span-2 rounded-lg border border-line bg-app p-2.5">
+                          <dt className="text-[10px] text-subtle">Faixa favorita</dt>
+                          <dd className="mt-0.5 truncate font-semibold text-accent">
+                            {item.favoriteTrack || 'Toque na aba Faixas & Escutas para escolher'}
+                          </dd>
+                        </div>
+                      </dl>
+                    )}
+                  </div>
+                )}
               </div>
 
               <section
@@ -1225,23 +1416,324 @@ export function WorkDetailPage({
               )}
             </section>
 
-            {/* Radar de Franquia, Sagas & Universo */}
-            <FranchiseRadarPanel
-              item={item}
-              allItems={allItems}
-              franchise={franchise}
-              onSelectItem={onSelectItem}
-              onQuickCatalogItem={onQuickCatalogItem}
-              onUpdateItem={onUpdateItem}
-              onShowToast={showToast}
-            />
+            {/* Radar de Franquia, Sagas & Universo (Cinema) */}
+            {workDomain === 'cinema' && (
+              <FranchiseRadarPanel
+                item={item}
+                allItems={allItems}
+                franchise={franchise}
+                onSelectItem={onSelectItem}
+                onQuickCatalogItem={onQuickCatalogItem}
+                onUpdateItem={onUpdateItem}
+                onShowToast={showToast}
+              />
+            )}
           </div>
         )}
 
-        {/* ABA 2 — TEMPORADAS & EPISÓDIOS (UNIFICADA E LEVE) */}
+        {/* ABA 2 — PROGRESSO DO DOMÍNIO / TEMPORADAS & EPISÓDIOS */}
         {activeTab === 'episodes' && (
           <div className="space-y-5">
-            {episodic ? (
+            {workDomain === 'reading' ? (
+              <section
+                aria-label="Controle de progresso de leitura"
+                className="rounded-2xl border border-line bg-card p-5 space-y-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-ink">
+                      Progresso de Leitura ·{' '}
+                      <span className="tabular-nums text-accent">
+                        Pág. {Number(item.pagesRead || 0)}
+                        {Number(item.totalPages) > 0 ? ` / ${item.totalPages}` : ''}
+                      </span>
+                    </h2>
+                    <p className="mt-0.5 text-xs tabular-nums text-muted">
+                      {[
+                        item.bookFormat || 'Físico',
+                        Number(item.chaptersRead) > 0 ? `${item.chaptersRead} capítulos` : null,
+                        item.isbnOrDoi ? `Ref. ${item.isbnOrDoi}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {[5, 10, 25].map((delta) => (
+                      <button
+                        key={delta}
+                        type="button"
+                        onClick={() => {
+                          const total = Number(item.totalPages) || 0;
+                          const next =
+                            total > 0
+                              ? Math.min(total, Number(item.pagesRead || 0) + delta)
+                              : Number(item.pagesRead || 0) + delta;
+                          const done = total > 0 && next >= total;
+                          onUpdateItem(item.id, {
+                            pagesRead: next,
+                            status: done ? 'completed' : 'playing',
+                            ...(done ? { completedAt: getTodayLocalISO(), progress: 100 } : {}),
+                          });
+                          playTactileSound(done ? 'complete' : 'page');
+                        }}
+                        className="inline-flex min-h-[44px] items-center gap-1 rounded-xl border border-line bg-app px-3 py-2 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+                      >
+                        <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                        <span>{delta} págs</span>
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const total = Number(item.totalPages) || 0;
+                        onUpdateItem(item.id, {
+                          status: 'completed',
+                          pagesRead: total > 0 ? total : Number(item.pagesRead || 0),
+                          completedAt: getTodayLocalISO(),
+                          progress: 100,
+                        });
+                        playTactileSound('complete');
+                      }}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-accent-ink hover:opacity-90"
+                    >
+                      <Check className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      <span>Concluir Leitura</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3 border-t border-line pt-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] font-medium text-muted mr-1">Formato:</span>
+                      {BOOK_FORMATS.map((fmt) => (
+                        <button
+                          key={fmt}
+                          type="button"
+                          onClick={() => onUpdateItem(item.id, { bookFormat: fmt })}
+                          className={`min-h-[36px] rounded-lg border px-2.5 text-xs font-medium transition-colors ${
+                            (item.bookFormat || BOOK_FORMATS[0]) === fmt
+                              ? 'border-accent bg-accent/15 text-accent'
+                              : 'border-line bg-app text-muted hover:text-ink'
+                          }`}
+                        >
+                          {fmt}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUpdateItem(item.id, {
+                            chaptersRead: Math.max(0, Number(item.chaptersRead || 0)) + 1,
+                            status: item.status === 'queued' ? 'playing' : item.status,
+                          });
+                          playTactileSound('page');
+                        }}
+                        className="inline-flex min-h-[40px] items-center gap-1 rounded-xl border border-line bg-app px-3 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+                      >
+                        <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                        <span>1 cap. ({Number(item.chaptersRead || 0)})</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsEditDrawerOpen(true)}
+                        className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-line bg-app px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
+                      >
+                        <Edit3 className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                        <span>Editar páginas / ISBN</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ) : workDomain === 'games' ? (
+              <section
+                aria-label="Controle de campanha e horas jogadas"
+                className="rounded-2xl border border-line bg-card p-5 space-y-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-ink">
+                      Plataforma &amp; Campanha ·{' '}
+                      <span className="tabular-nums text-accent">
+                        {item.platform || 'PC'} · {Number(item.hoursPlayed || 0)}h
+                      </span>
+                    </h2>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {[item.completionType || 'História Principal', item.storeOrLauncher, item.buildOrCharacter]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {[1, 3].map((delta) => (
+                      <button
+                        key={delta}
+                        type="button"
+                        onClick={() => {
+                          const next = Number((Number(item.hoursPlayed || 0) + delta).toFixed(1));
+                          onUpdateItem(item.id, {
+                            hoursPlayed: next,
+                            status: item.status === 'queued' ? 'playing' : item.status,
+                          });
+                          playTactileSound('page');
+                        }}
+                        className="inline-flex min-h-[44px] items-center gap-1 rounded-xl border border-line bg-app px-3.5 py-2 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+                      >
+                        <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                        <span>{delta}h</span>
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateItem(item.id, {
+                          status: 'completed',
+                          completedAt: getTodayLocalISO(),
+                          progress: 100,
+                        });
+                        playTactileSound('complete');
+                      }}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-accent-ink hover:opacity-90"
+                    >
+                      <Check className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      <span>Marcar Zerado</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3 border-t border-line pt-4">
+                  <div>
+                    <span className="mb-1.5 block text-[11px] font-medium text-muted">
+                      Plataforma
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {GAME_PLATFORMS.map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => onUpdateItem(item.id, { platform: p })}
+                          className={`min-h-[36px] rounded-lg border px-2.5 text-xs font-medium transition-colors ${
+                            (item.platform || GAME_PLATFORMS[0]) === p
+                              ? 'border-accent bg-accent/15 text-accent'
+                              : 'border-line bg-app text-muted hover:text-ink'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap gap-1.5">
+                      {GAME_COMPLETION_TYPES.map((ct) => (
+                        <button
+                          key={ct}
+                          type="button"
+                          onClick={() => onUpdateItem(item.id, { completionType: ct })}
+                          className={`min-h-[36px] rounded-lg border px-2.5 text-xs font-medium transition-colors ${
+                            (item.completionType || GAME_COMPLETION_TYPES[0]) === ct
+                              ? 'border-accent bg-accent/15 text-accent'
+                              : 'border-line bg-app text-muted hover:text-ink'
+                          }`}
+                        >
+                          {ct}
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsEditDrawerOpen(true)}
+                      className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-line bg-app px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
+                    >
+                      <Edit3 className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                      <span>Editar horas / launcher / build</span>
+                    </button>
+                  </div>
+                </div>
+              </section>
+            ) : workDomain === 'music' ? (
+              <section
+                aria-label="Tracklist e audições musicais"
+                className="rounded-2xl border border-line bg-card p-5 space-y-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-ink">
+                      Faixas &amp; Escutas ·{' '}
+                      <span className="tabular-nums text-accent">
+                        {Number(item.listenCount || 0)} audições
+                      </span>
+                    </h2>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {[item.releaseFormat || 'Álbum de Estúdio', item.subgenre, item.favoriteTrack && `Fav.: ${item.favoriteTrack}`]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handlePrimaryContextualAction}
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold tabular-nums text-accent-ink hover:opacity-90"
+                  >
+                    <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    <span>+1 Escuta</span>
+                  </button>
+                </div>
+
+                {Array.isArray(item.tracks) && item.tracks.length > 0 ? (
+                  <div className="space-y-1.5 border-t border-line pt-3">
+                    <p className="text-[11px] font-medium text-muted">
+                      Tracklist ({item.tracks.length} faixas — toque para definir como faixa favorita)
+                    </p>
+                    <div className="max-h-72 overflow-y-auto divide-y divide-line rounded-xl border border-line bg-app no-scrollbar">
+                      {item.tracks.map((tr, idx) => {
+                        const isFav = item.favoriteTrack === tr.title;
+                        return (
+                          <button
+                            key={`${tr.number || idx}-${tr.title}`}
+                            type="button"
+                            onClick={() => {
+                              onUpdateItem(item.id, { favoriteTrack: tr.title });
+                              playTactileSound('page');
+                            }}
+                            className={`flex min-h-[42px] w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors ${
+                              isFav ? 'bg-accent/15 font-semibold text-accent' : 'text-ink hover:bg-card'
+                            }`}
+                          >
+                            <span className="truncate">
+                              <span className="mr-2 tabular-nums text-subtle">
+                                {tr.number || idx + 1}.
+                              </span>
+                              {tr.title}
+                            </span>
+                            {isFav && (
+                              <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-accent text-accent-ink">
+                                Favorita
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="border-t border-line pt-3 text-xs text-muted">
+                    Use Editar Metadados caso queira cadastrar sua faixa favorita ou subgênero manualmente.
+                  </p>
+                )}
+              </section>
+            ) : episodic ? (
               <>
                 {/* Barra Resumo de Progresso Episódico Unificada */}
                 <section
@@ -1425,6 +1917,7 @@ export function WorkDetailPage({
             </div>
 
             <WorkTypeSelector
+              domain={workDomain}
               label={ui.detail.workTypeTitle}
               value={item.workType}
               onChange={(nextType) => onUpdateItem(item.id, { workType: nextType })}
@@ -1459,31 +1952,32 @@ export function WorkDetailPage({
 
               <label className="block">
                 <span className="mb-1 block text-[11px] font-medium text-muted">
-                  Direção / Criador
+                  {domainMeta.creatorLabel}
                 </span>
                 <input
                   type="text"
-                  value={item.director || item.author || ''}
+                  value={item.creator || item.director || item.author || ''}
                   onChange={(e) =>
                     onUpdateItem(item.id, {
+                      creator: e.target.value,
                       director: e.target.value,
                       author: e.target.value,
                     })
                   }
-                  placeholder="Ex: Hayao Miyazaki"
+                  placeholder={domainMeta.creatorLabel}
                   className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
                 />
               </label>
 
               <label className="block">
                 <span className="mb-1 block text-[11px] font-medium text-muted">
-                  Estúdio / Rede
+                  {workDomain === 'cinema' ? 'Estúdio / Rede' : 'Selo / Editora / Publicadora'}
                 </span>
                 <input
                   type="text"
                   value={item.studio || ''}
                   onChange={(e) => onUpdateItem(item.id, { studio: e.target.value })}
-                  placeholder="Ex: Studio Ghibli, HBO"
+                  placeholder={workDomain === 'cinema' ? 'Ex: Studio Ghibli, HBO' : 'Opcional'}
                   className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
                 />
               </label>
@@ -1501,7 +1995,7 @@ export function WorkDetailPage({
                       seriesName: e.target.value,
                     })
                   }
-                  placeholder="Ex: Evangelion, Duna..."
+                  placeholder="Ex: Duna, Zelda..."
                   className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
                 />
               </label>
@@ -1512,7 +2006,7 @@ export function WorkDetailPage({
                 </span>
                 <input
                   type="number"
-                  min="1895"
+                  min="1500"
                   max="2099"
                   value={item.releaseYear || ''}
                   onChange={(e) =>
@@ -1525,68 +2019,297 @@ export function WorkDetailPage({
                 />
               </label>
 
-              {episodic ? (
-                <>
+              {workDomain === 'cinema' ? (
+                episodic ? (
+                  <>
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium text-muted">
+                        Total de Temporadas
+                      </span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="150"
+                        value={item.totalSeasons || 1}
+                        onChange={(e) => {
+                          const nextTotal = Math.max(1, Number(e.target.value) || 1);
+                          onUpdateItem(item.id, { totalSeasons: nextTotal });
+                        }}
+                        className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium text-muted">
+                        Total de Episódios (Série Completa)
+                      </span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="5000"
+                        value={item.totalEpisodes || ''}
+                        onChange={(e) =>
+                          onUpdateItem(item.id, {
+                            totalEpisodes: e.target.value ? Number(e.target.value) : null,
+                          })
+                        }
+                        placeholder="Ex: 64"
+                        className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                  </>
+                ) : (
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Total de Temporadas
+                      Duração do Filme (minutos)
                     </span>
                     <input
                       type="number"
                       min="1"
-                      max="150"
-                      value={item.totalSeasons || 1}
-                      onChange={(e) => {
-                        const nextTotal = Math.max(1, Number(e.target.value) || 1);
-                        onUpdateItem(item.id, { totalSeasons: nextTotal });
-                      }}
+                      max="1200"
+                      value={item.runtimeMinutes || ''}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, {
+                          runtimeMinutes: e.target.value ? Number(e.target.value) : null,
+                        })
+                      }
+                      placeholder="125"
                       className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
                     />
                   </label>
-
+                )
+              ) : workDomain === 'reading' ? (
+                <>
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-medium text-muted">
-                      Total de Episódios (Série Completa)
+                      Páginas Lidas
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={item.pagesRead ?? 0}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, {
+                          pagesRead: Math.max(0, Number(e.target.value) || 0),
+                        })
+                      }
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Total de Páginas
                     </span>
                     <input
                       type="number"
                       min="1"
-                      max="5000"
-                      value={item.totalEpisodes || ''}
+                      value={item.totalPages || ''}
                       onChange={(e) =>
                         onUpdateItem(item.id, {
-                          totalEpisodes: e.target.value ? Number(e.target.value) : null,
+                          totalPages: e.target.value ? Number(e.target.value) : null,
                         })
                       }
-                      placeholder="Ex: 64"
                       className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Capítulos Lidos
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={item.chaptersRead ?? 0}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, {
+                          chaptersRead: Math.max(0, Number(e.target.value) || 0),
+                        })
+                      }
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Formato
+                    </span>
+                    <select
+                      value={item.bookFormat || BOOK_FORMATS[0]}
+                      onChange={(e) => onUpdateItem(item.id, { bookFormat: e.target.value })}
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    >
+                      {BOOK_FORMATS.map((fmt) => (
+                        <option key={fmt} value={fmt}>
+                          {fmt}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block sm:col-span-2">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      ISBN / DOI
+                    </span>
+                    <input
+                      type="text"
+                      value={item.isbnOrDoi || ''}
+                      onChange={(e) => onUpdateItem(item.id, { isbnOrDoi: e.target.value })}
+                      placeholder="ISBN-13 ou DOI"
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                </>
+              ) : workDomain === 'games' ? (
+                <>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Plataforma
+                    </span>
+                    <select
+                      value={item.platform || GAME_PLATFORMS[0]}
+                      onChange={(e) => onUpdateItem(item.id, { platform: e.target.value })}
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    >
+                      {GAME_PLATFORMS.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Loja / Launcher
+                    </span>
+                    <select
+                      value={item.storeOrLauncher || GAME_STORES_LAUNCHERS[0]}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, { storeOrLauncher: e.target.value })
+                      }
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    >
+                      {GAME_STORES_LAUNCHERS.map((st) => (
+                        <option key={st} value={st}>
+                          {st}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Tipo de Conclusão
+                    </span>
+                    <select
+                      value={item.completionType || GAME_COMPLETION_TYPES[0]}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, { completionType: e.target.value })
+                      }
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    >
+                      {GAME_COMPLETION_TYPES.map((ct) => (
+                        <option key={ct} value={ct}>
+                          {ct}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Horas Jogadas
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={item.hoursPlayed ?? 0}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, {
+                          hoursPlayed: Math.max(0, Number(e.target.value) || 0),
+                        })
+                      }
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                  <label className="block sm:col-span-2">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Build / Personagem / Time
+                    </span>
+                    <input
+                      type="text"
+                      value={item.buildOrCharacter || ''}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, { buildOrCharacter: e.target.value })
+                      }
+                      placeholder="Build, campeão ou time"
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
                     />
                   </label>
                 </>
               ) : (
-                <label className="block">
-                  <span className="mb-1 block text-[11px] font-medium text-muted">
-                    Duração do Filme (minutos)
-                  </span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="1200"
-                    value={item.runtimeMinutes || ''}
-                    onChange={(e) =>
-                      onUpdateItem(item.id, {
-                        runtimeMinutes: e.target.value ? Number(e.target.value) : null,
-                      })
-                    }
-                    placeholder="125"
-                    className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
+                <>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Formato do Lançamento
+                    </span>
+                    <select
+                      value={item.releaseFormat || MUSIC_RELEASE_FORMATS[0]}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, { releaseFormat: e.target.value })
+                      }
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    >
+                      {MUSIC_RELEASE_FORMATS.map((rf) => (
+                        <option key={rf} value={rf}>
+                          {rf}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Audições
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={item.listenCount ?? 0}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, {
+                          listenCount: Math.max(0, Number(e.target.value) || 0),
+                        })
+                      }
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Subgênero Musical
+                    </span>
+                    <input
+                      type="text"
+                      value={item.subgenre || ''}
+                      onChange={(e) => onUpdateItem(item.id, { subgenre: e.target.value })}
+                      placeholder="Power Metal, Hard Rock..."
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Faixa Favorita
+                    </span>
+                    <input
+                      type="text"
+                      value={item.favoriteTrack || ''}
+                      onChange={(e) =>
+                        onUpdateItem(item.id, { favoriteTrack: e.target.value })
+                      }
+                      className="min-h-[44px] w-full rounded-xl border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                </>
               )}
 
               <label className="block">
                 <span className="mb-1 block text-[11px] font-medium text-muted">
-                  URL do Pôster (2:3)
+                  URL da Capa
                 </span>
                 <input
                   type="url"
@@ -1613,16 +2336,18 @@ export function WorkDetailPage({
               </label>
             </div>
 
-            <SmartCatalogButton
-              item={item}
-              geminiKey={geminiKey}
-              onApplyFields={(updates) => onUpdateItem(item.id, updates)}
-              onOpenGeminiSettings={() => {
-                setIsEditDrawerOpen(false);
-                onClose?.();
-                onOpenGeminiSettings?.();
-              }}
-            />
+            {workDomain === 'cinema' && (
+              <SmartCatalogButton
+                item={item}
+                geminiKey={geminiKey}
+                onApplyFields={(updates) => onUpdateItem(item.id, updates)}
+                onOpenGeminiSettings={() => {
+                  setIsEditDrawerOpen(false);
+                  onClose?.();
+                  onOpenGeminiSettings?.();
+                }}
+              />
+            )}
 
             <label className="block">
               <span className="mb-1 block text-[11px] font-medium text-muted">
@@ -1848,3 +2573,5 @@ export function WorkDetailPage({
     </div>
   );
 }
+
+export { WorkDetailPage as WorkDetailModal };
