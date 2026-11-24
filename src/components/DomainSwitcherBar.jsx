@@ -56,15 +56,15 @@ export function DomainSwitcherBar({
             role="tab"
             aria-selected={activeDomain === 'all'}
             onClick={() => onSelectDomain?.('all')}
-            className={`inline-flex min-h-[40px] shrink-0 items-center gap-1.5 rounded-[6px] border px-3 py-1.5 text-xs font-semibold tabular-nums transition-colors ${
+            className={`inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[6px] border px-3 py-1.5 text-xs font-semibold tabular-nums transition-colors ${
               activeDomain === 'all'
-                ? 'border-accent bg-accent/15 text-ink'
+                ? 'border-accent bg-accent text-accent-ink'
                 : 'border-line bg-card text-muted hover:text-ink'
             }`}
           >
-            <Layers className="h-3.5 w-3.5 text-accent" strokeWidth={1.75} />
+            <Layers className="h-3.5 w-3.5" strokeWidth={1.5} />
             <span>Todos</span>
-            <span className="rounded-full bg-app px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-muted">
+            <span className="text-[11px] font-semibold tabular-nums opacity-80">
               {countsByDomain.all}
             </span>
           </button>
@@ -79,31 +79,22 @@ export function DomainSwitcherBar({
               role="tab"
               aria-selected={active}
               onClick={() => onSelectDomain?.(portal.id)}
-              style={{
-                borderColor: active ? portal.palette.accent : portal.palette.border,
-                backgroundColor: active ? portal.palette.surface : undefined,
-              }}
-              className={`inline-flex min-h-[40px] shrink-0 items-center gap-1.5 rounded-[6px] border px-3 py-1.5 text-xs font-semibold tabular-nums transition-colors ${
-                active ? 'text-ink' : 'bg-card text-muted hover:text-ink'
+              style={
+                active
+                  ? {
+                      borderColor: portal.palette.accent,
+                      backgroundColor: portal.palette.accent,
+                      color: portal.palette.accentContrast,
+                    }
+                  : undefined
+              }
+              className={`inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[6px] border px-3 py-1.5 text-xs font-semibold tabular-nums transition-colors ${
+                active ? '' : 'border-line bg-card text-muted hover:text-ink'
               }`}
             >
-              <Icon
-                className="h-3.5 w-3.5 shrink-0"
-                style={{ color: portal.palette.accent }}
-                strokeWidth={1.75}
-              />
+              <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
               <span>{portal.tabLabel || portal.shortLabel}</span>
-              <span
-                className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums"
-                style={{
-                  backgroundColor: active
-                    ? portal.palette.accent
-                    : portal.palette.elevated,
-                  color: active
-                    ? portal.palette.accentContrast
-                    : portal.palette.accent,
-                }}
-              >
+              <span className="text-[11px] font-semibold tabular-nums opacity-80">
                 {portal.count}
               </span>
             </button>
@@ -125,17 +116,17 @@ export function DomainSwitcherBar({
           role="tab"
           aria-selected={activeDomain === 'all'}
           onClick={() => onSelectDomain?.('all')}
-          className={`group flex min-h-[46px] items-center justify-between gap-2 rounded-[6px] border px-3 py-2 text-left transition-colors ${
+          className={`flex min-h-[46px] items-center justify-between gap-2 rounded-[6px] border px-3 py-2 text-left transition-colors ${
             activeDomain === 'all'
-              ? 'border-accent bg-accent/15 shadow-sm'
-              : 'border-line bg-card hover:bg-elevated/60'
+              ? 'border-accent bg-accent text-accent-ink'
+              : 'border-line bg-card text-muted hover:text-ink'
           }`}
         >
-          <span className="inline-flex min-w-0 items-center gap-1.5">
-            <Layers className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.75} />
-            <span className="truncate text-xs font-semibold text-ink">Todos</span>
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <Layers className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+            <span className="truncate text-xs font-semibold">Todos</span>
           </span>
-          <span className="inline-flex shrink-0 items-center rounded-full bg-app px-2 py-0.5 text-[10px] font-semibold tabular-nums text-muted">
+          <span className="shrink-0 text-xs font-semibold tabular-nums opacity-80">
             {countsByDomain.all}
           </span>
         </button>
@@ -150,40 +141,29 @@ export function DomainSwitcherBar({
             role="tab"
             aria-selected={isActive}
             onClick={() => onSelectDomain?.(portal.id)}
-            style={{
-              backgroundColor: isActive ? portal.palette.surface : undefined,
-              borderColor: isActive ? portal.palette.accent : portal.palette.border,
-            }}
-            className={`group flex min-h-[46px] items-center justify-between gap-2 rounded-[6px] border px-3 py-2 text-left transition-colors ${
-              isActive ? 'shadow-sm' : 'bg-card hover:bg-elevated/60'
+            style={
+              isActive
+                ? {
+                    backgroundColor: portal.palette.accent,
+                    borderColor: portal.palette.accent,
+                    color: portal.palette.accentContrast,
+                  }
+                : undefined
+            }
+            className={`flex min-h-[46px] items-center justify-between gap-2 rounded-[6px] border px-3 py-2 text-left transition-colors ${
+              isActive
+                ? ''
+                : 'border-line bg-card text-muted hover:text-ink'
             }`}
           >
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <span
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px]"
-                style={{
-                  backgroundColor: portal.palette.elevated,
-                  color: portal.palette.accent,
-                }}
-              >
-                <PortalIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
-              </span>
-              <span className="truncate text-xs font-semibold text-ink">
+            <span className="inline-flex min-w-0 items-center gap-2">
+              <PortalIcon className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+              <span className="truncate text-xs font-semibold">
                 {portal.tabLabel || portal.shortLabel}
               </span>
             </span>
 
-            <span
-              className="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums"
-              style={{
-                backgroundColor: isActive
-                  ? portal.palette.accent
-                  : portal.palette.elevated,
-                color: isActive
-                  ? portal.palette.accentContrast
-                  : portal.palette.accent,
-              }}
-            >
+            <span className="shrink-0 text-xs font-semibold tabular-nums opacity-80">
               {portal.count}
             </span>
           </button>

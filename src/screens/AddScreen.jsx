@@ -1199,7 +1199,7 @@ export function AddScreen({
                     key={preset.id}
                     type="button"
                     onClick={() => handleSelectPreset(preset)}
-                    className="min-h-[34px] rounded-[4px] border border-line bg-app px-2.5 text-[11px] font-medium text-ink hover:border-accent"
+                    className="min-h-[44px] rounded-[6px] border border-line bg-app px-3 text-xs font-medium text-ink hover:border-muted"
                   >
                     {preset.label}
                   </button>
@@ -1397,7 +1397,7 @@ export function AddScreen({
           <button
             type="button"
             onClick={handleOpenManualModal}
-            className="inline-flex min-h-[36px] shrink-0 items-center gap-1 rounded-[4px] bg-accent px-2.5 text-[11px] font-semibold text-accent-ink"
+            className="inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[6px] bg-accent px-3 text-xs font-semibold text-accent-ink"
           >
             Cadastro Manual
           </button>
@@ -1417,7 +1417,7 @@ export function AddScreen({
             onClick={() =>
               executeSearch(query.trim(), searchFilter, activeSources, { skipCache: true })
             }
-            className="inline-flex min-h-[34px] shrink-0 items-center gap-1 text-accent hover:underline"
+            className="inline-flex min-h-[44px] shrink-0 items-center gap-1 text-xs font-medium text-accent hover:underline"
           >
             <RefreshCw className="h-3 w-3" strokeWidth={1.5} />
             Tentar novamente
@@ -1438,52 +1438,40 @@ export function AddScreen({
       ) : isLoading ? (
         <ResultSkeleton />
       ) : allFailed ? (
-        <div className="rounded-[6px] border border-dashed border-line bg-card px-5 py-8 text-center space-y-3">
-          <AlertCircle className="mx-auto h-6 w-6 text-accent" strokeWidth={1.5} />
-          <div>
-            <p className="text-xs font-semibold text-ink">
-              Todas as fontes consultadas falharam ou expiraram
-            </p>
-            <p className="mt-1 text-[11px] text-muted">
-              Verifique sua conexão ou faça o cadastro manual instantâneo.
-            </p>
-          </div>
-          <div className="flex flex-wrap justify-center gap-2">
+        <div className="border-y border-line py-6 space-y-3">
+          <p className="text-sm text-muted">
+            Fontes externas indisponíveis no momento. Você pode tentar novamente ou cadastrar manualmente.
+          </p>
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() =>
                 executeSearch(query.trim(), searchFilter, activeSources, { skipCache: true })
               }
-              className="min-h-[44px] rounded-[4px] border border-line bg-app px-3.5 text-xs font-medium text-ink"
+              className="min-h-[44px] rounded-[6px] border border-line bg-card px-4 text-xs font-medium text-ink"
             >
               Tentar Novamente
             </button>
             <button
               type="button"
               onClick={handleOpenManualModal}
-              className="min-h-[44px] rounded-[4px] bg-accent px-4 text-xs font-semibold text-accent-ink"
+              className="min-h-[44px] rounded-[6px] bg-accent px-4 text-xs font-semibold text-accent-ink"
             >
               Cadastro Manual
             </button>
           </div>
         </div>
       ) : results.length === 0 ? (
-        <div className="rounded-[6px] border border-dashed border-line bg-card px-5 py-8 text-center space-y-2.5">
-          <EmptyDomainIcon className="mx-auto h-6 w-6 text-accent" strokeWidth={1.5} />
-          <p className="text-xs font-semibold text-ink">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-y border-line py-6">
+          <p className="text-sm text-muted">
             {effectiveDomain !== 'cinema' && query.trim().length < 2
-              ? `Explore o catálogo aberto de ${domainMeta.label}`
+              ? domainVocab.emptyDescription
               : add.emptySearchTitle}
-          </p>
-          <p className="text-[11px] text-muted">
-            {effectiveDomain !== 'cinema' && query.trim().length < 2
-              ? `Digite ao menos 2 caracteres (APIs: ${domainApiHint}) ou use uma sugestão acima.`
-              : add.emptySearchDescription}
           </p>
           <button
             type="button"
             onClick={handleOpenManualModal}
-            className="min-h-[44px] rounded-[4px] border border-accent bg-accent/10 px-4 text-xs font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+            className="min-h-[44px] rounded-[6px] border border-line bg-card px-4 text-xs font-semibold text-ink hover:border-muted"
           >
             {add.manualButtonLabel} ({domainMeta.shortLabel})
           </button>
@@ -1581,48 +1569,38 @@ export function AddScreen({
               return (
                 <article
                   key={candidate.id}
-                  className="flex items-start gap-3 rounded-[6px] border border-line bg-card p-3 transition-colors hover:border-accent/50"
+                  className="flex items-start gap-3 rounded-[6px] border border-line bg-card p-3"
                 >
                   <CoverArt
                     item={candidate}
                     compact
-                    className="h-24 w-16 shrink-0 rounded-[4px]"
+                    className={`${candDomain === 'music' ? 'w-20 aspect-square' : 'w-16 aspect-[2/3]'} shrink-0 rounded-[6px]`}
                   />
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <h3 className="line-clamp-2 text-xs sm:text-sm font-semibold text-ink">
+                        <h3 className="font-editorial line-clamp-2 text-sm font-semibold text-ink">
                           {titles.primary}
                         </h3>
                         {titles.secondary && (
-                          <p className="truncate text-[10px] italic text-subtle">
+                          <p className="truncate text-[11px] italic text-subtle">
                             {titles.secondary}
                           </p>
                         )}
                       </div>
 
-                      <div className="flex shrink-0 flex-wrap justify-end gap-1">
-                        {candDomain === 'games' && (
-                          <span className="rounded-[3px] border border-accent/45 bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold text-accent">
-                            {activeGameEdition}
-                          </span>
+                      <div className="flex shrink-0 flex-wrap justify-end gap-1.5 text-[11px] tabular-nums text-muted">
+                        {candDomain === 'games' && activeGameEdition && (
+                          <span>{activeGameEdition}</span>
                         )}
                         {searchRatings.map((rb) => (
-                          <span
-                            key={rb.id}
-                            className="rounded-[3px] border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-accent"
-                          >
+                          <span key={rb.id} className="font-semibold text-ink">
                             {rb.displayText}
                           </span>
                         ))}
-                        {badges.map((srcName) => (
-                          <span
-                            key={srcName}
-                            className="rounded-[3px] border border-line bg-app px-1.5 py-0.5 text-[9px] font-semibold text-muted"
-                          >
-                            {srcName}
-                          </span>
-                        ))}
+                        {badges.length > 0 && (
+                          <span className="text-subtle">{badges.join(' · ')}</span>
+                        )}
                       </div>
                     </div>
 
@@ -1652,7 +1630,7 @@ export function AddScreen({
                               },
                             }))
                           }
-                          className="min-h-[32px] rounded-[4px] border border-line bg-app px-2 text-[10px] font-medium text-ink focus:border-accent focus:outline-none"
+                          className="min-h-[44px] rounded-[6px] border border-line bg-app px-2.5 text-xs font-medium text-ink focus:border-accent focus:outline-none"
                         >
                           <option value="">{GAME_PLATFORM_UNSET_LABEL}</option>
                           {Array.from(new Set([...apiPlatforms, ...GAME_PLATFORMS])).map((plat) => (
@@ -1673,7 +1651,7 @@ export function AddScreen({
                               },
                             }))
                           }
-                          className="min-h-[32px] rounded-[4px] border border-line bg-app px-2 text-[10px] font-medium text-ink focus:border-accent focus:outline-none"
+                          className="min-h-[44px] rounded-[6px] border border-line bg-app px-2.5 text-xs font-medium text-ink focus:border-accent focus:outline-none"
                         >
                           {GAME_EDITION_TYPES.map((ed) => (
                             <option key={ed} value={ed}>

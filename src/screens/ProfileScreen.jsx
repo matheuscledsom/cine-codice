@@ -580,7 +580,7 @@ export function ProfileScreen({
           <div className="min-w-0 space-y-1">
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
               <h1
-                className="min-w-0 truncate text-xl font-bold text-ink"
+                className="font-editorial min-w-0 truncate text-2xl font-bold text-ink"
                 style={{ letterSpacing: '-0.02em', lineHeight: 1.15 }}
               >
                 {profile?.displayName || profileCfg.displayName || 'Meu arquivo'}
@@ -588,14 +588,12 @@ export function ProfileScreen({
             </div>
 
             {gamificationEnabled && titleEvaluation.resolvedActiveBadge?.name && (
-              <div className="pt-0.5">
-                <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-[11px] font-medium text-accent">
-                  <Award className="h-3 w-3 shrink-0" strokeWidth={1.5} />
-                  <span className="truncate">
-                    {titleEvaluation.resolvedActiveBadge.name}
-                  </span>
+              <p className="inline-flex max-w-full items-center gap-1 text-xs font-medium text-muted">
+                <Award className="h-3.5 w-3.5 shrink-0 text-muted" strokeWidth={1.5} />
+                <span className="truncate">
+                  {titleEvaluation.resolvedActiveBadge.name}
                 </span>
-              </div>
+              </p>
             )}
 
             {profile?.bio && (
@@ -605,19 +603,16 @@ export function ProfileScreen({
             )}
           </div>
 
-          {/* VITRINE "FAVORITOS DA VIDA" POR DOMÍNIO (Abas Filmes, Livros, Games, Música) */}
+          {/* VITRINE "FAVORITOS DA VIDA" POR DOMÍNIO (Hierarquia limpa sem card dentro de card) */}
           <section
             aria-label={favoritesVocab.favoritesTitle}
-            className="rounded-2xl border border-line bg-card p-4 space-y-3"
+            className="border-t border-line pt-4 space-y-3"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5">
-                <Award className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                <h2 className="text-xs font-bold uppercase tracking-wider text-ink">
-                  {favoritesVocab.favoritesTitle}
-                </h2>
-              </div>
-              <span className="text-[11px] tabular-nums text-subtle">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
+                {favoritesVocab.favoritesTitle}
+              </h2>
+              <span className="text-xs tabular-nums text-subtle">
                 {top4Slots.filter((s) => Boolean(s.work)).length}/4 fixados
               </span>
             </div>
@@ -637,10 +632,10 @@ export function ProfileScreen({
                     role="tab"
                     aria-selected={isFavTabActive}
                     onClick={() => setFavoritesDomain(dom.id)}
-                    className={`min-h-[38px] rounded-xl border px-2 py-1.5 text-xs font-semibold transition-colors ${
+                    className={`min-h-[44px] rounded-[6px] border px-2 py-1.5 text-xs font-semibold transition-colors ${
                       isFavTabActive
                         ? 'border-accent bg-accent text-accent-ink'
-                        : 'border-line bg-app text-muted hover:border-accent hover:text-ink'
+                        : 'border-line bg-card text-muted hover:text-ink'
                     }`}
                   >
                     {domVocab.favoritesTabLabel}
@@ -649,37 +644,35 @@ export function ProfileScreen({
               })}
             </div>
 
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {top4Slots.map(({ slot, work }) =>
                 work ? (
                   <div
                     key={`top4-slot-${slot}`}
-                    className="group relative flex flex-col justify-between rounded-xl border border-line bg-app p-1.5 transition-colors hover:border-accent"
+                    className="group flex flex-col justify-between"
                   >
                     <button
                       type="button"
                       onClick={() => onSelectItem?.(work)}
-                      className="relative aspect-[2/3] w-full overflow-hidden rounded-lg text-left"
+                      className="relative w-full overflow-hidden rounded-[6px] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                     >
                       <CoverArt
                         item={work}
                         compact
-                        className="h-full w-full object-cover"
+                        className={`${favoritesDomain === 'music' ? 'aspect-square' : 'aspect-[2/3]'} w-full rounded-[6px] object-cover`}
                       />
-                      <span className="absolute left-1.5 top-1.5 rounded-full border border-accent/60 bg-black/80 px-2 py-0.5 text-[10px] font-bold tabular-nums text-accent">
-                        #{slot}
-                      </span>
                     </button>
 
-                    <div className="mt-1.5 flex items-center justify-between gap-1 px-0.5">
-                      <p className="min-w-0 flex-1 truncate text-[11px] font-semibold text-ink">
+                    <div className="mt-1.5 flex items-center justify-between gap-1">
+                      <p className="font-editorial min-w-0 flex-1 truncate text-xs font-semibold text-ink">
+                        <span className="mr-1 font-sans text-[11px] tabular-nums text-subtle">#{slot}</span>
                         {work.title}
                       </p>
                       <button
                         type="button"
                         onClick={() => setPickerSlot(slot)}
                         aria-label={`Trocar favorito #${slot}`}
-                        className="min-h-[32px] shrink-0 rounded-md px-1.5 text-[10px] font-medium text-accent hover:bg-card"
+                        className="min-h-[44px] shrink-0 px-1.5 text-xs font-medium text-muted hover:text-ink"
                       >
                         Trocar
                       </button>
@@ -690,16 +683,14 @@ export function ProfileScreen({
                     key={`top4-slot-${slot}`}
                     type="button"
                     onClick={() => setPickerSlot(slot)}
-                    className="flex aspect-[2/3] min-h-[44px] w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-line bg-app p-3 text-center transition-colors hover:border-accent hover:text-accent"
+                    className={`flex ${favoritesDomain === 'music' ? 'aspect-square' : 'aspect-[2/3]'} min-h-[44px] w-full flex-col items-center justify-center gap-1.5 rounded-[6px] border border-line bg-card p-3 text-center transition-colors hover:border-muted`}
                   >
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-card text-accent">
-                      <Plus className="h-4 w-4" strokeWidth={1.5} />
-                    </div>
-                    <span className="text-xs font-semibold tabular-nums text-ink">
-                      + Escolher favorito
+                    <Plus className="h-4 w-4 text-muted" strokeWidth={1.5} />
+                    <span className="text-xs font-medium text-ink">
+                      Escolher favorito
                     </span>
-                    <span className="text-[10px] tabular-nums text-subtle">
-                      Posição #{slot}
+                    <span className="text-[11px] tabular-nums text-subtle">
+                      #{slot}
                     </span>
                   </button>
                 )
@@ -1091,27 +1082,21 @@ export function ProfileScreen({
             </div>
 
             {personalFeed.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-line bg-card px-4 py-8 text-center space-y-2">
-                <Sparkles className="mx-auto h-5 w-5 text-accent" strokeWidth={1.5} />
-                <p className="text-xs font-medium text-ink">
-                  Suas avaliações, registros e destaques aparecerão aqui automaticamente
-                </p>
-                <p className="text-[11px] text-subtle">
-                  Catalogue obras, avalie títulos ou salve citações na ficha de cada obra.
-                </p>
-              </div>
+              <p className="border-y border-line py-6 text-sm text-muted">
+                Nenhuma avaliação ou nota registrada ainda.
+              </p>
             ) : (
-              <div className="space-y-2.5">
+              <div className="divide-y divide-line border-y border-line">
                 {personalFeed.map((entry) => (
                   <article
                     key={entry.id}
-                    className="flex items-start gap-3 rounded-2xl border border-line bg-card p-3.5 transition-colors hover:border-accent/50"
+                    className="flex items-start gap-3 py-3.5"
                   >
                     {entry.work && (
                       <button
                         type="button"
                         onClick={() => onSelectItem?.(entry.work)}
-                        className="aspect-[2/3] w-14 shrink-0 overflow-hidden rounded-lg border border-line"
+                        className="aspect-[2/3] w-14 shrink-0 overflow-hidden rounded-[6px]"
                       >
                         <CoverArt
                           item={entry.work}

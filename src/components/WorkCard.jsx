@@ -7,10 +7,10 @@ import {
 } from '../config/domainConfig';
 import {
   calculateWorkProgress,
-  formatCatalogCardFormatBadge,
   getDisplayTitles,
 } from '../utils/backlogHelpers';
 import { CoverArt } from './CoverArt';
+import { StarRatingDisplay } from './StarRatingPicker';
 
 export const WorkCard = memo(function WorkCard({
   item,
@@ -24,44 +24,13 @@ export const WorkCard = memo(function WorkCard({
   const domain = inferDomainFromWork(item);
   const status = getStatusConfig(item.status, domain);
   const itemPct = calculateWorkProgress(item);
-  const formatBadge = formatCatalogCardFormatBadge(item);
+  const isInProgress = item.status === 'playing' || item.status === 'rewatching';
   const pressTimerRef = useRef(null);
   const longPressedRef = useRef(false);
 
   const titles = getDisplayTitles(item, titleMode);
   const creatorLabel =
     item.creator || item.director || item.studio || item.author || getWorkTypeLabel(item, domain);
-  const subMeta =
-    domain === 'games'
-      ? [
-          item.editionType && item.editionType !== 'Original' ? item.editionType : '',
-          item.storeOrLauncher || '',
-        ]
-          .filter(Boolean)
-          .join(' · ')
-      : domain === 'music'
-        ? item.workType === 'track'
-          ? item.albumName || item.subgenre || ''
-          : item.favoriteTrack || item.subgenre || ''
-        : domain === 'reading'
-          ? item.bookFormat || ''
-          : '';
-
-  const displayRatingBadge =
-    domain === 'games' &&
-    item.gameRating11 !== null &&
-    item.gameRating11 !== undefined &&
-    Number.isFinite(Number(item.gameRating11))
-      ? `${item.gameRating11}/11`
-      : domain === 'music' &&
-          item.workType === 'track' &&
-          item.trackRating10 !== null &&
-          item.trackRating10 !== undefined &&
-          Number.isFinite(Number(item.trackRating10))
-        ? `${item.trackRating10}/10`
-        : typeof item.rating === 'number'
-          ? String(item.rating)
-          : null;
 
   const clearPress = () => {
     if (pressTimerRef.current) {
@@ -94,69 +63,62 @@ export const WorkCard = memo(function WorkCard({
         onPointerCancel={clearPress}
         onPointerLeave={clearPress}
         aria-pressed={selectionMode ? selected : undefined}
-        className="text-left focus:outline-none"
+        className="text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-[6px]"
       >
         <div className="relative overflow-hidden rounded-[6px]">
           <CoverArt
             item={item}
             compact
             priority={priority}
-            className={`${domain === 'music' ? 'aspect-square' : 'aspect-[2/3]'} w-full rounded-[6px] transition-transform duration-150 group-hover:scale-[1.02] group-hover:border-accent/60 ${
+            className={`${domain === 'music' ? 'aspect-square' : 'aspect-[2/3]'} w-full rounded-[6px] transition-transform duration-150 group-hover:scale-[1.015] ${
               selected ? 'ring-2 ring-accent' : ''
             }`}
           />
 
+          {/* Indicador fino de status no topo extremo (sem poluir a capa) */}
+          <div
+            aria-hidden="true"
+            className="absolute inset-x-0 top-0 h-[2px]"
+            style={{ backgroundColor: status?.color || 'transparent' }}
+          />
+
           {selectionMode && (
             <span
-              className={`absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-[4px] border ${
+              className={`absolute left-1.5 top-2 flex h-6 w-6 items-center justify-center rounded-[6px] border ${
                 selected
                   ? 'border-accent bg-accent text-accent-ink'
-                  : 'border-white/70 bg-black/55 text-white'
+                  : 'border-white/75 bg-black/60 text-white'
               }`}
             >
               {selected && <Check className="h-3.5 w-3.5" strokeWidth={2} />}
             </span>
           )}
 
-          {!selectionMode && (
-            <span
-              data-testid="catalog-format-badge"
-              className="absolute left-1.5 top-1.5 max-w-[78%] truncate rounded-[3px] border border-white/15 bg-black/75 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-white backdrop-blur-xs"
+          {/* Barra de progresso na base somente quando em andamento */}
+          {isInProgress && itemPct > 0 && (
+            <div
+              className="absolute inset-x-0 bottom-0 h-[3px] bg-black/50"
+              aria-hidden="true"
             >
-              {formatBadge.label}
-            </span>
-          )}
-
-          {displayRatingBadge !== null && (
-            <span className="absolute right-1.5 top-1.5 rounded-[3px] border border-line bg-app/90 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-ink">
-              {displayRatingBadge}
-            </span>
-          )}
-
-          {(itemPct > 0 || item.status === 'completed') && (
-            <div className="absolute inset-x-0 bottom-0 h-[3px] bg-black/50">
               <div
-                className="h-full transition-all duration-200"
-                style={{
-                  width: `${item.status === 'completed' ? 100 : Math.min(100, itemPct)}%`,
-                  backgroundColor: status?.color || 'var(--accent-color)',
-                }}
+                className="h-full bg-accent transition-all duration-200"
+                style={{ width: `${Math.min(100, itemPct)}%` }}
               />
             </div>
           )}
         </div>
 
-        <div className="mt-1.5 space-y-0.5 px-0.5">
-          <p className="line-clamp-2 text-[11px] font-semibold leading-snug text-ink transition-colors group-hover:text-accent">
+        <div className="mt-2 space-y-0.5 px-0.5">
+          <p className="font-editorial line-clamp-2 text-[13px] font-semibold leading-snug text-ink transition-colors group-hover:text-accent">
             {titles.primary}
           </p>
           {titles.secondary && (
-            <p className="truncate text-[9px] italic text-subtle">{titles.secondary}</p>
+            <p className="truncate text-[10px] italic text-subtle">{titles.secondary}</p>
           )}
-          <p className="truncate text-[10px] text-muted">{creatorLabel}</p>
-          {subMeta && (
-            <p className="truncate text-[9px] font-medium text-subtle">{subMeta}</p>
-          )}
+          <p className="truncate text-[11px] text-muted">{creatorLabel}</p>
+          <div className="pt-0.5 opacity-90 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+            <StarRatingDisplay work={item} size="sm" showNumeric />
+          </div>
         </div>
       </button>
     </div>
