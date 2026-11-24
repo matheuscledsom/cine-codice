@@ -13,6 +13,11 @@
  * com snapshot prévio obrigatório (`cine_codice_backup_pre_v1_2`).
  */
 
+import {
+  inferDomainFromWork,
+  normalizeDomainId,
+  normalizeWorkTypeForDomain,
+} from '../config/domainConfig.js';
 import { stripApiKeysFromUrl } from '../api/httpClient.js';
 import {
   CACHE_TTL_MS,
@@ -226,6 +231,8 @@ function idbDeleteKeys(db, storeName, keys) {
  * Normaliza registro mestre da store `works` garantindo campos R10/D2 e esquema v1.2.
  */
 export function normalizeRelationalWorkRecord(work = {}) {
+  const domain = inferDomainFromWork(work);
+  const workType = normalizeWorkTypeForDomain(work.workType || work.mediaType, domain);
   const overview = String(work.overview ?? work.synopsis ?? '').trim();
   const moods = Array.isArray(work.moods)
     ? work.moods.filter(Boolean)
@@ -245,7 +252,9 @@ export function normalizeRelationalWorkRecord(work = {}) {
   return {
     ...work,
     id: String(work.id || ''),
-    workType: work.workType || 'movie',
+    domain,
+    workType,
+    mediaType: workType,
     status: work.status || 'queued',
     franchiseName: String(work.franchiseName || '').trim(),
     overview,
@@ -263,6 +272,24 @@ export function normalizeRelationalWorkRecord(work = {}) {
       : [],
     currentSeason: Math.max(1, Number(work.currentSeason) || 1),
     currentEpisode: Math.max(0, Number(work.currentEpisode) || 0),
+    // Leitura & Acadêmico
+    pagesRead: Math.max(0, Math.round(Number(work.pagesRead) || 0)),
+    totalPages: Number(work.totalPages) > 0 ? Math.round(Number(work.totalPages)) : null,
+    chaptersRead: Math.max(0, Math.round(Number(work.chaptersRead) || 0)),
+    isbnOrDoi: String(work.isbnOrDoi || work.isbn || work.doi || '').trim(),
+    bookFormat: String(work.bookFormat || '').trim(),
+    // Games
+    platform: String(work.platform || '').trim(),
+    hoursPlayed: Math.max(0, Number(work.hoursPlayed) || 0),
+    completionType: String(work.completionType || '').trim(),
+    storeOrLauncher: String(work.storeOrLauncher || '').trim(),
+    buildOrCharacter: String(work.buildOrCharacter || '').trim(),
+    // Música
+    favoriteTrack: String(work.favoriteTrack || '').trim(),
+    subgenre: String(work.subgenre || '').trim(),
+    releaseFormat: String(work.releaseFormat || '').trim(),
+    listenCount: Math.max(0, Math.round(Number(work.listenCount) || 0)),
+    tracks: Array.isArray(work.tracks) ? work.tracks : [],
     updatedAt: work.updatedAt || work.createdAt || new Date().toISOString(),
   };
 }
@@ -412,8 +439,9 @@ export async function getAllRelationalWorks({ idbFactory = null } = {}) {
     try {
       const list = await idbReadAll(db, RELATIONAL_STORES.works);
       if (list.length > 0) {
-        list.forEach((w) => memDb[RELATIONAL_STORES.works].set(w.id, w));
-        return list;
+        const migrated = list.map((w) => normalizeRelationalWorkRecord(w));
+        migrated.forEach((w) => memDb[RELATIONAL_STORES.works].set(w.id, w));
+        return migrated;
       }
     } catch {
       // Fallback para memória
@@ -425,7 +453,15 @@ export async function getAllRelationalWorks({ idbFactory = null } = {}) {
       }
     }
   }
-  return Array.from(memDb[RELATIONAL_STORES.works].values());
+  return Array.from(memDb[RELATIONAL_STORES.works].values()).map((w) =>
+    normalizeRelationalWorkRecord(w)
+  );
+}
+
+export async function getRelationalWorksByDomain(domain = 'cinema', options = {}) {
+  const cleanDomain = normalizeDomainId(domain);
+  const all = await getAllRelationalWorks(options);
+  return all.filter((w) => inferDomainFromWork(w) === cleanDomain);
 }
 
 export async function getSeasonProgressByWork(workId, { idbFactory = null } = {}) {

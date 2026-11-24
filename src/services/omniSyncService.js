@@ -1,6 +1,9 @@
 import {
+  OMNIPRISM_DOMAIN_IDS,
+  inferDomainFromWork,
   normalizeCinemaStatus,
-  normalizeCinemaWorkType,
+  normalizeDomainId,
+  normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
 import { normalizeExternalRatings } from '../lib/ratings.js';
 import { getAllRelationalWorks, putRelationalWorks } from './relationalDb.js';
@@ -124,7 +127,33 @@ function buildExternalIdsPayload(work = {}) {
   }
   if (mal !== null && mal !== undefined && mal !== '') payload.mal = Number(mal) || mal;
   if (work.tmdbMediaType) payload.tmdbMediaType = String(work.tmdbMediaType);
+
+  // Domínios Reading, Games e Music
+  for (const key of [
+    'openlibrary',
+    'googleBooks',
+    'isbn',
+    'doi',
+    'cheapshark',
+    'steam',
+    'freetogame',
+    'wikidata',
+    'itunes',
+    'musicbrainz',
+  ]) {
+    const val = rawIds[key] ?? work[key] ?? null;
+    if (val !== null && val !== undefined && val !== '') {
+      payload[key] = val;
+    }
+  }
   return payload;
+}
+
+export function filterWorksByDomain(works = [], domain = 'cinema') {
+  const target = normalizeDomainId(domain);
+  return (Array.isArray(works) ? works : []).filter(
+    (w) => w && inferDomainFromWork(w) === target
+  );
 }
 
 export function mapLocalWorkToCatalogRow(
@@ -134,7 +163,8 @@ export function mapLocalWorkToCatalogRow(
 ) {
   const nowIso = new Date().toISOString();
   const cloudId = toCloudWorkId(work.cloudId || work.id);
-  const mediaType = normalizeCinemaWorkType(work.workType);
+  const domain = inferDomainFromWork(work);
+  const mediaType = normalizeWorkTypeForDomain(work.workType || work.mediaType, domain);
   const status = normalizeCinemaStatus(work.status);
   const releaseYear = Number(work.releaseYear);
   const rankNum = Number(work.favoriteRank);
@@ -147,13 +177,32 @@ export function mapLocalWorkToCatalogRow(
   const cleanBackdropUrl = normalizeHttpUrl(work.backdropUrl);
   const cleanExternalRatings = normalizeExternalRatings(work.externalRatings);
 
+  const pagesRead = Math.max(0, Math.round(Number(work.pagesRead) || 0));
+  const totalPages = Number(work.totalPages) > 0 ? Math.round(Number(work.totalPages)) : null;
+  const chaptersRead = Math.max(0, Math.round(Number(work.chaptersRead) || 0));
+  const isbnOrDoi = String(work.isbnOrDoi || work.isbn || work.doi || '').trim();
+  const bookFormat = String(work.bookFormat || '').trim();
+
+  const platform = String(work.platform || '').trim();
+  const hoursPlayed = Math.max(0, Number(work.hoursPlayed) || 0);
+  const completionType = String(work.completionType || '').trim();
+  const storeOrLauncher = String(work.storeOrLauncher || '').trim();
+  const buildOrCharacter = String(work.buildOrCharacter || '').trim();
+
+  const favoriteTrack = String(work.favoriteTrack || '').trim();
+  const subgenre = String(work.subgenre || '').trim();
+  const releaseFormat = String(work.releaseFormat || '').trim();
+  const listenCount = Math.max(0, Math.round(Number(work.listenCount) || 0));
+  const tracks = Array.isArray(work.tracks) ? work.tracks : [];
+  const trackCount = Number(work.trackCount) > 0 ? Math.round(Number(work.trackCount)) : null;
+
   return {
     id: cloudId,
     user_id: userId,
-    domain: OMNI_CINEMA_DOMAIN,
+    domain,
     media_type: mediaType,
     title: String(work.title || '').trim() || 'Sem título',
-    creator: String(work.director || work.studio || work.creator || work.author || '').trim(),
+    creator: String(work.creator || work.director || work.studio || work.author || '').trim(),
     release_year:
       Number.isFinite(releaseYear) && releaseYear > 1800 ? Math.round(releaseYear) : null,
     status,
@@ -195,6 +244,25 @@ export function mapLocalWorkToCatalogRow(
       storyArcs: Array.isArray(work.storyArcs) ? work.storyArcs : [],
       rewatchCount: Number(work.rewatchCount) || 0,
       progress: Number(work.progress) || 0,
+      // Reading
+      pages_read: pagesRead,
+      total_pages: totalPages,
+      chapters_read: chaptersRead,
+      isbn_or_doi: isbnOrDoi,
+      book_format: bookFormat,
+      // Games
+      platform,
+      hours_played: hoursPlayed,
+      completion_type: completionType,
+      store_or_launcher: storeOrLauncher,
+      build_or_character: buildOrCharacter,
+      // Music
+      favorite_track: favoriteTrack,
+      subgenre,
+      release_format: releaseFormat,
+      listen_count: listenCount,
+      tracks,
+      track_count: trackCount,
       ratingSource: work.ratingSource ?? null,
       reviewCriteria: work.reviewCriteria ?? null,
       verdict: work.verdict ?? null,
@@ -252,7 +320,10 @@ export function mapCatalogRowToLocalWork(row = {}) {
         ? row.external_rating
         : {};
   const externalRatings = normalizeExternalRatings(rawExternalRating);
-  const workType = normalizeCinemaWorkType(row.media_type);
+  const domain = normalizeDomainId(
+    row.domain || inferDomainFromWork({ workType: row.media_type })
+  );
+  const workType = normalizeWorkTypeForDomain(row.media_type, domain);
   const status = normalizeCinemaStatus(row.status);
   const synopsis = String(row.synopsis || '').trim();
   const rankNum = Number(row.favorite_rank);
@@ -261,10 +332,13 @@ export function mapCatalogRowToLocalWork(row = {}) {
   return {
     id: localId,
     cloudId: String(row.id || ''),
+    domain,
     workType,
+    mediaType: workType,
     status,
     title: String(row.title || '').trim(),
     originalTitle: String(pd.originalTitle || '').trim(),
+    creator: String(row.creator || '').trim(),
     director: String(row.creator || '').trim(),
     studio: String(pd.studio || '').trim(),
     cast: String(pd.cast || '').trim(),
@@ -272,6 +346,33 @@ export function mapCatalogRowToLocalWork(row = {}) {
     format: pd.format || 'Streaming',
     audioFormat: pd.audioFormat || 'Legendado',
     animeFormat: pd.animeFormat || (workType === 'anime' ? 'TV' : ''),
+    // Reading
+    pagesRead: Math.max(0, Math.round(Number(pd.pages_read ?? pd.pagesRead) || 0)),
+    totalPages:
+      Number(pd.total_pages ?? pd.totalPages) > 0
+        ? Math.round(Number(pd.total_pages ?? pd.totalPages))
+        : null,
+    chaptersRead: Math.max(0, Math.round(Number(pd.chapters_read ?? pd.chaptersRead) || 0)),
+    isbnOrDoi: String(pd.isbn_or_doi ?? pd.isbnOrDoi ?? extIds.isbn ?? extIds.doi ?? '').trim(),
+    bookFormat: String(pd.book_format ?? pd.bookFormat ?? (domain === 'reading' ? 'Físico' : '')).trim(),
+    // Games
+    platform: String(pd.platform ?? (domain === 'games' ? 'PC' : '')).trim(),
+    hoursPlayed: Math.max(0, Number(pd.hours_played ?? pd.hoursPlayed) || 0),
+    completionType: String(pd.completion_type ?? pd.completionType ?? '').trim(),
+    storeOrLauncher: String(pd.store_or_launcher ?? pd.storeOrLauncher ?? '').trim(),
+    buildOrCharacter: String(pd.build_or_character ?? pd.buildOrCharacter ?? '').trim(),
+    // Music
+    favoriteTrack: String(pd.favorite_track ?? pd.favoriteTrack ?? '').trim(),
+    subgenre: String(pd.subgenre ?? '').trim(),
+    releaseFormat: String(
+      pd.release_format ?? pd.releaseFormat ?? (domain === 'music' ? 'Álbum de Estúdio' : '')
+    ).trim(),
+    listenCount: Math.max(0, Math.round(Number(pd.listen_count ?? pd.listenCount) || 0)),
+    tracks: Array.isArray(pd.tracks) ? pd.tracks : [],
+    trackCount:
+      Number(pd.track_count ?? pd.trackCount) > 0
+        ? Math.round(Number(pd.track_count ?? pd.trackCount))
+        : null,
     coverUrl: row.cover_url || null,
     backdropUrl: row.backdrop_url || null,
     coverSources: Array.isArray(pd.coverSources)
@@ -316,6 +417,14 @@ export function mapCatalogRowToLocalWork(row = {}) {
       ...(extIds.tvmaze ? { tvmaze: extIds.tvmaze } : {}),
       ...(extIds.anilist ? { anilist: extIds.anilist } : {}),
       ...(extIds.mal ? { mal: extIds.mal } : {}),
+      ...(extIds.openlibrary ? { openlibrary: extIds.openlibrary } : {}),
+      ...(extIds.googleBooks ? { googleBooks: extIds.googleBooks } : {}),
+      ...(extIds.cheapshark ? { cheapshark: extIds.cheapshark } : {}),
+      ...(extIds.steam ? { steam: extIds.steam } : {}),
+      ...(extIds.freetogame ? { freetogame: extIds.freetogame } : {}),
+      ...(extIds.wikidata ? { wikidata: extIds.wikidata } : {}),
+      ...(extIds.itunes ? { itunes: extIds.itunes } : {}),
+      ...(extIds.musicbrainz ? { musicbrainz: extIds.musicbrainz } : {}),
     },
     tmdbId: extIds.tmdb ?? null,
     imdbId: extIds.imdb ? String(extIds.imdb) : '',
@@ -362,9 +471,10 @@ function getWorkIdentityKeys(work = {}) {
     keys.push(`local:${String(work.id)}`);
   }
   const cleanTitle = String(work.title || '').trim().toLowerCase();
-  const type = normalizeCinemaWorkType(work.workType);
+  const domain = inferDomainFromWork(work);
+  const type = normalizeWorkTypeForDomain(work.workType || work.mediaType, domain);
   if (cleanTitle) {
-    keys.push(`title:${type}::${cleanTitle}`);
+    keys.push(`title:${domain}:${type}::${cleanTitle}`);
   }
   return keys;
 }
@@ -722,6 +832,7 @@ export function subscribeToAuthChanges(callback, { client = null } = {}) {
 export async function syncCatalogWithSupabase({
   client = null,
   localWorksOverride = null,
+  domainFilter = null,
   storage = null,
   idbFactory = null,
 } = {}) {
@@ -747,12 +858,14 @@ export async function syncCatalogWithSupabase({
     const flushedDeleteIds = [];
     let deletedCount = 0;
     if (pendingDeletes.length > 0) {
-      const { error: delErr } = await sb
+      let delQuery = sb
         .from(OMNI_CATALOG_TABLE)
         .delete()
-        .eq('user_id', user.id)
-        .eq('domain', OMNI_CINEMA_DOMAIN)
-        .in('id', pendingDeletes);
+        .eq('user_id', user.id);
+      if (domainFilter) {
+        delQuery = delQuery.eq('domain', normalizeDomainId(domainFilter));
+      }
+      const { error: delErr } = await delQuery.in('id', pendingDeletes);
 
       if (!delErr) {
         deletedCount = pendingDeletes.length;
@@ -765,12 +878,15 @@ export async function syncCatalogWithSupabase({
       new Set([...flushedDeleteIds, ...readPendingCloudDeletes(storage)])
     );
 
-    // 2. Pull remoto filtrando domain = 'cinema'
-    const { data: remoteRows, error: pullError } = await sb
+    // 2. Pull remoto dos 4 domínios (ou filtrado se domainFilter for passado)
+    let pullQuery = sb
       .from(OMNI_CATALOG_TABLE)
       .select('*')
-      .eq('user_id', user.id)
-      .eq('domain', OMNI_CINEMA_DOMAIN);
+      .eq('user_id', user.id);
+    if (domainFilter) {
+      pullQuery = pullQuery.eq('domain', normalizeDomainId(domainFilter));
+    }
+    const { data: remoteRows, error: pullError } = await pullQuery;
 
     if (pullError) {
       return {
@@ -889,7 +1005,6 @@ export async function deleteWorksFromCloud(
       .from(OMNI_CATALOG_TABLE)
       .delete()
       .eq('user_id', sessionRes.user.id)
-      .eq('domain', OMNI_CINEMA_DOMAIN)
       .in('id', cloudIds);
     if (!error) {
       cloudIds.forEach((cid) => cancelPendingCloudDelete(cid, storage));
@@ -946,7 +1061,8 @@ export function subscribeToCatalogRealtime(
           }
 
           const row = payload?.new;
-          if (!row || row.domain !== OMNI_CINEMA_DOMAIN) return;
+          const rowDomain = row?.domain || 'cinema';
+          if (!row || !OMNIPRISM_DOMAIN_IDS.includes(rowDomain)) return;
 
           const incomingWork = mapCatalogRowToLocalWork(row);
           const { mergedWorks } = mergeWorksByUpdatedAt(baseWorks, [incomingWork], {

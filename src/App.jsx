@@ -5,7 +5,12 @@ import { BottomNav } from './components/BottomNav';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { OmniLogo } from './components/OmniLogo';
 import { SkeletonScreen } from './components/SkeletonScreen';
-import { domainConfig } from './config/domainConfig';
+import {
+  domainConfig,
+  getDomainMeta,
+  inferDomainFromWork,
+  normalizeDomainId,
+} from './config/domainConfig';
 import { useToast } from './context/ToastContext';
 import { GraphicFilters } from './design/GraphicFilters';
 import { useAiConfig } from './hooks/useAiConfig';
@@ -293,6 +298,44 @@ export function App() {
     setCustomAccentColor,
     resetCustomColors,
   } = useTheme();
+
+  const [activeDomain, setActiveDomain] = useState(() => {
+    try {
+      if (typeof localStorage === 'undefined') return 'cinema';
+      const saved = localStorage.getItem('omniprism_active_domain_v1');
+      return saved ? normalizeDomainId(saved) : 'cinema';
+    } catch {
+      return 'cinema';
+    }
+  });
+  const activeDomainMeta = useMemo(() => getDomainMeta(activeDomain), [activeDomain]);
+  const initialTintAppliedRef = useRef(false);
+
+  useEffect(() => {
+    if (initialTintAppliedRef.current) return;
+    initialTintAppliedRef.current = true;
+    if (!bgTintColor) {
+      setCustomAccentColor(null);
+      setBgTintColor(getDomainMeta(activeDomain).tintHex);
+    }
+  }, [activeDomain, bgTintColor, setBgTintColor, setCustomAccentColor]);
+
+  const handleSelectDomain = useCallback(
+    (nextDomain) => {
+      const clean = normalizeDomainId(nextDomain);
+      setActiveDomain(clean);
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('omniprism_active_domain_v1', clean);
+        }
+      } catch {
+        // Ignora erro de storage
+      }
+      setCustomAccentColor(null);
+      setBgTintColor(getDomainMeta(clean).tintHex);
+    },
+    [setBgTintColor, setCustomAccentColor]
+  );
 
   const aiConfig = useAiConfig();
   const geminiKey = aiConfig.geminiKey;
@@ -1493,6 +1536,57 @@ export function App() {
     (work, options = {}) => {
       if (!work?.id) return;
       const { allowCompletion = true } = options || {};
+      const workDomain = inferDomainFromWork(work);
+
+      if (workDomain === 'reading') {
+        const total = Number(work.totalPages) || 0;
+        const nextPages =
+          total > 0
+            ? Math.min(total, (Number(work.pagesRead) || 0) + 10)
+            : (Number(work.pagesRead) || 0) + 10;
+        const done = allowCompletion && total > 0 && nextPages >= total;
+        updateItem(work.id, {
+          pagesRead: nextPages,
+          status: done ? 'completed' : 'playing',
+          ...(done ? { completedDate: getTodayLocalISO(), progress: 100 } : {}),
+        });
+        registerToday?.();
+        showToast({
+          message: total > 0 ? `${work.title}: Pág. ${nextPages}/${total}` : `${work.title}: Pág. ${nextPages}`,
+          type: 'success',
+        });
+        return;
+      }
+
+      if (workDomain === 'games') {
+        const nextHours = Number(((Number(work.hoursPlayed) || 0) + 1).toFixed(1));
+        updateItem(work.id, {
+          hoursPlayed: nextHours,
+          status: work.status === 'queued' ? 'playing' : work.status,
+        });
+        registerToday?.();
+        showToast({
+          message: `${work.title}: ${nextHours}h jogadas`,
+          type: 'success',
+        });
+        return;
+      }
+
+      if (workDomain === 'music') {
+        const nextListens = (Number(work.listenCount) || 0) + 1;
+        updateItem(work.id, {
+          listenCount: nextListens,
+          status: work.status === 'queued' ? 'completed' : work.status,
+          ...(work.status === 'queued' ? { completedDate: getTodayLocalISO(), progress: 100 } : {}),
+        });
+        registerToday?.();
+        showToast({
+          message: `${work.title}: audição #${nextListens} registrada`,
+          type: 'success',
+        });
+        return;
+      }
+
       if (isEpisodicWork(work)) {
         const dur = Number(work.episodeDurationMinutes) || (work.workType === 'anime' ? 24 : 45);
         handleQuickReadingCheckIn({
@@ -1509,7 +1603,7 @@ export function App() {
         });
       }
     },
-    [handleQuickReadingCheckIn]
+    [handleQuickReadingCheckIn, updateItem, registerToday, showToast]
   );
 
   const handleStartPickedWork = useCallback(
@@ -1747,8 +1841,8 @@ export function App() {
             <span className="text-sm font-semibold tracking-tight text-ink">
               {domainConfig.appName}
             </span>
-            <span className="hidden sm:inline rounded-full border border-line bg-card px-2 py-0.5 text-[10px] font-medium text-muted">
-              Cinema &amp; Séries
+            <span className="hidden sm:inline rounded-full border border-line bg-card px-2 py-0.5 text-[10px] font-medium text-accent">
+              {activeDomainMeta.label}
             </span>
           </button>
 
@@ -1920,6 +2014,8 @@ export function App() {
                   dailyLogs={dailyLogs}
                   resolvedBadgeName={resolvedTitleBadge}
                   themeMode={mode}
+                  activeDomain={activeDomain}
+                  onSelectDomain={handleSelectDomain}
                   tmdbKey={aiConfig.tmdbKey}
                   geminiKey={geminiKey}
                   backupReminder={backupReminder}
@@ -1952,6 +2048,9 @@ export function App() {
                   geminiKey={geminiKey}
                   tmdbKey={aiConfig.tmdbKey}
                   omdbKey={aiConfig.omdbKey}
+                  activeDomain={activeDomain}
+                  onSelectDomain={handleSelectDomain}
+                  themeMode={mode}
                   onAddItem={handleAddItem}
                   onUpdateItem={handleUpdateItem}
                   onSelectExisting={(item) => setSelectedItemId(item.id)}
@@ -1964,6 +2063,9 @@ export function App() {
                   items={items}
                   profile={profile}
                   collections={collections}
+                  activeDomain={activeDomain}
+                  onSelectDomain={handleSelectDomain}
+                  themeMode={mode}
                   onCreateCollection={createCollection}
                   onDeleteCollection={deleteCollection}
                   onMoveCollection={moveCollection}
@@ -1990,6 +2092,9 @@ export function App() {
                   posts={posts}
                   readingSessions={readingSessions}
                   streakCount={streakCount}
+                  themeMode={mode}
+                  activeDomain={activeDomain}
+                  onSelectDomain={handleSelectDomain}
                   geminiKey={geminiKey}
                   hasGeminiKey={aiConfig.hasAnyAiKey || hasGeminiKey}
                   aiConfig={aiConfig}

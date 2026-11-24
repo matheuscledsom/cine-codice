@@ -11,8 +11,9 @@ import {
 } from '../services/relationalDb';
 import {
   domainConfig,
+  inferDomainFromWork,
   normalizeCinemaStatus,
-  normalizeCinemaWorkType,
+  normalizeWorkTypeForDomain,
 } from '../config/domainConfig';
 import { initialItems } from '../data/mockData';
 import { applyCanonicalIdsToWork } from '../lib/idBridge';
@@ -79,7 +80,8 @@ function normalizeNullablePositiveInt(value) {
 function normalizeItem(rawItem, spectatorDna = null) {
   const status = normalizeCinemaStatus(rawItem.status || domainConfig.ui.add.defaultNewStatus);
   const isCompleted = status === 'completed';
-  const workType = normalizeCinemaWorkType(rawItem.workType);
+  const domain = inferDomainFromWork(rawItem);
+  const workType = normalizeWorkTypeForDomain(rawItem.workType || rawItem.mediaType, domain);
   const nowIso = new Date().toISOString();
   const today = getTodayLocalISO();
 
@@ -120,14 +122,40 @@ function normalizeItem(rawItem, spectatorDna = null) {
   });
   const externalRatings = normalizeExternalRatings(rawItem.externalRatings);
 
+  const totalPages = normalizeNullablePositiveInt(rawItem.totalPages);
+  const rawPagesRead = normalizeNonNegativeInt(rawItem.pagesRead);
+  const pagesRead = isCompleted && totalPages ? totalPages : rawPagesRead;
+
   const normalized = {
     ...rawItem,
     id: String(rawItem.id || createUuid()),
+    domain,
     workType,
+    mediaType: workType,
     status,
     title: String(rawItem.title || ''),
     originalTitle: String(rawItem.originalTitle || '').trim(),
-    director: String(rawItem.director || rawItem.studio || rawItem.author || '').trim(),
+    creator: String(rawItem.creator || rawItem.director || rawItem.studio || rawItem.author || '').trim(),
+    director: String(rawItem.director || rawItem.creator || rawItem.studio || rawItem.author || '').trim(),
+    // Leitura & Acadêmico
+    pagesRead,
+    totalPages,
+    chaptersRead: normalizeNonNegativeInt(rawItem.chaptersRead),
+    isbnOrDoi: String(rawItem.isbnOrDoi || rawItem.isbn || rawItem.doi || '').trim(),
+    bookFormat: String(rawItem.bookFormat || (domain === 'reading' ? 'Físico' : '')).trim(),
+    // Games
+    platform: String(rawItem.platform || (domain === 'games' ? 'PC' : '')).trim(),
+    hoursPlayed: Math.max(0, Number(rawItem.hoursPlayed) || 0),
+    completionType: String(rawItem.completionType || '').trim(),
+    storeOrLauncher: String(rawItem.storeOrLauncher || '').trim(),
+    buildOrCharacter: String(rawItem.buildOrCharacter || '').trim(),
+    // Música
+    favoriteTrack: String(rawItem.favoriteTrack || '').trim(),
+    subgenre: String(rawItem.subgenre || '').trim(),
+    releaseFormat: String(rawItem.releaseFormat || (domain === 'music' ? 'Álbum de Estúdio' : '')).trim(),
+    listenCount: normalizeNonNegativeInt(rawItem.listenCount),
+    tracks: Array.isArray(rawItem.tracks) ? rawItem.tracks : [],
+    trackCount: normalizeNullablePositiveInt(rawItem.trackCount),
     studio: String(rawItem.studio || '').trim(),
     cast: String(rawItem.cast || '').trim(),
     format: rawItem.format || domainConfig.mediaFormats[0],
@@ -263,6 +291,8 @@ function applyStatusTransitionDefaults(merged, nextStatus, prevItem, spectatorDn
     if (isEpisodicWork(merged)) {
       if (merged.totalSeasons > 0) merged.currentSeason = merged.totalSeasons;
       if (merged.totalEpisodes > 0) merged.currentEpisode = merged.totalEpisodes;
+    } else if (merged.domain === 'reading' && merged.totalPages > 0) {
+      merged.pagesRead = merged.totalPages;
     } else if (merged.totalSeconds > 0) {
       merged.currentSeconds = merged.totalSeconds;
     }

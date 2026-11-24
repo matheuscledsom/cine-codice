@@ -1,3 +1,5 @@
+export const OMNIPRISM_DOMAIN_IDS = ['cinema', 'reading', 'games', 'music'];
+
 export const OMNIPRISM_DOMAINS = [
   {
     id: 'cinema',
@@ -7,8 +9,11 @@ export const OMNIPRISM_DOMAINS = [
     tintHex: '#D97706',
     beamHex: '#F59E0B',
     status: 'active',
-    badge: 'Ativo · Completo',
+    badge: 'Filmes · Séries · Animes',
     description: 'Filmes, séries, animes e cronologias',
+    creatorLabel: 'Direção / Estúdio',
+    queueLabel: 'Quero Ver',
+    playingLabel: 'Assistindo',
   },
   {
     id: 'reading',
@@ -17,9 +22,12 @@ export const OMNIPRISM_DOMAINS = [
     icon: 'BookOpen',
     tintHex: '#059669',
     beamHex: '#10B981',
-    status: 'soon',
-    badge: 'Em breve · Núcleo pronto',
-    description: 'Livros, mangás, artigos e fichamentos',
+    status: 'active',
+    badge: 'Livros · Mangás · Papers',
+    description: 'Livros, mangás, artigos e filosofia',
+    creatorLabel: 'Autor(a) / Pesquisador(a)',
+    queueLabel: 'Quero Ler',
+    playingLabel: 'Lendo',
   },
   {
     id: 'games',
@@ -28,9 +36,12 @@ export const OMNIPRISM_DOMAINS = [
     icon: 'Gamepad2',
     tintHex: '#7C3AED',
     beamHex: '#8B5CF6',
-    status: 'soon',
-    badge: 'Em breve · Núcleo pronto',
+    status: 'active',
+    badge: 'Jogos · DLCs · Modpacks',
     description: 'Campanhas, horas jogadas e plataformas',
+    creatorLabel: 'Estúdio / Desenvolvedora',
+    queueLabel: 'Na Fila',
+    playingLabel: 'Jogando',
   },
   {
     id: 'music',
@@ -39,11 +50,155 @@ export const OMNIPRISM_DOMAINS = [
     icon: 'Music',
     tintHex: '#BE123C',
     beamHex: '#F43F5E',
-    status: 'soon',
-    badge: 'Em breve · Núcleo pronto',
-    description: 'Álbuns, faixas e discografias',
+    status: 'active',
+    badge: 'Álbuns · EPs · Discografias',
+    description: 'Álbuns, faixas, shows e discografias',
+    creatorLabel: 'Artista / Banda',
+    queueLabel: 'Quero Ouvir',
+    playingLabel: 'Ouvindo',
   },
 ];
+
+export const DOMAIN_MEDIA_TYPES = {
+  cinema: [
+    { id: 'movie', label: 'Filme', shortLabel: 'Filme', pluralLabel: 'Filmes', icon: 'Film' },
+    { id: 'series', label: 'Série', shortLabel: 'Série', pluralLabel: 'Séries', icon: 'Tv' },
+    { id: 'anime', label: 'Anime', shortLabel: 'Anime', pluralLabel: 'Animes', icon: 'Clapperboard' },
+  ],
+  reading: [
+    { id: 'book', label: 'Livro', shortLabel: 'Livro', pluralLabel: 'Livros', icon: 'BookOpen' },
+    { id: 'manga', label: 'Mangá / HQ', shortLabel: 'Mangá / HQ', pluralLabel: 'Mangás / HQs', icon: 'Layers' },
+    { id: 'paper', label: 'Artigo / Paper', shortLabel: 'Artigo / Paper', pluralLabel: 'Artigos / Papers', icon: 'FileText' },
+    { id: 'technical', label: 'Livro Técnico / Filosofia', shortLabel: 'Técnico / Fil.', pluralLabel: 'Técnicos / Fil.', icon: 'Compass' },
+  ],
+  games: [
+    { id: 'game', label: 'Jogo', shortLabel: 'Jogo', pluralLabel: 'Jogos', icon: 'Gamepad2' },
+    { id: 'dlc', label: 'DLC / Expansão', shortLabel: 'DLC', pluralLabel: 'DLCs', icon: 'Sparkles' },
+    { id: 'modpack', label: 'Modpack / Hack', shortLabel: 'Modpack', pluralLabel: 'Modpacks', icon: 'Layers' },
+  ],
+  music: [
+    { id: 'album', label: 'Álbum', shortLabel: 'Álbum', pluralLabel: 'Álbuns', icon: 'Music' },
+    { id: 'ep_single', label: 'EP / Single', shortLabel: 'EP / Single', pluralLabel: 'EPs / Singles', icon: 'Music' },
+    { id: 'discography', label: 'Discografia / Banda', shortLabel: 'Discografia', pluralLabel: 'Discografias', icon: 'Award' },
+    { id: 'live_show', label: 'Show / Ao Vivo', shortLabel: 'Ao Vivo', pluralLabel: 'Shows Ao Vivo', icon: 'Sparkles' },
+  ],
+};
+
+export const BOOK_FORMATS = ['Físico', 'EPUB', 'PDF'];
+
+export const GAME_PLATFORMS = [
+  'PC',
+  'PS1',
+  'PS2',
+  'PSP',
+  'SNES',
+  'GBA',
+  'DS',
+  '3DS',
+  'Switch',
+  'Mobile',
+];
+
+export const GAME_COMPLETION_TYPES = [
+  'História Principal',
+  '100% / Platina',
+  'Multiplayer / Ranked',
+  'Emulação',
+];
+
+export const GAME_STORES_LAUNCHERS = [
+  'Steam',
+  'Nuuvem',
+  'Prism Launcher',
+  'PCSX2',
+  'mGBA',
+  'Epic / GOG',
+  'Console / Cartucho',
+];
+
+export const MUSIC_RELEASE_FORMATS = [
+  'Álbum de Estúdio',
+  'Ao Vivo',
+  'Coletânea',
+];
+
+export function normalizeDomainId(rawDomain) {
+  const clean = String(rawDomain || '').trim().toLowerCase();
+  return OMNIPRISM_DOMAIN_IDS.includes(clean) ? clean : 'cinema';
+}
+
+export function getDomainMeta(domainId = 'cinema') {
+  const clean = normalizeDomainId(domainId);
+  return OMNIPRISM_DOMAINS.find((d) => d.id === clean) || OMNIPRISM_DOMAINS[0];
+}
+
+export function getMediaTypesForDomain(domainId = 'cinema') {
+  const clean = normalizeDomainId(domainId);
+  return DOMAIN_MEDIA_TYPES[clean] || DOMAIN_MEDIA_TYPES.cinema;
+}
+
+export function inferDomainFromWork(work = {}) {
+  if (work?.domain && OMNIPRISM_DOMAIN_IDS.includes(String(work.domain).trim().toLowerCase())) {
+    return String(work.domain).trim().toLowerCase();
+  }
+  const type = String(work?.workType || work?.mediaType || work?.media_type || '')
+    .trim()
+    .toLowerCase();
+  if (['book', 'manga', 'paper', 'technical', 'academic', 'hq'].includes(type)) {
+    return 'reading';
+  }
+  if (['game', 'dlc', 'modpack', 'romhack'].includes(type)) {
+    return 'games';
+  }
+  if (['album', 'ep_single', 'ep', 'single', 'discography', 'live_show'].includes(type)) {
+    return 'music';
+  }
+  return 'cinema';
+}
+
+export function normalizeWorkTypeForDomain(rawType, domain = 'cinema') {
+  const cleanDomain = normalizeDomainId(domain);
+  const clean = String(rawType || '').trim().toLowerCase();
+
+  if (cleanDomain === 'reading') {
+    if (clean === 'manga' || clean === 'hq' || clean === 'comic') return 'manga';
+    if (clean === 'paper' || clean === 'article' || clean === 'artigo') return 'paper';
+    if (clean === 'technical' || clean === 'academic' || clean === 'philosophy') return 'technical';
+    return 'book';
+  }
+  if (cleanDomain === 'games') {
+    if (clean === 'dlc' || clean === 'expansion') return 'dlc';
+    if (clean === 'modpack' || clean === 'hack' || clean === 'romhack') return 'modpack';
+    return 'game';
+  }
+  if (cleanDomain === 'music') {
+    if (clean === 'ep_single' || clean === 'ep' || clean === 'single') return 'ep_single';
+    if (clean === 'discography' || clean === 'band') return 'discography';
+    if (clean === 'live_show' || clean === 'live' || clean === 'show') return 'live_show';
+    return 'album';
+  }
+
+  if (clean === 'series' || clean === 'tv' || clean === 'serie' || clean === 'show') {
+    return 'series';
+  }
+  if (clean === 'anime' || clean === 'ova' || clean === 'ona') {
+    return 'anime';
+  }
+  return 'movie';
+}
+
+export function getWorkTypeLabel(workOrType, domainArg = null) {
+  const isObj = typeof workOrType === 'object' && workOrType !== null;
+  const domain = domainArg
+    ? normalizeDomainId(domainArg)
+    : isObj
+      ? inferDomainFromWork(workOrType)
+      : inferDomainFromWork({ workType: workOrType });
+  const rawType = isObj ? workOrType.workType || workOrType.mediaType : workOrType;
+  const norm = normalizeWorkTypeForDomain(rawType, domain);
+  const found = getMediaTypesForDomain(domain).find((t) => t.id === norm);
+  return found ? found.shortLabel : 'Obra';
+}
 
 export const domainConfig = {
   domainKey: 'cine',

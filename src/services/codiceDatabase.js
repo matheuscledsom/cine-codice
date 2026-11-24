@@ -1,8 +1,9 @@
 import {
   buildPublicProfileLink,
   domainConfig,
+  inferDomainFromWork,
   normalizeCinemaStatus,
-  normalizeCinemaWorkType,
+  normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
 import { migrateFavoriteGenresToObjects } from '../lib/genreCatalog.js';
 import { applyCanonicalIdsToWork } from '../lib/idBridge.js';
@@ -242,7 +243,8 @@ export function buildCodiceDatabase({
     );
     const createdAt = rawItem.createdAt || fallbackNow;
     const updatedAt = rawItem.updatedAt || createdAt;
-    const workType = normalizeCinemaWorkType(rawItem.workType);
+    const domain = inferDomainFromWork(rawItem);
+    const workType = normalizeWorkTypeForDomain(rawItem.workType || rawItem.mediaType, domain);
     const status = normalizeCinemaStatus(rawItem.status);
     const isCompleted = status === 'completed';
 
@@ -269,11 +271,33 @@ export function buildCodiceDatabase({
 
     const workRow = {
       id: workId,
+      domain,
       title: String(rawItem.title || 'Obra sem título'),
       originalTitle: String(rawItem.originalTitle || '').trim(),
       workType,
+      mediaType: workType,
       status,
-      director: String(rawItem.director || rawItem.studio || rawItem.author || '').trim(),
+      creator: String(rawItem.creator || rawItem.director || rawItem.studio || rawItem.author || '').trim(),
+      director: String(rawItem.director || rawItem.creator || rawItem.studio || rawItem.author || '').trim(),
+      // Leitura & Acadêmico
+      pagesRead: Math.max(0, Math.round(Number(rawItem.pagesRead) || 0)),
+      totalPages: Number(rawItem.totalPages) > 0 ? Math.round(Number(rawItem.totalPages)) : null,
+      chaptersRead: Math.max(0, Math.round(Number(rawItem.chaptersRead) || 0)),
+      isbnOrDoi: String(rawItem.isbnOrDoi || rawItem.isbn || rawItem.doi || '').trim(),
+      bookFormat: String(rawItem.bookFormat || '').trim(),
+      // Games
+      platform: String(rawItem.platform || '').trim(),
+      hoursPlayed: Math.max(0, Number(rawItem.hoursPlayed) || 0),
+      completionType: String(rawItem.completionType || '').trim(),
+      storeOrLauncher: String(rawItem.storeOrLauncher || '').trim(),
+      buildOrCharacter: String(rawItem.buildOrCharacter || '').trim(),
+      // Música
+      favoriteTrack: String(rawItem.favoriteTrack || '').trim(),
+      subgenre: String(rawItem.subgenre || '').trim(),
+      releaseFormat: String(rawItem.releaseFormat || '').trim(),
+      listenCount: Math.max(0, Math.round(Number(rawItem.listenCount) || 0)),
+      tracks: Array.isArray(rawItem.tracks) ? rawItem.tracks : [],
+      trackCount: Number(rawItem.trackCount) || null,
       studio: String(rawItem.studio || '').trim(),
       cast: String(rawItem.cast || '').trim(),
       releaseYear: rawItem.releaseYear ?? rawItem.publicationYear ?? null,
