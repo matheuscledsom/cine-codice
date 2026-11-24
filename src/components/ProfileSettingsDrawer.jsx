@@ -38,6 +38,7 @@ import {
   getConfiguredGoogleClientId,
   setConfiguredGoogleClientId,
 } from '../services/googleDriveBackup';
+import { ApiStatusPanel } from './ApiStatusPanel';
 import { InstallAppBanner } from './InstallAppBanner';
 import {
   DNA_DENSITY_OPTIONS,
@@ -1219,6 +1220,10 @@ export function ProfileSettingsDrawer({
                     </button>
                   )}
                 </div>
+              </section>
+
+              <section className="space-y-2.5 p-4">
+                <ApiStatusPanel authenticated={Boolean(cloudState?.authenticated)} />
               </section>
 
               <section className="space-y-2.5 p-4">

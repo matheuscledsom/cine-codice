@@ -22,6 +22,10 @@ import {
   stripApiKeysFromUrl,
 } from '../api/httpClient.js';
 import {
+  fetchOmdbViaProxyOrDirect,
+  fetchTmdbViaProxyOrDirect,
+} from './apiProxyClient.js';
+import {
   API_TIMEOUT_MS,
   BACKDROP_RETRY_COOLDOWN_MS,
   CACHE_STORES,
@@ -876,20 +880,47 @@ export async function fetchTvMazeShowDetails(
 
 async function searchTmdb(
   query,
-  { filter = 'all', apiKey = '', signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}
+  {
+    filter = 'all',
+    apiKey = '',
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
 ) {
-  const key = sanitizeApiKey(apiKey) || loadTmdbApiKey();
-  if (!key) return [];
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
 
-  const endpoint =
+  const tmdbPath =
     filter === 'movie'
-      ? `${TMDB_API_BASE}/search/movie`
+      ? 'search/movie'
       : filter === 'series'
-        ? `${TMDB_API_BASE}/search/tv`
-        : `${TMDB_API_BASE}/search/multi`;
+        ? 'search/tv'
+        : 'search/multi';
 
-  const url = `${endpoint}?api_key=${encodeURIComponent(key)}&language=pt-BR&include_adult=false&query=${encodeURIComponent(query)}`;
-  const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl, 'tmdb');
+  const outcome = await fetchTmdbViaProxyOrDirect(
+    tmdbPath,
+    {
+      language: 'pt-BR',
+      include_adult: 'false',
+      query,
+    },
+    {
+      directApiKey: key,
+      signal,
+      fetchImpl,
+      timeoutMs,
+      accessToken,
+      supabaseClient,
+      forceProxy,
+      ...(isDev !== undefined ? { isDev } : {}),
+    }
+  );
+  if (outcome.missingKey || !outcome.res) return [];
+  const res = outcome.res;
   if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
   const json = await res.json();
   const list = Array.isArray(json?.results) ? json.results : [];
@@ -961,6 +992,10 @@ async function fetchTmdbDetailsInternal(
     allowStaleOffline = true,
     forceRefresh = false,
     nowFn = Date.now,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
   } = {}
 ) {
   if (!tmdbId) return { ok: false, status: 'MISSING_ID', data: null };
@@ -987,23 +1022,40 @@ async function fetchTmdbDetailsInternal(
   }
 
   const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
-  if (!key) {
-    if (cached.hit && allowStaleOffline && cached.data) {
-      return {
-        ok: true,
-        status: 'OFFLINE_CACHE',
-        fromCache: true,
-        isOfflineCache: true,
-        cacheDateLabel: cached.cacheDateLabel,
-        data: cached.data,
-      };
-    }
-    return { ok: false, status: 'MISSING_KEY', data: null };
-  }
 
   try {
-    const url = `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}?api_key=${encodeURIComponent(key)}&language=pt-BR&append_to_response=credits,external_ids,watch/providers`;
-    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      `${type}/${encodeURIComponent(tmdbId)}`,
+      {
+        language: 'pt-BR',
+        append_to_response: 'credits,external_ids,watch/providers',
+      },
+      {
+        directApiKey: key,
+        signal,
+        fetchImpl,
+        timeoutMs,
+        nowFn,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
+    );
+    if (outcome.missingKey || !outcome.res) {
+      if (cached.hit && allowStaleOffline && cached.data) {
+        return {
+          ok: true,
+          status: 'OFFLINE_CACHE',
+          fromCache: true,
+          isOfflineCache: true,
+          cacheDateLabel: cached.cacheDateLabel,
+          data: cached.data,
+        };
+      }
+      return { ok: false, status: 'MISSING_KEY', data: null };
+    }
+    const res = outcome.res;
     if (!res.ok) {
       throw new Error(`TMDB HTTP ${res.status}`);
     }
@@ -1472,6 +1524,10 @@ export async function searchCinemaMedia(
     fetchImpl = fetch,
     timeoutMs = API_TIMEOUT_MS,
     skipCache = false,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
   } = {}
 ) {
   const cleanQuery = String(query || '').trim();
@@ -1516,7 +1572,18 @@ export async function searchCinemaMedia(
     anilist: () => searchAniList(cleanQuery, { signal, fetchImpl, timeoutMs }),
     jikan: () => searchJikan(cleanQuery, { signal, fetchImpl, timeoutMs }),
     tvmaze: () => searchTvMaze(cleanQuery, { signal, fetchImpl, timeoutMs }),
-    tmdb: () => searchTmdb(cleanQuery, { filter, apiKey: tmdbApiKey, signal, fetchImpl, timeoutMs }),
+    tmdb: () =>
+      searchTmdb(cleanQuery, {
+        filter,
+        apiKey: tmdbApiKey,
+        signal,
+        fetchImpl,
+        timeoutMs,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        isDev,
+      }),
     imdb: () => searchImdbSuggestion(cleanQuery, { signal, fetchImpl, timeoutMs }),
     wikidata: () => searchWikidataCinema(cleanQuery, { signal, fetchImpl, timeoutMs }),
     internetArchive: () => searchInternetArchiveMovies(cleanQuery, { signal, fetchImpl, timeoutMs }),
@@ -1795,6 +1862,10 @@ export async function enrichWorkWithExternalRatings(
     fetchImpl = fetch,
     nowFn = Date.now,
     maxConcurrency = 2,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
   } = {}
 ) {
   if (!work) return { work, meta: { partial: false, failedSources: [], omdbMissingKey: false } };
@@ -1851,6 +1922,10 @@ export async function enrichWorkWithExternalRatings(
           allowStaleOffline,
           forceRefresh,
           nowFn,
+          accessToken,
+          supabaseClient,
+          forceProxy,
+          isDev,
         }
       );
     });
@@ -2041,6 +2116,10 @@ export async function enrichWorkWithExternalRatings(
         signal,
         fetchImpl,
         nowFn,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        isDev,
       });
     });
   }
@@ -2226,9 +2305,9 @@ export async function enrichSeriesAndAnimeSeasons(
   let resolvedTvMazeId = work.ids?.tvmaze || work.tvmazeId || null;
   const resolvedImdbId = work.ids?.imdb || work.imdbId || '';
 
-  // 1. Tenta TMDB /tv/{id} se houver ID e chave TMDB
+  // 1. Tenta TMDB /tv/{id} via proxy autenticado ou chave TMDB local
   const effectiveTmdbKey = sanitizeApiKey(tmdbApiKey) || loadTmdbApiKey();
-  if (resolvedTmdbId && effectiveTmdbKey) {
+  if (resolvedTmdbId) {
     const tmdbRes = await fetchTmdbDetailsInternal(resolvedTmdbId, 'tv', {
       apiKey: effectiveTmdbKey,
       allowStaleOffline,
@@ -2341,34 +2420,89 @@ export async function enrichCinemaCandidate(
   return res.work;
 }
 
-export async function testTmdbConnection(apiKey = '', { fetchImpl = fetch } = {}) {
-  const key = sanitizeApiKey(apiKey) || loadTmdbApiKey();
-  if (!key) {
-    return {
-      ok: false,
-      errorMessage: 'Informe uma chave de API TMDB v3 para testar.',
-    };
-  }
+export async function testTmdbConnection(
+  apiKey = '',
+  { fetchImpl = fetch, accessToken = '', supabaseClient = null, forceProxy = null, isDev = undefined } = {}
+) {
+  const explicitKey = apiKey === null ? '' : sanitizeApiKey(apiKey);
+  const fallbackKey = apiKey === null ? '' : explicitKey || loadTmdbApiKey();
   const start = Date.now();
-  try {
-    const res = await fetchWithTimeout(
-      `${TMDB_API_BASE}/configuration?api_key=${encodeURIComponent(key)}`,
-      { dedup: false },
-      6000,
-      fetchImpl,
-      'tmdb'
-    );
-    const latencyMs = Date.now() - start;
-    if (!res.ok) {
+
+  if (explicitKey) {
+    try {
+      const res = await fetchWithTimeout(
+        `${TMDB_API_BASE}/configuration?api_key=${encodeURIComponent(explicitKey)}`,
+        { dedup: false },
+        6000,
+        fetchImpl,
+        'tmdb'
+      );
+      const latencyMs = Date.now() - start;
+      if (!res.ok) {
+        return {
+          ok: false,
+          latencyMs,
+          via: 'direct',
+          errorMessage: res.status === 401 ? 'Chave TMDB inválida ou expirada.' : `Erro HTTP ${res.status}`,
+        };
+      }
+      return { ok: true, latencyMs, via: 'direct', model: 'TMDB API v3' };
+    } catch {
       return {
         ok: false,
-        errorMessage: res.status === 401 ? 'Chave TMDB inválida ou expirada.' : `Erro HTTP ${res.status}`,
+        latencyMs: Date.now() - start,
+        via: 'direct',
+        errorMessage: 'Não foi possível conectar ao TMDB agora.',
       };
     }
-    return { ok: true, latencyMs, model: 'TMDB API v3' };
+  }
+
+  try {
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      'movie/603',
+      { language: 'pt-BR' },
+      {
+        directApiKey: fallbackKey,
+        dedup: false,
+        timeoutMs: 6000,
+        fetchImpl,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
+    );
+    const latencyMs = Date.now() - start;
+    if (outcome.missingKey || !outcome.res) {
+      return {
+        ok: false,
+        latencyMs,
+        via: 'none',
+        errorMessage: 'Informe uma chave de API TMDB v3 para testar ou ative sua sessão na nuvem.',
+      };
+    }
+    if (!outcome.res.ok) {
+      return {
+        ok: false,
+        latencyMs,
+        via: outcome.via,
+        errorMessage:
+          outcome.res.status === 401
+            ? 'Chave TMDB inválida ou expirada.'
+            : `Erro HTTP ${outcome.res.status}`,
+      };
+    }
+    return {
+      ok: true,
+      latencyMs,
+      via: outcome.via,
+      model: outcome.via === 'proxy' ? 'TMDB (proxy servidor)' : 'TMDB API v3',
+    };
   } catch {
     return {
       ok: false,
+      latencyMs: Date.now() - start,
+      via: 'none',
       errorMessage: 'Não foi possível conectar ao TMDB agora.',
     };
   }
@@ -2377,16 +2511,37 @@ export async function testTmdbConnection(apiKey = '', { fetchImpl = fetch } = {}
 export async function fetchTmdbExternalIds(
   tmdbId,
   mediaType = 'movie',
-  { apiKey = '', signal, fetchImpl = fetch, timeoutMs = API_TIMEOUT_MS } = {}
+  {
+    apiKey = '',
+    signal,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
 ) {
-  const key = sanitizeApiKey(apiKey) || loadTmdbApiKey();
-  if (!key || !tmdbId) return null;
+  if (!tmdbId) return null;
+  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
   const type = mediaType === 'tv' ? 'tv' : 'movie';
   try {
-    const url = `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}/external_ids?api_key=${encodeURIComponent(key)}`;
-    const res = await fetchWithTimeout(url, { signal }, timeoutMs, fetchImpl, 'tmdb');
-    if (!res.ok) return null;
-    const json = await res.json();
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      `${type}/${encodeURIComponent(tmdbId)}/external_ids`,
+      {},
+      {
+        directApiKey: key,
+        signal,
+        fetchImpl,
+        timeoutMs,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
+    );
+    if (outcome.missingKey || !outcome.res || !outcome.res.ok) return null;
+    const json = await outcome.res.json();
     return {
       imdbId: sanitizeImdbId(json?.imdb_id) || null,
       tvdbId: Number(json?.tvdb_id) || null,
@@ -2431,6 +2586,10 @@ export async function fetchOmdbByImdbId(
     timeoutMs = API_TIMEOUT_MS,
     nowFn = Date.now,
     sleepFn = undefined,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
   } = {}
 ) {
   const cleanImdb = sanitizeImdbId(imdbId);
@@ -2457,29 +2616,38 @@ export async function fetchOmdbByImdbId(
   }
 
   const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadOmdbApiKey();
-  if (!key) {
-    if (cached.hit && allowStaleOffline) {
-      return {
-        ok: true,
-        fromCache: true,
-        isOfflineCache: true,
-        cacheDateLabel: cached.cacheDateLabel,
-        ratings: cached.data.ratings,
-        data: cached.data.raw || null,
-      };
-    }
-    return { ok: false, reason: 'MISSING_KEY', ratings: null, data: null };
-  }
 
   try {
-    const url = `${OMDB_API_BASE}/?apikey=${encodeURIComponent(key)}&i=${encodeURIComponent(cleanImdb)}`;
-    const res = await fetchWithTimeout(
-      url,
-      { signal, mode, nowFn, sleepFn },
-      timeoutMs,
-      fetchImpl,
-      'omdb'
+    const outcome = await fetchOmdbViaProxyOrDirect(
+      { i: cleanImdb },
+      {
+        directApiKey: key,
+        mode,
+        signal,
+        fetchImpl,
+        timeoutMs,
+        nowFn,
+        sleepFn,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
     );
+    if (outcome.missingKey || !outcome.res) {
+      if (cached.hit && allowStaleOffline) {
+        return {
+          ok: true,
+          fromCache: true,
+          isOfflineCache: true,
+          cacheDateLabel: cached.cacheDateLabel,
+          ratings: cached.data.ratings,
+          data: cached.data.raw || null,
+        };
+      }
+      return { ok: false, reason: 'MISSING_KEY', ratings: null, data: null };
+    }
+    const res = outcome.res;
     if (!res.ok) {
       throw new Error(`OMDb HTTP ${res.status}`);
     }
@@ -2533,41 +2701,102 @@ export async function fetchOmdbByImdbId(
   }
 }
 
-export async function testOmdbConnection(apiKey = '', { fetchImpl = fetch } = {}) {
-  const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadOmdbApiKey();
-  if (!key) {
-    return {
-      ok: false,
-      errorMessage: 'Informe uma chave da API OMDb para testar.',
-    };
-  }
+export async function testOmdbConnection(
+  apiKey = '',
+  { fetchImpl = fetch, accessToken = '', supabaseClient = null, forceProxy = null, isDev = undefined } = {}
+) {
+  const explicitKey = apiKey === null ? '' : sanitizeApiKey(apiKey);
+  const fallbackKey = apiKey === null ? '' : explicitKey || loadOmdbApiKey();
   const start = Date.now();
-  try {
-    const res = await fetchWithTimeout(
-      `${OMDB_API_BASE}/?apikey=${encodeURIComponent(key)}&i=tt0133093`,
-      { dedup: false, mode: 'manual', maxRetries: 0 },
-      6000,
-      fetchImpl,
-      'omdb'
-    );
-    const latencyMs = Date.now() - start;
-    const json = await res.json().catch(() => null);
-    if (!res.ok || json?.Response === 'False') {
+
+  if (explicitKey) {
+    try {
+      const res = await fetchWithTimeout(
+        `${OMDB_API_BASE}/?apikey=${encodeURIComponent(explicitKey)}&i=tt0133093`,
+        { dedup: false, mode: 'manual', maxRetries: 0 },
+        6000,
+        fetchImpl,
+        'omdb'
+      );
+      const latencyMs = Date.now() - start;
+      const json = await res.json().catch(() => null);
+      if (!res.ok || json?.Response === 'False') {
+        return {
+          ok: false,
+          latencyMs,
+          via: 'direct',
+          errorMessage: maskSecretsInText(
+            json?.Error || (res.status === 401 ? 'Chave OMDb inválida.' : `Erro HTTP ${res.status}`),
+            [explicitKey]
+          ),
+        };
+      }
+      return { ok: true, latencyMs, via: 'direct', model: 'OMDb API' };
+    } catch (err) {
       return {
         ok: false,
+        latencyMs: Date.now() - start,
+        via: 'direct',
+        errorMessage:
+          err instanceof ApiQuotaError
+            ? maskSecretsInText(err.message, [explicitKey])
+            : 'Não foi possível conectar à OMDb agora.',
+      };
+    }
+  }
+
+  try {
+    const outcome = await fetchOmdbViaProxyOrDirect(
+      { i: 'tt0133093' },
+      {
+        directApiKey: fallbackKey,
+        dedup: false,
+        mode: 'manual',
+        maxRetries: 0,
+        timeoutMs: 6000,
+        fetchImpl,
+        accessToken,
+        supabaseClient,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
+    );
+    const latencyMs = Date.now() - start;
+    if (outcome.missingKey || !outcome.res) {
+      return {
+        ok: false,
+        latencyMs,
+        via: 'none',
+        errorMessage: 'Informe uma chave da API OMDb para testar ou ative sua sessão na nuvem.',
+      };
+    }
+    const json = await outcome.res.json().catch(() => null);
+    if (!outcome.res.ok || json?.Response === 'False') {
+      return {
+        ok: false,
+        latencyMs,
+        via: outcome.via,
         errorMessage: maskSecretsInText(
-          json?.Error || (res.status === 401 ? 'Chave OMDb inválida.' : `Erro HTTP ${res.status}`),
-          [key]
+          json?.Error ||
+            (outcome.res.status === 401 ? 'Chave OMDb inválida.' : `Erro HTTP ${outcome.res.status}`),
+          [fallbackKey]
         ),
       };
     }
-    return { ok: true, latencyMs, model: 'OMDb API' };
+    return {
+      ok: true,
+      latencyMs,
+      via: outcome.via,
+      model: outcome.via === 'proxy' ? 'OMDb (proxy servidor)' : 'OMDb API',
+    };
   } catch (err) {
     return {
       ok: false,
+      latencyMs: Date.now() - start,
+      via: 'none',
       errorMessage:
         err instanceof ApiQuotaError
-          ? maskSecretsInText(err.message, [key])
+          ? maskSecretsInText(err.message, [fallbackKey])
           : 'Não foi possível conectar à OMDb agora.',
     };
   }
@@ -2727,20 +2956,24 @@ export async function fetchTmdbSeasonDetails(
   }
 
   const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
-  if (!key) {
-    return cached.hit && allowStaleOffline && cached.data
-      ? {
-          ...cached.data,
-          fromCache: true,
-          isOfflineCache: true,
-          cacheDateLabel: cached.cacheDateLabel,
-        }
-      : null;
-  }
 
   try {
-    const url = `${TMDB_API_BASE}/tv/${cleanTmdb}/season/${cleanSeason}?api_key=${encodeURIComponent(key)}&language=pt-BR`;
-    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      `tv/${cleanTmdb}/season/${cleanSeason}`,
+      { language: 'pt-BR' },
+      { directApiKey: key, signal, nowFn, timeoutMs, fetchImpl }
+    );
+    if (outcome.missingKey || !outcome.res) {
+      return cached.hit && allowStaleOffline && cached.data
+        ? {
+            ...cached.data,
+            fromCache: true,
+            isOfflineCache: true,
+            cacheDateLabel: cached.cacheDateLabel,
+          }
+        : null;
+    }
+    const res = outcome.res;
     if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
     const json = await res.json();
     const rawList = Array.isArray(json?.episodes) ? json.episodes : [];
@@ -2819,21 +3052,25 @@ export async function fetchTmdbEpisodeGroups(
   }
 
   const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
-  if (!key) {
-    return cached.hit && allowStaleOffline && cached.data
-      ? {
-          ok: true,
-          groups: cached.data,
-          fromCache: true,
-          isOfflineCache: true,
-          cacheDateLabel: cached.cacheDateLabel,
-        }
-      : { ok: false, groups: [] };
-  }
 
   try {
-    const url = `${TMDB_API_BASE}/tv/${cleanTmdb}/episode_groups?api_key=${encodeURIComponent(key)}`;
-    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      `tv/${cleanTmdb}/episode_groups`,
+      {},
+      { directApiKey: key, signal, nowFn, timeoutMs, fetchImpl }
+    );
+    if (outcome.missingKey || !outcome.res) {
+      return cached.hit && allowStaleOffline && cached.data
+        ? {
+            ok: true,
+            groups: cached.data,
+            fromCache: true,
+            isOfflineCache: true,
+            cacheDateLabel: cached.cacheDateLabel,
+          }
+        : { ok: false, groups: [] };
+    }
+    const res = outcome.res;
     if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
     const json = await res.json();
     const groups = (Array.isArray(json?.results) ? json.results : []).map((g) => ({
@@ -2892,11 +3129,19 @@ export async function fetchTmdbEpisodeGroupDetails(
   }
 
   const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
-  if (!key) return { ok: false, arcs: [] };
 
   try {
-    const url = `${TMDB_API_BASE}/tv/episode_group/${encodeURIComponent(cleanId)}?api_key=${encodeURIComponent(key)}&language=pt-BR`;
-    const res = await fetchWithTimeout(url, { signal, nowFn }, timeoutMs, fetchImpl, 'tmdb');
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      `tv/episode_group/${encodeURIComponent(cleanId)}`,
+      { language: 'pt-BR' },
+      { directApiKey: key, signal, nowFn, timeoutMs, fetchImpl }
+    );
+    if (outcome.missingKey || !outcome.res) {
+      return cached.hit && allowStaleOffline && cached.data
+        ? { ok: true, arcs: cached.data, fromCache: true, isOfflineCache: true }
+        : { ok: false, arcs: [] };
+    }
+    const res = outcome.res;
     if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
     const json = await res.json();
     const rawGroups = Array.isArray(json?.groups) ? json.groups : [];
@@ -2966,28 +3211,25 @@ export async function fetchOmdbSeasonEpisodes(
   }
 
   const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadOmdbApiKey();
-  if (!key) {
-    if (cached.hit && allowStaleOffline && cached.data) {
-      return {
-        ok: true,
-        fromCache: true,
-        isOfflineCache: true,
-        cacheDateLabel: cached.cacheDateLabel,
-        episodes: cached.data,
-      };
-    }
-    return { ok: false, reason: 'MISSING_KEY', episodes: [] };
-  }
 
   try {
-    const url = `${OMDB_API_BASE}/?apikey=${encodeURIComponent(key)}&i=${encodeURIComponent(cleanImdb)}&Season=${cleanSeason}`;
-    const res = await fetchWithTimeout(
-      url,
-      { signal, mode, nowFn, sleepFn },
-      timeoutMs,
-      fetchImpl,
-      'omdb'
+    const outcome = await fetchOmdbViaProxyOrDirect(
+      { i: cleanImdb, Season: String(cleanSeason) },
+      { directApiKey: key, signal, mode, nowFn, sleepFn, timeoutMs, fetchImpl }
     );
+    if (outcome.missingKey || !outcome.res) {
+      if (cached.hit && allowStaleOffline && cached.data) {
+        return {
+          ok: true,
+          fromCache: true,
+          isOfflineCache: true,
+          cacheDateLabel: cached.cacheDateLabel,
+          episodes: cached.data,
+        };
+      }
+      return { ok: false, reason: 'MISSING_KEY', episodes: [] };
+    }
+    const res = outcome.res;
     if (!res.ok) throw new Error(`OMDb HTTP ${res.status}`);
     const json = await res.json();
     if (json?.Response === 'False') {
@@ -3098,7 +3340,7 @@ export async function backfillWorkHeroBackdrop(
   let resolvedUrl = null;
   let hadError = false;
 
-  if (tmdbId && key) {
+  if (tmdbId) {
     tasks.push(async () => {
       try {
         const mediaType =
@@ -3115,7 +3357,7 @@ export async function backfillWorkHeroBackdrop(
         });
         if (res?.ok && res.data?.backdropUrl) {
           resolvedUrl = resolvedUrl || res.data.backdropUrl;
-        } else if (res && !res.ok) {
+        } else if (res && !res.ok && res.status !== 'MISSING_KEY') {
           hadError = true;
         }
       } catch {
@@ -3638,16 +3880,15 @@ export async function resolveCuratedSuggestions(
         // Fallback via TMDB ou IMDb Suggestion para filmes ou séries sem capa
         if (!patch.coverUrl) {
           const tmdbId = Number(item.ids?.tmdb || item.tmdbId) || null;
-          if (cleanTmdbKey && tmdbId) {
+          if (tmdbId) {
             const endpoint = item.workType === 'series' ? 'tv' : 'movie';
-            const r = await fetchWithTimeout(
-              `${TMDB_API_BASE}/${endpoint}/${tmdbId}?api_key=${encodeURIComponent(cleanTmdbKey)}&language=pt-BR`,
-              { signal, nowFn },
-              API_TIMEOUT_MS,
-              fetchImpl,
-              'tmdb'
+            const outcome = await fetchTmdbViaProxyOrDirect(
+              `${endpoint}/${tmdbId}`,
+              { language: 'pt-BR' },
+              { directApiKey: cleanTmdbKey, signal, nowFn, timeoutMs: API_TIMEOUT_MS, fetchImpl }
             );
-            if (r.ok) {
+            const r = outcome.res;
+            if (!outcome.missingKey && r && r.ok) {
               const tmdbJson = await r.json();
               if (tmdbJson?.poster_path) {
                 patch.coverUrl = `https://image.tmdb.org/t/p/w500${tmdbJson.poster_path}`;
@@ -3792,7 +4033,7 @@ export async function fetchBrazilStreamingProviders(
 
   const tmdbId = work.ids?.tmdb || work.tmdbId;
   const key = sanitizeApiKey(tmdbApiKey) || loadTmdbApiKey();
-  if (!tmdbId || !key) {
+  if (!tmdbId) {
     return existing;
   }
 
@@ -3803,10 +4044,13 @@ export async function fetchBrazilStreamingProviders(
       ? 'tv'
       : 'movie';
   try {
-    const url = `${TMDB_API_BASE}/${type}/${encodeURIComponent(tmdbId)}/watch/providers?api_key=${encodeURIComponent(key)}`;
-    const res = await fetchWithTimeout(url, { signal }, API_TIMEOUT_MS, fetchImpl, 'tmdb');
-    if (!res.ok) return existing;
-    const json = await res.json();
+    const outcome = await fetchTmdbViaProxyOrDirect(
+      `${type}/${encodeURIComponent(tmdbId)}/watch/providers`,
+      {},
+      { directApiKey: key, signal, timeoutMs: API_TIMEOUT_MS, fetchImpl }
+    );
+    if (outcome.missingKey || !outcome.res || !outcome.res.ok) return existing;
+    const json = await outcome.res.json();
     const brProviders = normalizeBrazilStreamingProviders(
       json?.results?.BR || null,
       existing
