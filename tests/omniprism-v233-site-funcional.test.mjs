@@ -337,6 +337,7 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
       providers: {
         tmdb: { configured: true },
         omdb: { configured: true },
+        lastfm: { configured: false },
       },
     });
 
@@ -354,6 +355,7 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
       providers: {
         tmdb: { configured: true },
         omdb: { configured: false },
+        lastfm: { configured: false },
       },
     });
   });

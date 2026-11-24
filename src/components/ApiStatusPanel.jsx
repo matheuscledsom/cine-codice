@@ -33,6 +33,15 @@ function StatusIndicator({ state, testing }) {
     );
   }
 
+  if (state === 'not_configured') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-[4px] border border-line bg-card px-2 py-0.5 text-[10px] font-medium text-muted">
+        <AlertCircle className="h-3 w-3 text-subtle" strokeWidth={1.5} aria-hidden="true" />
+        <span>Não configurado</span>
+      </span>
+    );
+  }
+
   if (state === 'missing_key') {
     return (
       <span className="inline-flex items-center gap-1 rounded-[4px] border border-line bg-card px-2 py-0.5 text-[10px] font-medium text-muted">
@@ -68,6 +77,7 @@ export function ApiStatusPanel({ authenticated = false }) {
     providers: {
       tmdb: { configured: false },
       omdb: { configured: false },
+      lastfm: { configured: false },
     },
   });
   const [resultsById, setResultsById] = useState({});
@@ -85,6 +95,7 @@ export function ApiStatusPanel({ authenticated = false }) {
       providers: {
         tmdb: { configured: Boolean(res.providers?.tmdb?.configured) },
         omdb: { configured: Boolean(res.providers?.omdb?.configured) },
+        lastfm: { configured: Boolean(res.providers?.lastfm?.configured) },
       },
     });
   }, []);
@@ -96,7 +107,7 @@ export function ApiStatusPanel({ authenticated = false }) {
   const handleTestSingle = async (sourceId) => {
     setTestingIds((prev) => ({ ...prev, [sourceId]: true }));
     try {
-      if (sourceId === 'tmdb' || sourceId === 'omdb') {
+      if (sourceId === 'tmdb' || sourceId === 'omdb' || sourceId === 'lastfm' || sourceId === 'rawg') {
         await refreshServerStatus();
       }
       const res = await probeApiSource(sourceId);
@@ -178,7 +189,15 @@ export function ApiStatusPanel({ authenticated = false }) {
                       {result.latencyMs} ms
                     </span>
                   )}
-                  <StatusIndicator state={result?.state || 'idle'} testing={isTesting} />
+                  <StatusIndicator
+                    state={
+                      result?.state ||
+                      (source.serverOnlySecret && serverStatus.checked && !serverConfigured
+                        ? 'not_configured'
+                        : 'idle')
+                    }
+                    testing={isTesting}
+                  />
                   <button
                     type="button"
                     onClick={() => handleTestSingle(source.id)}

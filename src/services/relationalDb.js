@@ -310,6 +310,9 @@ export function normalizeRelationalWorkRecord(work = {}) {
         : null,
     releasedEpisodesSource: String(work.releasedEpisodesSource || '').trim() || null,
     releasedEpisodesFetchedAt: work.releasedEpisodesFetchedAt || null,
+    excludeFromDiscography: Boolean(
+      work.excludeFromDiscography ?? work.progress_data?.excludeFromDiscography
+    ),
     franchiseName: String(work.franchiseName || '').trim(),
     overview,
     synopsis: overview,

@@ -23,6 +23,7 @@ export async function handleStatusRequest(context, { fetchImpl = fetch } = {}) {
       providers: {
         tmdb: { configured: Boolean(cfg.providers.tmdb.configured) },
         omdb: { configured: Boolean(cfg.providers.omdb.configured) },
+        lastfm: { configured: Boolean(cfg.providers.lastfm.configured) },
       },
     },
     200

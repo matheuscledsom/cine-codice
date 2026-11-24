@@ -11,6 +11,11 @@
  */
 
 import { inferDomainFromWork } from '../config/domainConfig.js';
+import {
+  computeDerivedAverage,
+  computeDiscographyCompleteness,
+  resolveAlbumDerivedVsManualRating,
+} from './musicDepth.js';
 import { resolveWorkRatingState } from './ratingModel.js';
 import { makeAlbumTrackKey, normalizeTrackRatingsMap } from '../utils/catalogDraftHelpers.js';
 
@@ -92,24 +97,30 @@ export function buildReleaseTracksView(work = {}) {
     };
   });
 
-  const ratedTracks = tracks.filter((t) => typeof t.rating10 === 'number');
-  const averageTrackRating10 =
-    ratedTracks.length > 0
-      ? Math.round((ratedTracks.reduce((acc, t) => acc + t.rating10, 0) / ratedTracks.length) * 10) / 10
-      : null;
+  const derivedTracksAverage = computeDerivedAverage({
+    ratings: tracks.map((t) => t.rating10),
+    totalItems: Math.max(tracks.length, Number(work.trackCount) || 0),
+    unit: 'track',
+  });
+  const ratingComparison = resolveAlbumDerivedVsManualRating(work, derivedTracksAverage);
 
   return {
     tracks,
     totalTracks: tracks.length,
-    ratedTracksCount: ratedTracks.length,
-    averageTrackRating10,
+    ratedTracksCount: derivedTracksAverage.ratedCount,
+    averageTrackRating10: derivedTracksAverage.average,
+    derivedTracksAverage,
+    ratingComparison,
   };
 }
 
 /**
  * Constrói a hierarquia completa Banda / Artista -> Discografia -> Álbuns/EPs/Singles -> Faixas.
  */
-export function buildMusicHierarchy(items = [], { scope = 'all' } = {}) {
+export function buildMusicHierarchy(
+  items = [],
+  { scope = 'all', mbStudioAlbumsByArtist = {}, excludedAlbumKeysByArtist = {} } = {}
+) {
   const musicWorks = (Array.isArray(items) ? items : []).filter(
     (w) => w && w.inBacklog !== false && inferDomainFromWork(w) === 'music'
   );
@@ -182,6 +193,23 @@ export function buildMusicHierarchy(items = [], { scope = 'all' } = {}) {
         ? Math.round((activeProgress.completed / activeProgress.total) * 100)
         : 0;
 
+    // Média derivada da discografia (usando notas confirmadas em estrelas 0.5..5.0 dos lançamentos)
+    const derivedAlbumsAverage = computeDerivedAverage({
+      ratings: filteredReleases.map((r) =>
+        r.ratingState?.hasConfirmedRating ? r.ratingState.stars : null
+      ),
+      totalItems: filteredReleases.length,
+      unit: 'album',
+    });
+
+    const mbInfo = mbStudioAlbumsByArtist?.[group.id] || null;
+    const excludedKeys = excludedAlbumKeysByArtist?.[group.id] || [];
+    const completeness = computeDiscographyCompleteness({
+      catalogReleases: group.allReleases,
+      mbStudioAlbums: mbInfo,
+      excludedKeys,
+    });
+
     artists.push({
       id: group.id,
       artistName: group.artistName,
@@ -189,6 +217,8 @@ export function buildMusicHierarchy(items = [], { scope = 'all' } = {}) {
       releases: filteredReleases,
       allReleasesCount: group.allReleases.length,
       scopeCounts,
+      derivedAlbumsAverage,
+      completeness,
       activeProgress: {
         ...activeProgress,
         pct: progressPct,

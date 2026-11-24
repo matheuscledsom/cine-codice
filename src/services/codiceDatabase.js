@@ -326,6 +326,12 @@ export function buildCodiceDatabase({
       buildOrCharacter: String(rawItem.buildOrCharacter || '').trim(),
       // Música
       albumName: String(rawItem.albumName || '').trim(),
+      excludeFromDiscography: Boolean(
+        rawItem.excludeFromDiscography ?? rawItem.progress_data?.excludeFromDiscography
+      ),
+      subgenres: Array.isArray(rawItem.subgenres)
+        ? rawItem.subgenres.map((s) => String(s || '').trim()).filter(Boolean)
+        : [],
       durationMs: Number(rawItem.durationMs) > 0 ? Math.round(Number(rawItem.durationMs)) : null,
       trackRating10:
         rawItem.trackRating10 !== null &&

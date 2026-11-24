@@ -326,6 +326,127 @@ export async function fetchOmdbViaProxyOrDirect(
   };
 }
 
+const ALLOWED_LASTFM_PROXY_METHODS = new Set(['artist.getTopTags', 'album.getTopTags']);
+
+/**
+ * Executa chamada Last.fm EXCLUSIVAMENTE via `/api/lastfm` (secret LASTFM_API_KEY no Cloudflare).
+ * Nunca usa chaves VITE_ no cliente; degrada sem quebrar quando não configurado ou sem sessão.
+ */
+export async function fetchLastfmViaProxy(
+  method,
+  params = {},
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = true,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+  } = {}
+) {
+  const cleanMethod = String(method || '').trim();
+  if (!ALLOWED_LASTFM_PROXY_METHODS.has(cleanMethod)) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 403,
+      notConfigured: false,
+      data: null,
+    };
+  }
+
+  if (!shouldUseApiProxy({ forceProxy, isDev })) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: null,
+      notConfigured: true,
+      data: null,
+    };
+  }
+
+  const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });
+  if (!token) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 401,
+      notConfigured: true,
+      data: null,
+    };
+  }
+
+  const cleanParams = buildQueryParams(params, { stripSecrets: true });
+  cleanParams.set('method', cleanMethod);
+  const proxyUrl = `/api/lastfm?${cleanParams.toString()}`;
+
+  try {
+    const res = await apiRequest(proxyUrl, {
+      provider: 'lastfm',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+    if (status === 503 || status === 404 || contentType.includes('text/html')) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: true,
+        data: null,
+      };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: false,
+        data: null,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    return {
+      ok: Boolean(data && typeof data === 'object' && !data.error),
+      res,
+      via: 'proxy',
+      status,
+      notConfigured: false,
+      data,
+    };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: err?.status ?? null,
+      notConfigured: err?.status === 503,
+      data: null,
+    };
+  }
+}
+
 /**
  * Consulta `GET /api/status` (autenticado) para saber quais provedores
  * possuem chaves configuradas no servidor Cloudflare (apenas booleanos).
@@ -342,6 +463,7 @@ export async function fetchProxyStatus({
   const emptyProviders = {
     tmdb: { configured: false },
     omdb: { configured: false },
+    lastfm: { configured: false },
   };
 
   if (!shouldUseApiProxy({ forceProxy, isDev })) {
@@ -419,6 +541,7 @@ export async function fetchProxyStatus({
       providers: {
         tmdb: { configured: Boolean(json.providers?.tmdb?.configured) },
         omdb: { configured: Boolean(json.providers?.omdb?.configured) },
+        lastfm: { configured: Boolean(json.providers?.lastfm?.configured) },
       },
     };
   } catch {

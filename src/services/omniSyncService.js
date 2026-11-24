@@ -327,6 +327,9 @@ export function mapLocalWorkToCatalogRow(
       atmosphere: Array.isArray(work.atmosphere) ? work.atmosphere : [],
       tropes: Array.isArray(work.tropes) ? work.tropes : [],
       subgenres: Array.isArray(work.subgenres) ? work.subgenres : [],
+      excludeFromDiscography: Boolean(
+        work.excludeFromDiscography ?? work.progress_data?.excludeFromDiscography
+      ),
       franchiseName: String(work.franchiseName || '').trim(),
       belongsToCollection: work.belongsToCollection || null,
       franchiseRelations: Array.isArray(work.franchiseRelations)
@@ -521,6 +524,7 @@ export function mapCatalogRowToLocalWork(row = {}) {
         : null,
     releasedEpisodesSource: String(pd.releasedEpisodesSource || '').trim() || null,
     releasedEpisodesFetchedAt: pd.releasedEpisodesFetchedAt || null,
+    excludeFromDiscography: Boolean(pd.excludeFromDiscography),
     verdict: pd.verdict ?? null,
     externalRatings,
     ids: {

@@ -11,16 +11,27 @@
 
 export const TMDB_UPSTREAM_BASE = 'https://api.themoviedb.org/3';
 export const OMDB_UPSTREAM_BASE = 'https://www.omdbapi.com/';
+export const LASTFM_UPSTREAM_BASE = 'https://ws.audioscrobbler.com/2.0/';
 
 export const SEARCH_CACHE_TTL_SECONDS = 600; // 10 minutos
 export const DETAIL_CACHE_TTL_SECONDS = 86400; // 24 horas
 
-const SECRET_PARAM_RE = /^(api_?key|apikey|access_token|token|key)$/i;
+const SECRET_PARAM_RE = /^(api_?key|apikey|access_token|token|key|sk|api_sig)$/i;
 const SAFE_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const NUMERIC_ID_RE = /^\d+$/;
 const TMDB_KEYWORDS_PARAM_RE = /^\d+(?:[,|]\d+)*$/;
 const ALLOWED_TMDB_SEARCH_TARGETS = new Set(['movie', 'tv', 'multi', 'collection']);
 const ALLOWED_TMDB_DISCOVER_TARGETS = new Set(['movie', 'tv']);
+const ALLOWED_LASTFM_METHODS = new Map([
+  ['artist.gettoptags', 'artist.getTopTags'],
+  ['album.gettoptags', 'album.getTopTags'],
+]);
+const ALLOWED_LASTFM_PARAMS = new Map([
+  ['artist', 'artist'],
+  ['album', 'album'],
+  ['autocorrect', 'autocorrect'],
+  ['mbid', 'mbid'],
+]);
 const ALLOWED_OMDB_PARAMS = new Map([
   ['i', 'i'],
   ['t', 't'],
@@ -82,15 +93,18 @@ export function readServerEnvConfig(env = {}) {
   ).trim();
   const tmdbApiKey = String(env?.TMDB_API_KEY || '').trim();
   const omdbApiKey = String(env?.OMDB_API_KEY || '').trim();
+  const lastfmApiKey = String(env?.LASTFM_API_KEY || '').trim();
 
   return {
     supabaseUrl,
     supabaseAnonKey,
     tmdbApiKey,
     omdbApiKey,
+    lastfmApiKey,
     providers: {
       tmdb: { configured: Boolean(tmdbApiKey) },
       omdb: { configured: Boolean(omdbApiKey) },
+      lastfm: { configured: Boolean(lastfmApiKey) },
     },
   };
 }
@@ -334,6 +348,70 @@ export function buildSanitizedOmdbUrls(incomingSearchParams, omdbApiKey) {
     ok: true,
     kind: isSearch ? 'search' : 'detail',
     ttlSeconds,
+    cacheUrl,
+    upstreamUrl,
+  };
+}
+
+export function buildSanitizedLastfmUrls(incomingSearchParams, lastfmApiKey) {
+  const rawMethod = String(incomingSearchParams?.get?.('method') || '').trim().toLowerCase();
+  const canonicalMethod = ALLOWED_LASTFM_METHODS.get(rawMethod);
+  if (!canonicalMethod) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Método Last.fm não permitido pelo proxy (use artist.getTopTags ou album.getTopTags).',
+    };
+  }
+
+  const sanitized = new URLSearchParams();
+  sanitized.set('method', canonicalMethod);
+  const collected = [];
+
+  for (const [rawKey, rawVal] of incomingSearchParams.entries()) {
+    if (SECRET_PARAM_RE.test(rawKey)) continue;
+    const canonical = ALLOWED_LASTFM_PARAMS.get(String(rawKey).toLowerCase());
+    if (!canonical) continue;
+    const val = String(rawVal || '').trim();
+    if (!val) continue;
+    collected.push([canonical, val]);
+  }
+
+  collected.sort(([a], [b]) => a.localeCompare(b));
+  for (const [k, v] of collected) {
+    sanitized.set(k, v);
+  }
+  sanitized.set('format', 'json');
+
+  const hasArtist = sanitized.has('artist');
+  const hasAlbum = sanitized.has('album');
+  const hasMbid = sanitized.has('mbid');
+
+  if (canonicalMethod === 'artist.getTopTags' && !hasArtist && !hasMbid) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Informe artist ou mbid para artist.getTopTags.',
+    };
+  }
+  if (canonicalMethod === 'album.getTopTags' && !hasMbid && !(hasArtist && hasAlbum)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Informe artist e album (ou mbid) para album.getTopTags.',
+    };
+  }
+
+  const cacheUrl = `${LASTFM_UPSTREAM_BASE}?${sanitized.toString()}`;
+  const upstreamParams = new URLSearchParams(sanitized);
+  upstreamParams.set('api_key', lastfmApiKey);
+  const upstreamUrl = `${LASTFM_UPSTREAM_BASE}?${upstreamParams.toString()}`;
+
+  return {
+    ok: true,
+    status: 200,
+    method: canonicalMethod,
+    ttlSeconds: DETAIL_CACHE_TTL_SECONDS,
     cacheUrl,
     upstreamUrl,
   };

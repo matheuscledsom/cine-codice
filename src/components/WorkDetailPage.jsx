@@ -57,6 +57,7 @@ import {
 import { formatNextAiringBadge } from '../lib/episodeStats';
 import { extractWorkEntities } from '../lib/entityHelpers';
 import { ALL_FRANCHISE_TIER_OPTIONS } from '../lib/franchiseTier';
+import { computeDerivedAverage, updateEditableSubgenres } from '../lib/musicDepth';
 import { computeWorkCritiqueBadge } from '../lib/ratingBadges';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
 import {
@@ -64,6 +65,7 @@ import {
   enrichWorkWithExternalRatings,
 } from '../services/cinemaApi';
 import { findFranchiseForItem } from '../services/franchiseEngine';
+import { fetchLastfmSubgenres } from '../services/musicDepthService';
 import {
   getDisplayGenres,
   getDisplaySynopsis,
@@ -180,6 +182,8 @@ export function WorkDetailPage({
   const [pendingPagesFillPrompt, setPendingPagesFillPrompt] = useState(false);
   const [top4PickerOpen, setTop4PickerOpen] = useState(false);
   const [tagInput, setTagInput] = useState('');
+  const [subgenreInput, setSubgenreInput] = useState('');
+  const [subgenresLoading, setSubgenresLoading] = useState(false);
   const [ratingsLoading, setRatingsLoading] = useState(false);
   const [ratingsMeta, setRatingsMeta] = useState({
     failedSources: [],
@@ -2142,32 +2146,90 @@ export function WorkDetailPage({
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => runDomainQuickAction('music_listen')}
-                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold tabular-nums text-accent-ink hover:opacity-90"
-                  >
-                    <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                    <span>+1 audição</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={subgenresLoading}
+                      onClick={async () => {
+                        setSubgenresLoading(true);
+                        try {
+                          const res = await fetchLastfmSubgenres({
+                            artist: item.creator || item.director || '',
+                            album: item.workType === 'album' ? item.title : item.albumName || '',
+                          });
+                          if (res.notConfigured) {
+                            showToast({
+                              message:
+                                'Last.fm não configurado no servidor. Você pode editar subgêneros manualmente em Editar.',
+                              type: 'info',
+                            });
+                          } else if (res.ok && res.tags.length > 0) {
+                            const merged = updateEditableSubgenres(
+                              Array.isArray(item.subgenres) ? item.subgenres : [],
+                              { replaceWith: res.tags }
+                            );
+                            onUpdateItem(item.id, {
+                              subgenres: merged,
+                              subgenre: merged.join(', '),
+                            });
+                            showToast({
+                              message: `Subgêneros sugeridos (Last.fm): ${merged.join(', ')}`,
+                              type: 'success',
+                            });
+                          } else {
+                            showToast({
+                              message: 'Nenhuma tag acima do limite mínimo encontrada no Last.fm.',
+                              type: 'info',
+                            });
+                          }
+                        } finally {
+                          setSubgenresLoading(false);
+                        }
+                      }}
+                      data-testid="music-suggest-subgenres-btn"
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-app px-3 text-xs font-medium text-ink hover:border-accent disabled:opacity-55"
+                    >
+                      <span>{subgenresLoading ? 'Buscando...' : 'Sugerir subgêneros (Last.fm)'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => runDomainQuickAction('music_listen')}
+                      className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold tabular-nums text-accent-ink hover:opacity-90"
+                    >
+                      <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      <span>+1 audição</span>
+                    </button>
+                  </div>
                 </div>
 
                 {Array.isArray(item.tracks) && item.tracks.length > 0 ? (
                   <div className="space-y-1.5 border-t border-line pt-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-[11px] font-medium text-muted">
-                        Tracklist ({item.tracks.length} faixas — avalie cada faixa de 0 a 10 ou marque a favorita)
+                        Tracklist ({item.tracks.length} faixas — avalie cada faixa de 0 a 10 sem alterar sua estrela manual)
                       </p>
-                      {Object.keys(albumTrackRatings).length > 0 && (
-                        <span className="rounded-md border border-accent/35 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-accent">
-                          Média das faixas:{' '}
-                          {(
-                            Object.values(albumTrackRatings).reduce((acc, v) => acc + v, 0) /
-                            Object.values(albumTrackRatings).length
-                          ).toFixed(1)}
-                          /10
-                        </span>
-                      )}
+                      {(() => {
+                        const derived = computeDerivedAverage({
+                          ratings: Object.values(albumTrackRatings),
+                          totalItems: item.tracks.length,
+                          unit: 'track',
+                        });
+                        if (derived.average === null) return null;
+                        return (
+                          <span
+                            data-testid="album-derived-track-average"
+                            className="inline-flex flex-wrap items-center gap-1.5 rounded-[6px] border border-line bg-app px-2.5 py-1 text-[11px] font-medium tabular-nums text-ink"
+                          >
+                            <span>Média derivada: {derived.average.toFixed(1)}/10</span>
+                            <span className="text-muted">({derived.coverageLabel})</span>
+                            {derived.provisional && (
+                              <span className="rounded-[4px] border border-line bg-card px-1.5 py-0.5 text-[10px] font-semibold text-muted">
+                                provisória
+                              </span>
+                            )}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div className="max-h-96 overflow-y-auto divide-y divide-line rounded-xl border border-line bg-app no-scrollbar">
                       {item.tracks.map((tr, idx) => {
@@ -2954,17 +3016,88 @@ export function WorkDetailPage({
 
                   {workDomain === 'music' && (
                     <>
-                      <label className="block">
-                        <span className="mb-1 block text-[11px] font-medium text-muted">
-                          Subgênero Musical
+                      <div className="space-y-2">
+                        <span className="block text-[11px] font-medium text-muted">
+                          Subgêneros (editáveis)
                         </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(Array.isArray(item.subgenres) && item.subgenres.length > 0
+                            ? item.subgenres
+                            : item.subgenre
+                              ? String(item.subgenre)
+                                  .split(',')
+                                  .map((s) => s.trim())
+                                  .filter(Boolean)
+                              : []
+                          ).map((sg) => (
+                            <button
+                              key={sg}
+                              type="button"
+                              onClick={() => {
+                                const cur =
+                                  Array.isArray(item.subgenres) && item.subgenres.length > 0
+                                    ? item.subgenres
+                                    : String(item.subgenre || '')
+                                        .split(',')
+                                        .map((s) => s.trim())
+                                        .filter(Boolean);
+                                const next = updateEditableSubgenres(cur, { remove: sg });
+                                onUpdateItem(item.id, {
+                                  subgenres: next,
+                                  subgenre: next.join(', '),
+                                });
+                              }}
+                              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-card px-2.5 text-xs text-ink hover:border-accent"
+                            >
+                              <span>{sg}</span>
+                              <X className="h-3 w-3 text-subtle" strokeWidth={1.5} />
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={subgenreInput}
+                            onChange={(e) => setSubgenreInput(e.target.value)}
+                            placeholder="Adicionar subgênero (ex: Shoegaze, Post-Punk)..."
+                            className="min-h-[44px] flex-1 rounded-[6px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!subgenreInput.trim()) return;
+                              const cur =
+                                Array.isArray(item.subgenres) && item.subgenres.length > 0
+                                  ? item.subgenres
+                                  : String(item.subgenre || '')
+                                      .split(',')
+                                      .map((s) => s.trim())
+                                      .filter(Boolean);
+                              const next = updateEditableSubgenres(cur, { add: subgenreInput });
+                              onUpdateItem(item.id, {
+                                subgenres: next,
+                                subgenre: next.join(', '),
+                              });
+                              setSubgenreInput('');
+                            }}
+                            className="min-h-[44px] rounded-[6px] border border-line bg-app px-3 text-xs font-medium text-ink hover:border-accent"
+                          >
+                            Adicionar
+                          </button>
+                        </div>
+                      </div>
+                      <label className="flex min-h-[44px] cursor-pointer items-center gap-2 rounded-[6px] border border-line bg-card px-3 text-xs text-ink">
                         <input
-                          type="text"
-                          value={item.subgenre || ''}
-                          onChange={(e) => onUpdateItem(item.id, { subgenre: e.target.value })}
-                          placeholder="Power Metal, Hard Rock..."
-                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                          type="checkbox"
+                          checked={Boolean(item.excludeFromDiscography)}
+                          onChange={(e) =>
+                            onUpdateItem(item.id, {
+                              excludeFromDiscography: Boolean(e.target.checked),
+                            })
+                          }
+                          className="h-4 w-4 accent-accent"
                         />
+                        <span>Não conta na completude da discografia</span>
                       </label>
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-medium text-muted">

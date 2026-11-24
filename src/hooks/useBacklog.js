@@ -320,6 +320,9 @@ function normalizeItem(rawItem, spectatorDna = null) {
         : null,
     releasedEpisodesSource: String(rawItem.releasedEpisodesSource || '').trim() || null,
     releasedEpisodesFetchedAt: rawItem.releasedEpisodesFetchedAt || null,
+    excludeFromDiscography: Boolean(
+      rawItem.excludeFromDiscography ?? rawItem.progress_data?.excludeFromDiscography
+    ),
     externalRatings,
     reviewCriteria,
     verdict: rating !== null ? (rawItem.verdict || getVerdictForScore(rating)) : (rawItem.verdict || null),

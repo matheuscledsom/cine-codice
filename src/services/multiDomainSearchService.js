@@ -1,3 +1,6 @@
+import { getCachedEntry, setCachedEntry } from '../api/cacheDb.js';
+import { apiRequest } from '../api/httpClient.js';
+import { CACHE_STORES } from '../api/limits.js';
 import {
   GAME_EDITION_TYPES,
   GAME_PLATFORM_UNSET_LABEL,
@@ -1644,14 +1647,37 @@ export async function searchMusicWorks(
         ? `https://musicbrainz.org/ws/2/artist?query=${encoded}&fmt=json&limit=10`
         : `https://musicbrainz.org/ws/2/release-group?query=${encoded}&fmt=json&limit=10`;
 
+  const fetchMusicBrainzThrottled = async (url) => {
+    const cacheKey = `mb:search:${url}`;
+    const cached = await getCachedEntry(CACHE_STORES.search, cacheKey).catch(() => null);
+    if (cached?.hit && cached.data && !cached.expired) {
+      return cached.data;
+    }
+    try {
+      const res = await apiRequest(url, {
+        provider: 'musicbrainz',
+        headers: { Accept: 'application/json' },
+        signal,
+        fetchImpl,
+        timeoutMs: MUSICBRAINZ_TIMEOUT_MS,
+        maxRetries: 0,
+      });
+      if (!res?.ok) return null;
+      const json = await res.json().catch(() => null);
+      if (json) {
+        await setCachedEntry(CACHE_STORES.search, cacheKey, json, {
+          ttlMs: 12 * 60 * 60 * 1000,
+        }).catch(() => {});
+      }
+      return json;
+    } catch {
+      return null;
+    }
+  };
+
   const songPromise = fetchJsonSafe(itunesSongUrl, { signal, fetchImpl });
   const albumPromise = fetchJsonSafe(itunesAlbumUrl, { signal, fetchImpl });
-  const mbPromise = fetchJsonSafe(mbEndpoint, {
-    signal,
-    fetchImpl,
-    headers: { Accept: 'application/json' },
-    timeoutMs: MUSICBRAINZ_TIMEOUT_MS,
-  });
+  const mbPromise = fetchMusicBrainzThrottled(mbEndpoint);
   const artistPromise = itunesArtistUrl
     ? fetchJsonSafe(itunesArtistUrl, { signal, fetchImpl })
     : null;

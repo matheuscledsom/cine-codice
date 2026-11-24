@@ -9,6 +9,7 @@
 
 import { ApiQuotaError, maskSecretsInText } from '../api/httpClient.js';
 import {
+  fetchLastfmViaProxy,
   fetchOmdbViaProxyOrDirect,
   fetchProxyStatus,
   fetchTmdbViaProxyOrDirect,
@@ -142,6 +143,15 @@ export const API_STATUS_SOURCES = Object.freeze([
     probeType: 'get',
     url: 'https://musicbrainz.org/ws/2/release-group?query=metallica&fmt=json&limit=1',
   },
+  {
+    id: 'lastfm',
+    label: 'Last.fm',
+    domainLabel: 'Música',
+    host: 'ws.audioscrobbler.com',
+    supportsServerProxy: true,
+    serverOnlySecret: true,
+    probeType: 'lastfm',
+  },
 ]);
 
 export async function loadServerApiStatus(options = {}) {
@@ -155,6 +165,7 @@ export async function loadServerApiStatus(options = {}) {
     providers: {
       tmdb: { configured: Boolean(res.providers?.tmdb?.configured) },
       omdb: { configured: Boolean(res.providers?.omdb?.configured) },
+      lastfm: { configured: Boolean(res.providers?.lastfm?.configured) },
     },
   };
 }
@@ -344,6 +355,74 @@ export async function probeApiSource(
           err instanceof ApiQuotaError
             ? maskSecretsInText(err.message, [localKey])
             : 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
+  if (meta.probeType === 'lastfm') {
+    try {
+      const outcome = await fetchLastfmViaProxy(
+        'artist.getTopTags',
+        { artist: 'Radiohead' },
+        {
+          dedup: false,
+          timeoutMs,
+          fetchImpl,
+          nowFn,
+          accessToken,
+          supabaseClient,
+          storage,
+          forceProxy,
+          ...(isDev !== undefined ? { isDev } : {}),
+        }
+      );
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (outcome.notConfigured || outcome.status === 503) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'not_configured',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: 'Não configurado no servidor.',
+          checkedAt: nowFn(),
+        };
+      }
+      if (!outcome.ok) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'error',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.status
+            ? `Indisponível (HTTP ${outcome.status}).`
+            : 'Falha ao consultar Last.fm via servidor.',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: true,
+        state: 'online',
+        status: outcome.status || 200,
+        latencyMs,
+        via: 'proxy',
+        message: 'Online via servidor',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
         checkedAt: nowFn(),
       };
     }
