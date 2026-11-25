@@ -8,6 +8,7 @@ import {
 } from '../config/domainConfig.js';
 import { normalizeAchievementsModel } from '../lib/gameDepth.js';
 import { migrateFavoriteGenresToObjects } from '../lib/genreCatalog.js';
+import { isCompressedManualCoverDataUrl } from '../lib/manualCovers.js';
 import { applyCanonicalIdsToWork } from '../lib/idBridge.js';
 import { classifyLegacyRatingSource, normalizeViewerFocusList } from '../lib/migrations.js';
 import { createEmptyExternalRatings, normalizeExternalRatings } from '../lib/ratings.js';
@@ -287,6 +288,17 @@ export function buildCodiceDatabase({
       chaptersRead: Math.max(0, Math.round(Number(rawItem.chaptersRead) || 0)),
       isbnOrDoi: String(rawItem.isbnOrDoi || rawItem.isbn || rawItem.doi || '').trim(),
       bookFormat: String(rawItem.bookFormat || '').trim(),
+      seriesVolume: String(rawItem.seriesVolume || '').trim(),
+      workUrl: /^https?:\/\//i.test(String(rawItem.workUrl || '').trim())
+        ? String(rawItem.workUrl).trim()
+        : '',
+      isManual: Boolean(rawItem.isManual || rawItem.ids?.source === 'manual'),
+      manualCoverDataUrl: isCompressedManualCoverDataUrl(rawItem.manualCoverDataUrl)
+        ? rawItem.manualCoverDataUrl
+        : isCompressedManualCoverDataUrl(rawItem.coverUrl) &&
+            (rawItem.isManual || rawItem.ids?.source === 'manual')
+          ? rawItem.coverUrl
+          : '',
       // Games
       platform: String(rawItem.platform || '').trim(),
       platforms: Array.isArray(rawItem.platforms)
@@ -807,8 +819,14 @@ export function hydrateAppSnapshotFromDatabase(db) {
         notes: review ? review.notes : '',
       });
 
+    const manualCover = isCompressedManualCoverDataUrl(work.manualCoverDataUrl)
+      ? work.manualCoverDataUrl
+      : '';
+
     return applyCanonicalIdsToWork({
       ...work,
+      coverUrl: work.coverUrl || manualCover || null,
+      manualCoverDataUrl: manualCover,
       director: work.director || directorNames || '',
       rating,
       ratingSource,

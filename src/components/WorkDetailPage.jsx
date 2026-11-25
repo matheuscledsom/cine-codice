@@ -14,10 +14,13 @@ import {
   FolderOpen,
   Heart,
   Layers,
+  Link2,
   ListVideo,
   Plus,
   Quote,
+  RefreshCw,
   RotateCcw,
+  Search,
   SlidersHorizontal,
   Sparkles,
   Star,
@@ -67,19 +70,25 @@ import {
   normalizeAchievementsModel,
   suggestGameFranchiseLink,
 } from '../lib/gameDepth';
+import { looksLikeIsbnInput } from '../lib/isbn';
+import { compressManualCoverImage } from '../lib/manualCovers';
+import { isManualWork, mergeManualWorkWithApiCandidate } from '../lib/manualWorkLink';
 import { computeDerivedAverage, updateEditableSubgenres } from '../lib/musicDepth';
 import { computeWorkCritiqueBadge } from '../lib/ratingBadges';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
 import {
   enrichSeriesAndAnimeSeasons,
   enrichWorkWithExternalRatings,
+  searchCinemaMedia,
 } from '../services/cinemaApi';
 import { findFranchiseForItem } from '../services/franchiseEngine';
 import { fetchGameDepthWithFallback } from '../services/gameDepthService';
 import { fetchLastfmSubgenres } from '../services/musicDepthService';
 import {
+  fetchBookByIsbn,
   getDisplayGenres,
   getDisplaySynopsis,
+  searchWorksByDomain,
 } from '../services/multiDomainSearchService';
 import {
   advanceEpisodeProgress,
@@ -197,6 +206,13 @@ export function WorkDetailPage({
   const [subgenresLoading, setSubgenresLoading] = useState(false);
   const [rawgLoading, setRawgLoading] = useState(false);
   const [ratingsLoading, setRatingsLoading] = useState(false);
+  const [linkSourceModalOpen, setLinkSourceModalOpen] = useState(false);
+  const [linkSearchQuery, setLinkSearchQuery] = useState('');
+  const [linkSearchLoading, setLinkSearchLoading] = useState(false);
+  const [linkSearchResults, setLinkSearchResults] = useState([]);
+  const [linkSearchError, setLinkSearchError] = useState('');
+  const [coverUploadBusy, setCoverUploadBusy] = useState(false);
+  const [coverUploadError, setCoverUploadError] = useState('');
   const [ratingsMeta, setRatingsMeta] = useState({
     failedSources: [],
     omdbMissingKey: false,
@@ -1100,6 +1116,42 @@ export function WorkDetailPage({
               )}
             </button>
 
+            {isManualWork(item) && (
+              <button
+                type="button"
+                data-testid="link-manual-source-btn"
+                onClick={() => {
+                  const defaultQ = String(
+                    item.isbnOrDoi || `${item.title || ''} ${item.creator || item.author || ''}`.trim()
+                  ).trim();
+                  setLinkSearchQuery(defaultQ);
+                  setLinkSearchError('');
+                  setLinkSearchResults([]);
+                  setLinkSourceModalOpen(true);
+                  if (defaultQ.length >= 2) {
+                    setLinkSearchLoading(true);
+                    const runner =
+                      workDomain === 'reading' && looksLikeIsbnInput(defaultQ)
+                        ? fetchBookByIsbn(defaultQ)
+                        : workDomain === 'cinema'
+                          ? searchCinemaMedia(defaultQ, { tmdbApiKey: tmdbKey })
+                          : searchWorksByDomain(workDomain, defaultQ);
+                    Promise.resolve(runner)
+                      .then((out) => {
+                        setLinkSearchResults(Array.isArray(out?.results) ? out.results.slice(0, 12) : []);
+                        if (!out?.ok && out?.error) setLinkSearchError(out.error);
+                      })
+                      .catch(() => setLinkSearchError('Falha ao buscar nas fontes externas.'))
+                      .finally(() => setLinkSearchLoading(false));
+                  }
+                }}
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-accent/60 bg-accent/10 px-4 py-2.5 text-xs font-semibold text-ink transition-colors hover:border-accent hover:text-accent"
+              >
+                <Link2 className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.5} />
+                <span>Vincular a uma fonte</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => setIsEditDrawerOpen(true)}
@@ -1752,11 +1804,28 @@ export function WorkDetailPage({
                           </dd>
                         </div>
                         <div className="rounded-lg border border-line bg-app p-2.5">
-                          <dt className="text-[10px] text-subtle">Data de término</dt>
+                          <dt className="text-[10px] text-subtle">Volume / Data de término</dt>
                           <dd className="mt-0.5 font-semibold tabular-nums text-ink">
-                            {item.completedDate || item.completedAt || '—'}
+                            {[item.seriesVolume && `Vol. ${item.seriesVolume}`, item.completedDate || item.completedAt]
+                              .filter(Boolean)
+                              .join(' · ') || '—'}
                           </dd>
                         </div>
+                        {item.workUrl && (
+                          <div className="sm:col-span-2 rounded-lg border border-line bg-app p-2.5">
+                            <dt className="text-[10px] text-subtle">Link da obra</dt>
+                            <dd className="mt-0.5 truncate text-xs">
+                              <a
+                                href={item.workUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium text-accent underline underline-offset-2 hover:opacity-85"
+                              >
+                                {item.workUrl}
+                              </a>
+                            </dd>
+                          </div>
+                        )}
                         <div className="sm:col-span-2 rounded-lg border border-line bg-app p-2.5">
                           <dt className="text-[10px] text-subtle">Citação marcante</dt>
                           <dd className="mt-0.5 text-xs text-ink">
@@ -3246,7 +3315,7 @@ export function WorkDetailPage({
 
                   {workDomain === 'reading' && (
                     <>
-                      <label className="block sm:col-span-2">
+                      <label className="block">
                         <span className="mb-1 block text-[11px] font-medium text-muted">
                           ISBN / DOI
                         </span>
@@ -3255,6 +3324,30 @@ export function WorkDetailPage({
                           value={item.isbnOrDoi || ''}
                           onChange={(e) => onUpdateItem(item.id, { isbnOrDoi: e.target.value })}
                           placeholder="ISBN-13 ou DOI"
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Volume na Saga
+                        </span>
+                        <input
+                          type="text"
+                          value={item.seriesVolume || ''}
+                          onChange={(e) => onUpdateItem(item.id, { seriesVolume: e.target.value })}
+                          placeholder="Ex.: 1 ou Livro I"
+                          className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block sm:col-span-2">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Link da obra (Amazon, Wattpad, site do autor)
+                        </span>
+                        <input
+                          type="url"
+                          value={item.workUrl || ''}
+                          onChange={(e) => onUpdateItem(item.id, { workUrl: e.target.value })}
+                          placeholder="https://..."
                           className="min-h-[44px] w-full rounded-xl border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
                         />
                       </label>
@@ -3274,6 +3367,60 @@ export function WorkDetailPage({
                       </label>
                     </>
                   )}
+
+                  <div className="sm:col-span-2 rounded-xl border border-line bg-card p-3 space-y-2">
+                    <span className="block text-[11px] font-medium text-muted">
+                      Enviar nova capa local (comprimida até 300 KB no IndexedDB)
+                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-xl border border-line bg-app px-3 text-xs font-medium text-ink hover:border-accent">
+                        <span>{coverUploadBusy ? 'Comprimindo...' : 'Escolher imagem'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="sr-only"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = '';
+                            if (!file) return;
+                            setCoverUploadBusy(true);
+                            setCoverUploadError('');
+                            try {
+                              const res = await compressManualCoverImage(file);
+                              if (!res.ok || !res.dataUrl) {
+                                setCoverUploadError(res.error || 'Falha ao comprimir imagem.');
+                                return;
+                              }
+                              onUpdateItem(item.id, {
+                                coverUrl: res.dataUrl,
+                                manualCoverDataUrl: res.dataUrl,
+                              });
+                              showToast({ message: 'Capa local atualizada.', type: 'success' });
+                            } finally {
+                              setCoverUploadBusy(false);
+                            }
+                          }}
+                        />
+                      </label>
+                      {item.manualCoverDataUrl && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateItem(item.id, {
+                              manualCoverDataUrl: '',
+                              coverUrl: item.coverUrl === item.manualCoverDataUrl ? '' : item.coverUrl,
+                            })
+                          }
+                          className="min-h-[44px] rounded-xl border border-line bg-app px-3 text-xs text-muted hover:text-ink"
+                        >
+                          Remover capa enviada
+                        </button>
+                      )}
+                    </div>
+                    {coverUploadError && (
+                      <p className="text-[11px] text-muted">{coverUploadError}</p>
+                    )}
+                  </div>
 
                   {workDomain === 'games' && (
                     <>
@@ -3870,6 +4017,144 @@ export function WorkDetailPage({
         </div>
       )}
 
+      {/* Modal sob demanda: Vincular obra manual a uma fonte externa */}
+      {linkSourceModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 sm:items-center sm:p-4"
+          onClick={() => setLinkSourceModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Vincular obra manual a uma fonte"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-t-[14px] border border-line bg-card p-5 space-y-4 sm:rounded-[14px]"
+          >
+            <div className="flex items-center justify-between border-b border-line pb-3">
+              <div>
+                <h2 className="font-editorial text-base font-semibold text-ink">
+                  Vincular a uma fonte
+                </h2>
+                <p className="text-[11px] text-muted">
+                  Preserva sua nota, progresso e comentários; permite desfazer.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLinkSourceModalOpen(false)}
+                aria-label="Fechar busca de vínculo"
+                className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] border border-line text-muted hover:text-ink"
+              >
+                <X className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+            </div>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const q = linkSearchQuery.trim();
+                if (!q) return;
+                setLinkSearchLoading(true);
+                setLinkSearchError('');
+                try {
+                  const runner =
+                    workDomain === 'reading' && looksLikeIsbnInput(q)
+                      ? fetchBookByIsbn(q)
+                      : workDomain === 'cinema'
+                        ? searchCinemaMedia(q, { tmdbApiKey: tmdbKey })
+                        : searchWorksByDomain(workDomain, q);
+                  const out = await runner;
+                  setLinkSearchResults(Array.isArray(out?.results) ? out.results.slice(0, 12) : []);
+                  if (!out?.ok && out?.error) setLinkSearchError(out.error);
+                } catch {
+                  setLinkSearchError('Falha ao consultar as APIs.');
+                } finally {
+                  setLinkSearchLoading(false);
+                }
+              }}
+              className="flex gap-2"
+            >
+              <input
+                type="text"
+                value={linkSearchQuery}
+                onChange={(e) => setLinkSearchQuery(e.target.value)}
+                placeholder={workDomain === 'reading' ? 'Título, autor ou ISBN...' : 'Título ou criador...'}
+                aria-label="Buscar obra nas fontes para vincular"
+                className="min-h-[44px] flex-1 rounded-[6px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={linkSearchLoading || !linkSearchQuery.trim()}
+                className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[6px] bg-accent px-4 text-xs font-semibold text-accent-ink hover:opacity-90 disabled:opacity-50"
+              >
+                <Search className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <span>{linkSearchLoading ? 'Buscando...' : 'Buscar'}</span>
+              </button>
+            </form>
+
+            {linkSearchError && (
+              <p className="text-xs text-muted">{linkSearchError}</p>
+            )}
+
+            {!linkSearchLoading && linkSearchResults.length === 0 ? (
+              <p className="py-4 text-center text-xs text-muted">
+                Nenhum resultado encontrado para este termo nas fontes externas.
+              </p>
+            ) : (
+              <div className="divide-y divide-line border-y border-line">
+                {linkSearchResults.map((cand) => (
+                  <div
+                    key={cand.id}
+                    className="flex items-center justify-between gap-3 py-2.5"
+                  >
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <CoverArt
+                        item={cand}
+                        compact
+                        className={`w-10 shrink-0 rounded-[6px] ${
+                          workDomain === 'music' ? 'aspect-square' : 'aspect-[2/3]'
+                        }`}
+                      />
+                      <div className="min-w-0">
+                        <p className="font-editorial truncate text-sm font-semibold text-ink">
+                          {cand.title}
+                        </p>
+                        <p className="truncate text-xs tabular-nums text-muted">
+                          {[cand.creator || cand.director || cand.author, cand.releaseYear, cand.sourceBadge]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const merged = mergeManualWorkWithApiCandidate(item, cand);
+                        if (!merged) return;
+                        onUpdateItem(item.id, merged.updatedWork);
+                        setLinkSourceModalOpen(false);
+                        showToast({
+                          message: `Obra vinculada a ${cand.sourceBadge || 'fonte externa'}.`,
+                          type: 'success',
+                          duration: 7000,
+                          action: {
+                            label: 'Desfazer',
+                            onClick: () => onUpdateItem(item.id, merged.undoSnapshot),
+                          },
+                        });
+                      }}
+                      className="min-h-[44px] shrink-0 rounded-[6px] border border-accent bg-accent/15 px-3 text-xs font-semibold text-ink hover:bg-accent hover:text-accent-ink"
+                    >
+                      Vincular
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Página / Folha de Entidade (Autor, Diretor, Estúdio, Elenco, Banda) — v2.4.0 Fase 4.4 */}
       <Suspense fallback={null}>
         {activeEntity && (
@@ -3883,7 +4168,11 @@ export function WorkDetailPage({
               onSelectItem?.(work);
             }}
             onQuickCatalogCandidate={(cand) => {
-              onQuickCatalogItem?.(cand);
+              onQuickCatalogItem?.({
+                ...cand,
+                status: cand?.status || 'queued',
+                inBacklog: cand?.inBacklog !== false,
+              });
               setActiveEntity(null);
             }}
           />

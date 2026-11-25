@@ -142,3 +142,81 @@ export function findCatalogWorksForEntity(
     },
   };
 }
+
+export const MANUAL_ENTITY_META_STORAGE_KEY = 'omniprism_manual_entity_meta_v1';
+
+function buildEntityMetaKey({ name = '', domain = 'reading', role = 'creator' } = {}) {
+  const normName = normalizeName(name);
+  if (!normName) return '';
+  return `${String(domain || 'reading').trim().toLowerCase()}::${String(role || 'creator').trim().toLowerCase()}::${normName}`;
+}
+
+function readAllManualEntityMeta(storage = globalThis?.localStorage) {
+  if (!storage || typeof storage.getItem !== 'function') return {};
+  try {
+    const raw = storage.getItem(MANUAL_ENTITY_META_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function getManualEntityMeta(entity = {}, { storage = globalThis?.localStorage } = {}) {
+  const key = buildEntityMetaKey(entity);
+  if (!key) return null;
+  const all = readAllManualEntityMeta(storage);
+  const entry = all[key];
+  return entry && typeof entry === 'object' ? entry : null;
+}
+
+export function saveManualEntityMeta(
+  entity = {},
+  patch = {},
+  { storage = globalThis?.localStorage } = {},
+) {
+  const key = buildEntityMetaKey(entity);
+  if (!key) return null;
+  const all = readAllManualEntityMeta(storage);
+  const prev = all[key] && typeof all[key] === 'object' ? all[key] : {};
+  const parsedTotal = Number(patch.mainSeriesTotal);
+  const cleanTotal =
+    Number.isFinite(parsedTotal) && parsedTotal > 0 ? Math.min(999, Math.round(parsedTotal)) : null;
+  const next = {
+    name: String(entity?.name || prev.name || '').trim(),
+    domain: String(entity?.domain || prev.domain || 'reading').trim(),
+    role: String(entity?.role || prev.role || 'creator').trim(),
+    seriesName:
+      patch.seriesName !== undefined
+        ? String(patch.seriesName || '').trim()
+        : String(prev.seriesName || '').trim(),
+    mainSeriesTotal: patch.mainSeriesTotal === null ? null : cleanTotal ?? prev.mainSeriesTotal ?? null,
+    updatedAt: new Date().toISOString(),
+  };
+  all[key] = next;
+  if (storage && typeof storage.setItem === 'function') {
+    try {
+      storage.setItem(MANUAL_ENTITY_META_STORAGE_KEY, JSON.stringify(all));
+    } catch {
+      // Ignore storage quota errors cleanly
+    }
+  }
+  return next;
+}
+
+export function computeEntityCompleteness({ works = [], mainSeriesTotal = null } = {}) {
+  const list = Array.isArray(works) ? works : [];
+  const completed = list.filter((w) => w?.status === 'completed').length;
+  const inCatalog = list.length;
+  const parsed = Number(mainSeriesTotal);
+  const validTotal = Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
+  const pct = validTotal !== null ? Math.min(100, Math.round((completed / validTotal) * 100)) : null;
+  return {
+    completed,
+    inCatalog,
+    mainSeriesTotal: validTotal,
+    pct,
+    isOpenEnded: validTotal === null,
+  };
+}

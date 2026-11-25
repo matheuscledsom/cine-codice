@@ -777,6 +777,114 @@ export async function fetchSteamViaProxyOrDirect(
   return { ok: Boolean(data && typeof data === 'object'), via: 'direct', status: res.status, data };
 }
 
+export const BRASILAPI_DIRECT_ISBN_BASE = 'https://brasilapi.com.br/api/isbn/v1';
+
+/**
+ * Consulta ISBN na BrasilAPI (CBL, Mercado Editorial, Open Library, Google Books) via proxy `/api/isbn/{isbn}`,
+ * com fallback direto apenas em DEV ou quando a função proxy não estiver montada (HTML 404).
+ */
+export async function fetchBrasilApiIsbnViaProxyOrDirect(
+  cleanIsbn,
+  {
+    providers = '',
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = true,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+  } = {}
+) {
+  const normalized = String(cleanIsbn || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^0-9X]/g, '');
+  if (!normalized) {
+    return { ok: false, via: 'none', status: 400, invalidIsbn: true, data: null };
+  }
+
+  const provParam = String(providers || '').trim();
+  const qs = provParam ? `?providers=${encodeURIComponent(provParam)}` : '';
+
+  if (shouldUseApiProxy({ forceProxy, isDev })) {
+    const proxyUrl = `/api/isbn/${encodeURIComponent(normalized)}${qs}`;
+    try {
+      const res = await apiRequest(proxyUrl, {
+        provider: 'brasilapi',
+        headers: { Accept: 'application/json' },
+        signal,
+        fetchImpl,
+        timeoutMs,
+        nowFn,
+        dedup,
+        maxRetries: 0,
+      });
+      const status = Number(res?.status) || 0;
+      const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+      const isProxyMounted = !(status === 404 && !contentType.includes('application/json'));
+      if (isProxyMounted && !contentType.includes('text/html')) {
+        const data = await res.json().catch(() => null);
+        if (status === 404) {
+          return { ok: false, via: 'proxy', status: 404, notFound: true, data };
+        }
+        if (status === 400) {
+          return { ok: false, via: 'proxy', status: 400, invalidIsbn: true, data };
+        }
+        if (!res.ok) {
+          return { ok: false, via: 'proxy', status, data };
+        }
+        return { ok: Boolean(data && typeof data === 'object'), via: 'proxy', status, data };
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError' || signal?.aborted) {
+        throw err;
+      }
+      if (err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT') {
+        return { ok: false, via: 'proxy', status: null, timedOut: true, data: null };
+      }
+    }
+  }
+
+  const directUrl = `${BRASILAPI_DIRECT_ISBN_BASE}/${encodeURIComponent(normalized)}${qs}`;
+  try {
+    const res = await apiRequest(directUrl, {
+      provider: 'brasilapi',
+      headers: { Accept: 'application/json' },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    const data = await res.json().catch(() => null);
+    if (status === 404) {
+      return { ok: false, via: 'direct', status: 404, notFound: true, data };
+    }
+    if (status === 400) {
+      return { ok: false, via: 'direct', status: 400, invalidIsbn: true, data };
+    }
+    if (!res.ok) {
+      return { ok: false, via: 'direct', status, data };
+    }
+    return { ok: Boolean(data && typeof data === 'object'), via: 'direct', status, data };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    const timedOut = err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT';
+    return {
+      ok: false,
+      via: 'direct',
+      status: err?.status ?? null,
+      timedOut,
+      data: null,
+    };
+  }
+}
+
 /**
  * Consulta `GET /api/status` (autenticado) para saber quais provedores
  * possuem chaves configuradas no servidor Cloudflare (apenas booleanos).

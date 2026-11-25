@@ -65,8 +65,12 @@ export async function computeSha256Hex(rawText) {
 }
 
 export async function exportSignedBackupPayload(db) {
-  const sanitizedInput = stripBase64MediaFromWorks(db);
-  const baseDb = stripBase64MediaFromWorks(migrateDatabase(sanitizedInput));
+  const sanitizedInput = stripBase64MediaFromWorks(db, {
+    preserveCompressedManualCovers: true,
+  });
+  const baseDb = stripBase64MediaFromWorks(migrateDatabase(sanitizedInput), {
+    preserveCompressedManualCovers: true,
+  });
   const canonicalJson = JSON.stringify(stripChecksumEnvelope(baseDb));
   const digest = await computeSha256Hex(canonicalJson);
 

@@ -433,6 +433,8 @@ function isFieldMissingOnItem(item, field) {
   if (field === 'coverUrl') return !item.coverUrl;
   if (field === 'creator') return !item.creator && !item.director;
   if (field === 'releaseYear') return !item.releaseYear;
+  if (field === 'totalPages') return !(Number(item.totalPages) > 0);
+  if (field === 'originalTitle') return !String(item.originalTitle || '').trim();
   if (field === 'platforms') {
     return !Array.isArray(item.platforms) || item.platforms.length === 0;
   }
@@ -491,6 +493,12 @@ export function mergeMissingFieldsFromFallback(
         changed = true;
       } else if (field === 'releaseYear' && match.releaseYear) {
         patched.releaseYear = match.releaseYear;
+        changed = true;
+      } else if (field === 'totalPages' && Number(match.totalPages) > 0) {
+        patched.totalPages = Math.round(Number(match.totalPages));
+        changed = true;
+      } else if (field === 'originalTitle' && String(match.originalTitle || '').trim()) {
+        patched.originalTitle = String(match.originalTitle).trim();
         changed = true;
       } else if (
         field === 'platforms' &&
@@ -576,6 +584,8 @@ export async function executeDomainProviderChain({
   executeProvider,
   relevanceFilter = null,
   gapFillFields = ['coverUrl'],
+  supplementBelowCount = 0,
+  shouldSupplementResults = null,
   signal = undefined,
   skipCache = false,
   nowFn = Date.now,
@@ -708,28 +718,33 @@ export async function executeDomainProviderChain({
       primaryResults = relevantList;
       primaryProvider = provider;
 
-      // Verifica se há lacunas específicas (ex.: capa ausente) para consultar APENAS a próxima fonte
+      // Verifica se há lacunas específicas (ex.: capa ausente) ou poucos resultados antes de parar
       const fieldsNeedingFill = (Array.isArray(gapFillFields) ? gapFillFields : []).filter(
         (field) => primaryResults.some((item) => isFieldMissingOnItem(item, field))
       );
+      const needsSupplement =
+        typeof shouldSupplementResults === 'function'
+          ? Boolean(shouldSupplementResults(primaryResults))
+          : Number(supplementBelowCount) > 0 &&
+            primaryResults.length < Number(supplementBelowCount);
 
       if (typeof onPartialResults === 'function') {
         onPartialResults({
           results: primaryResults,
           usedSources: [...usedSources],
-          partial: fieldsNeedingFill.length > 0,
+          partial: fieldsNeedingFill.length > 0 || needsSupplement,
           sourceStatusHint: `Fonte: ${usedSources.join(' · ')}`,
         });
       }
 
-      if (fieldsNeedingFill.length === 0) {
+      if (fieldsNeedingFill.length === 0 && !needsSupplement) {
         break;
       }
 
-      // Continua o laço APENAS para tentar preencher campos faltantes na próxima fonte disponível
+      // Continua o laço para preencher lacunas ou complementar quando houver poucos resultados
       continue;
     } else {
-      // Segunda fonte consultada exclusivamente para preencher campos faltantes
+      // Fonte secundária consultada para preencher campos faltantes ou complementar poucos resultados
       const fieldsNeedingFill = (Array.isArray(gapFillFields) ? gapFillFields : []).filter(
         (field) => primaryResults.some((item) => isFieldMissingOnItem(item, field))
       );
@@ -739,6 +754,23 @@ export async function executeDomainProviderChain({
           relevantList,
           fieldsNeedingFill
         );
+      }
+      const needsSupplement =
+        typeof shouldSupplementResults === 'function'
+          ? Boolean(shouldSupplementResults(primaryResults))
+          : Number(supplementBelowCount) > 0 &&
+            primaryResults.length < Number(supplementBelowCount);
+      if (needsSupplement) {
+        const seenKeys = new Set(
+          primaryResults.map((r) => `${normalizeMatchText(r?.title)}::${normalizeMatchText(r?.creator)}`)
+        );
+        for (const extra of relevantList) {
+          const k = `${normalizeMatchText(extra?.title)}::${normalizeMatchText(extra?.creator)}`;
+          if (!seenKeys.has(k)) {
+            seenKeys.add(k);
+            primaryResults.push(extra);
+          }
+        }
       }
       break;
     }

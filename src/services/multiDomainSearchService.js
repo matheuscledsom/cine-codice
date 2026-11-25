@@ -16,6 +16,11 @@ import {
   parseRawgGameMetadata,
 } from '../lib/gameDepth.js';
 import {
+  normalizeBrasilApiIsbnResponse,
+  parseAndValidateIsbn,
+} from '../lib/isbn.js';
+import {
+  fetchBrasilApiIsbnViaProxyOrDirect,
   fetchIgdbViaProxy,
   fetchRawgViaProxy,
   fetchSteamViaProxyOrDirect,
@@ -556,6 +561,7 @@ function parseGoogleBooksItems(
           ? 'manga'
           : 'book';
     const langCode = String(info.language || '').trim().toLowerCase();
+    const countryCode = String(vol?.accessInfo?.country || '').trim().toUpperCase();
     const effectiveLang = isPortugueseCode(langCode)
       ? 'pt'
       : langCode || (isPortugueseQuery ? 'pt' : '');
@@ -568,6 +574,7 @@ function parseGoogleBooksItems(
       originalTitle: '',
       creator: author,
       director: author,
+      studio: String(info.publisher || '').trim(),
       releaseYear: info.publishedDate ? Number(String(info.publishedDate).slice(0, 4)) || null : null,
       coverUrl,
       synopsis: String(info.description || '').trim(),
@@ -577,9 +584,11 @@ function parseGoogleBooksItems(
       isbnOrDoi: isbnObj?.identifier ? String(isbnObj.identifier) : '',
       bookFormat: 'Físico',
       language: effectiveLang,
+      country: countryCode,
       _fromPtQuery: Boolean(isPortugueseQuery),
       genres,
       ids: { googleBooks: vol.id || null },
+      source: 'googleBooks',
       sourceBadge: 'Google Books',
       mergedSources: ['Google Books'],
     });
@@ -615,6 +624,9 @@ export function rankReadingCandidates(candidates = [], query = '') {
     const isPt = isPortugueseCode(item.language);
     if (isPt && !isNonLatin && !looksForeignTitle) {
       score += 240;
+      if (item.country === 'BR') {
+        score += 80;
+      }
       if (isLikelyPortugueseTitle(title)) {
         score += 70;
       }
@@ -707,189 +719,444 @@ function enrichPortugueseBooksWithOriginals(ptCandidates = [], globalCandidates 
   });
 }
 
-/**
- * Busca gratuita para Leitura & Acadêmico (Open Library `language=por` + Google Books `langRestrict=pt`
- * com consulta secundária para `originalTitle` e capas em alta resolução).
- */
-export async function searchReadingWorks(
-  query,
-  { signal, fetchImpl, mediaTypeFilter = 'all', onPartialResults = null } = {}
+async function searchReadingViaGoogleBooks(
+  cleanQuery,
+  mediaTypeFilter,
+  { signal, fetchImpl, timeoutMs } = {}
 ) {
-  const cleanQuery = String(query || '').trim();
-  if (!cleanQuery) return { ok: true, results: [], offline: false, partialFailure: false, usedSources: [] };
-  if (isBrowserOffline()) {
-    return { ok: false, results: [], offline: true, partialFailure: false, usedSources: [] };
+  const encoded = encodeURIComponent(cleanQuery);
+  // Google Books volumes.list: langRestrict=pt + printType=books (country=BR não é parâmetro de busca pública na API v1, aplicado no ranking via accessInfo.country)
+  const gbPtUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&langRestrict=pt&printType=books&maxResults=12`;
+  const gbGlobalUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&maxResults=8`;
+
+  const [ptOutcome, globalOutcome] = await Promise.allSettled([
+    fetchJsonSafe(gbPtUrl, { signal, fetchImpl, timeoutMs }),
+    fetchJsonSafe(gbGlobalUrl, { signal, fetchImpl, timeoutMs }),
+  ]);
+
+  if (ptOutcome.status === 'rejected' && globalOutcome.status === 'rejected') {
+    const err = ptOutcome.reason || globalOutcome.reason;
+    return {
+      ok: false,
+      error: err?.message || 'Google Books indisponível',
+      results: [],
+    };
   }
 
+  const ptRaw =
+    ptOutcome.status === 'fulfilled' && Array.isArray(ptOutcome.value?.items)
+      ? parseGoogleBooksItems(ptOutcome.value.items, {
+          mediaTypeFilter,
+          isPortugueseQuery: true,
+        })
+      : [];
+  const globalRaw =
+    globalOutcome.status === 'fulfilled' && Array.isArray(globalOutcome.value?.items)
+      ? parseGoogleBooksItems(globalOutcome.value.items, {
+          mediaTypeFilter,
+          isPortugueseQuery: false,
+        })
+      : [];
+
+  const enrichedPt = enrichPortugueseBooksWithOriginals(ptRaw, globalRaw);
+  const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
+  const filteredGlobals = globalRaw.filter(
+    (g) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(g.title || ''))
+  );
+  const combined =
+    enrichedPt.length >= 6 ? enrichedPt : [...enrichedPt, ...filteredGlobals];
+
+  return {
+    ok: true,
+    results: deduplicateDomainCandidates(combined),
+  };
+}
+
+async function searchReadingViaOpenLibrary(
+  cleanQuery,
+  mediaTypeFilter,
+  { signal, fetchImpl, timeoutMs } = {}
+) {
   const encoded = encodeURIComponent(cleanQuery);
   const olFields =
     'key,title,author_name,first_publish_year,number_of_pages_median,cover_i,isbn,subject,first_sentence,language,editions,editions.key,editions.title,editions.language,editions.cover_i,editions.isbn';
   const olPtUrl = `https://openlibrary.org/search.json?q=${encoded}&language=por&limit=12&fields=${olFields}`;
-  const gbPtUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&langRestrict=pt&maxResults=12`;
-  const gbGlobalUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&maxResults=8`;
 
-  const olPtPromise = fetchJsonSafe(olPtUrl, { signal, fetchImpl });
-  const gbPtPromise = fetchJsonSafe(gbPtUrl, { signal, fetchImpl });
-  const gbGlobalPromise = fetchJsonSafe(gbGlobalUrl, { signal, fetchImpl });
-
-  if (typeof onPartialResults === 'function') {
-    const streamPt = [];
-    const streamGlobal = [];
-    const streamSources = new Set();
-    let pending = 3;
-    const emitReadingPartial = () => {
-      if (signal?.aborted) return;
-      const enriched = enrichPortugueseBooksWithOriginals(streamPt, streamGlobal);
-      const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
-      const filteredG = streamGlobal.filter(
-        (g) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(g.title || ''))
-      );
-      const pool = enriched.length >= 6 ? enriched : [...enriched, ...filteredG];
-      if (pool.length === 0) return;
-      const dedupedPartial = deduplicateDomainCandidates(pool).map((item) => {
-        const clean = { ...item };
-        delete clean._fromPtQuery;
-        return clean;
-      });
-      const rankedPartial = rankReadingCandidates(dedupedPartial, cleanQuery).slice(0, 18);
-      const srcArr = Array.from(streamSources);
-      onPartialResults({
-        results: rankedPartial,
-        usedSources: srcArr,
-        pendingCount: pending,
-        partial: pending > 0,
-        sourceStatusHint: srcArr.length > 0 ? `Fontes: ${srcArr.join(' · ')}` : '',
-      });
-    };
-
-    olPtPromise
-      .then((val) => {
-        pending = Math.max(0, pending - 1);
-        if (Array.isArray(val?.docs)) {
-          streamSources.add('Open Library');
-          streamPt.push(...parseOpenLibraryDocs(val.docs, { mediaTypeFilter, isPortugueseQuery: true }));
-          emitReadingPartial();
-        }
-      })
-      .catch(() => {
-        pending = Math.max(0, pending - 1);
-      });
-    gbPtPromise
-      .then((val) => {
-        pending = Math.max(0, pending - 1);
-        if (Array.isArray(val?.items)) {
-          streamSources.add('Google Books');
-          streamPt.push(...parseGoogleBooksItems(val.items, { mediaTypeFilter, isPortugueseQuery: true }));
-          emitReadingPartial();
-        }
-      })
-      .catch(() => {
-        pending = Math.max(0, pending - 1);
-      });
-    gbGlobalPromise
-      .then((val) => {
-        pending = Math.max(0, pending - 1);
-        if (Array.isArray(val?.items)) {
-          streamSources.add('Google Books');
-          streamGlobal.push(...parseGoogleBooksItems(val.items, { mediaTypeFilter, isPortugueseQuery: false }));
-          emitReadingPartial();
-        }
-      })
-      .catch(() => {
-        pending = Math.max(0, pending - 1);
-      });
+  const ptData = await fetchJsonSafe(olPtUrl, { signal, fetchImpl, timeoutMs });
+  if (!Array.isArray(ptData?.docs)) {
+    return { ok: false, error: 'Open Library resposta inválida', results: [] };
   }
 
-  const [olPtRes, gbPtRes, gbGlobalRes] = await Promise.allSettled([
-    olPtPromise,
-    gbPtPromise,
-    gbGlobalPromise,
-  ]);
+  const ptDocs = parseOpenLibraryDocs(ptData.docs, {
+    mediaTypeFilter,
+    isPortugueseQuery: true,
+  });
 
-  const ptCandidates = [];
-  const globalCandidates = [];
-  const usedSources = [];
-  let primaryFailed = 0;
-
-  if (olPtRes.status === 'fulfilled' && Array.isArray(olPtRes.value?.docs)) {
-    usedSources.push('Open Library');
-    ptCandidates.push(
-      ...parseOpenLibraryDocs(olPtRes.value.docs, {
-        mediaTypeFilter,
-        isPortugueseQuery: true,
-      })
-    );
-  } else {
-    primaryFailed += 1;
+  if (ptDocs.length >= 3) {
+    return { ok: true, results: ptDocs };
   }
 
-  if (gbPtRes.status === 'fulfilled' && Array.isArray(gbPtRes.value?.items)) {
-    usedSources.push('Google Books');
-    ptCandidates.push(
-      ...parseGoogleBooksItems(gbPtRes.value.items, {
-        mediaTypeFilter,
-        isPortugueseQuery: true,
-      })
-    );
-  } else {
-    primaryFailed += 1;
-  }
-
-  if (gbGlobalRes.status === 'fulfilled' && Array.isArray(gbGlobalRes.value?.items)) {
-    if (!usedSources.includes('Google Books')) usedSources.push('Google Books');
-    globalCandidates.push(
-      ...parseGoogleBooksItems(gbGlobalRes.value.items, {
+  let globalDocs = [];
+  try {
+    const olGlobalUrl = `https://openlibrary.org/search.json?q=${encoded}&limit=8`;
+    const globalData = await fetchJsonSafe(olGlobalUrl, { signal, fetchImpl, timeoutMs });
+    if (Array.isArray(globalData?.docs)) {
+      globalDocs = parseOpenLibraryDocs(globalData.docs, {
         mediaTypeFilter,
         isPortugueseQuery: false,
-      })
-    );
+      });
+    }
+  } catch {
+    // Fallback silencioso caso busca global na Open Library falhe
   }
 
-  // Se houver poucos resultados PT, faz fallback secundário na Open Library sem restrição de idioma
-  if (ptCandidates.length < 3) {
-    try {
-      const olGlobalUrl = `https://openlibrary.org/search.json?q=${encoded}&limit=8`;
-      const olGlobalData = await fetchJsonSafe(olGlobalUrl, { signal, fetchImpl });
-      if (Array.isArray(olGlobalData?.docs)) {
-        if (!usedSources.includes('Open Library')) usedSources.push('Open Library');
-        globalCandidates.push(
-          ...parseOpenLibraryDocs(olGlobalData.docs, {
-            mediaTypeFilter,
-            isPortugueseQuery: false,
-          })
-        );
+  const enrichedPt = enrichPortugueseBooksWithOriginals(ptDocs, globalDocs);
+  const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
+  const filteredGlobals = globalDocs.filter(
+    (g) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(g.title || ''))
+  );
+  const combined =
+    enrichedPt.length >= 6 ? enrichedPt : [...enrichedPt, ...filteredGlobals];
+
+  return {
+    ok: true,
+    results: deduplicateDomainCandidates(combined),
+  };
+}
+
+/**
+ * Busca ordenada para Leitura & Acadêmico via Provider Registry:
+ * Ordem padrão: Google Books (langRestrict=pt, foco Brasil no ranking) -> Open Library.
+ */
+export async function searchReadingWorks(
+  query,
+  {
+    signal,
+    fetchImpl,
+    mediaTypeFilter = 'all',
+    onPartialResults = null,
+    skipCache = undefined,
+    storage = null,
+    nowFn = Date.now,
+    idbFactory = null,
+    providers = null,
+  } = {}
+) {
+  const cleanQuery = String(query || '').trim();
+  if (!cleanQuery) {
+    return { ok: true, results: [], offline: false, partialFailure: false, usedSources: [] };
+  }
+  if (isBrowserOffline()) {
+    return { ok: false, results: [], offline: true, partialFailure: false, usedSources: [] };
+  }
+
+  // Quando chamador injeta mock de rede sem pedir cache explicitamente, evita contaminar entre buscas isoladas
+  const effectiveSkipCache =
+    skipCache !== undefined
+      ? Boolean(skipCache)
+      : Boolean(typeof fetchImpl === 'function' && fetchImpl !== fetch && !idbFactory);
+
+  const finalizeReadingList = (list = []) => {
+    const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
+    const cleaned = (Array.isArray(list) ? list : [])
+      .filter((item) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(item?.title || '')))
+      .map((item) => {
+        const copy = { ...item };
+        delete copy._fromPtQuery;
+        return copy;
+      });
+    return rankReadingCandidates(deduplicateDomainCandidates(cleaned), cleanQuery).slice(0, 18);
+  };
+
+  const chainOutcome = await executeDomainProviderChain({
+    domain: 'reading',
+    query: cleanQuery,
+    mediaTypeFilter,
+    providers,
+    signal,
+    skipCache: effectiveSkipCache,
+    nowFn,
+    storage,
+    idbFactory,
+    gapFillFields: ['coverUrl', 'totalPages', 'originalTitle'],
+    supplementBelowCount: 3,
+    shouldSupplementResults: (current) => {
+      const list = Array.isArray(current) ? current : [];
+      if (list.length < 3) return true;
+      const ptCount = list.filter(
+        (item) => item?._fromPtQuery || isPortugueseCode(item?.language)
+      ).length;
+      return ptCount < 3;
+    },
+    onPartialResults:
+      typeof onPartialResults === 'function'
+        ? (partial) => {
+            const finalized = finalizeReadingList(partial.results || []);
+            if (finalized.length === 0) return;
+            onPartialResults({
+              ...partial,
+              results: finalized,
+              sourceStatusHint:
+                (partial.usedSources || []).length > 0
+                  ? `Fontes: ${partial.usedSources.join(' · ')}`
+                  : '',
+            });
+          }
+        : null,
+    executeProvider: async (provider, { signal: provSignal, timeoutMs: provTimeout }) => {
+      const commonOpts = {
+        signal: provSignal,
+        fetchImpl,
+        timeoutMs: provTimeout,
+      };
+      if (provider.id === 'googleBooks') {
+        return searchReadingViaGoogleBooks(cleanQuery, mediaTypeFilter, commonOpts);
       }
-    } catch {
-      // Fallback silencioso
+      if (provider.id === 'openlibrary') {
+        return searchReadingViaOpenLibrary(cleanQuery, mediaTypeFilter, commonOpts);
+      }
+      return { ok: false, error: `Provedor de leitura desconhecido: ${provider.id}`, results: [] };
+    },
+  });
+
+  const ptPool = (chainOutcome.results || []).filter(
+    (item) => item?._fromPtQuery || isPortugueseCode(item?.language)
+  );
+  const globalPool = (chainOutcome.results || []).filter(
+    (item) => !item?._fromPtQuery && !isPortugueseCode(item?.language)
+  );
+  const enrichedAcrossSources = enrichPortugueseBooksWithOriginals(
+    ptPool.length > 0 ? ptPool : chainOutcome.results || [],
+    globalPool
+  );
+  const ranked = finalizeReadingList(
+    ptPool.length >= 6 ? enrichedAcrossSources : [...enrichedAcrossSources, ...globalPool]
+  );
+  const usedSources = Array.from(new Set(chainOutcome.usedSources || []));
+
+  return {
+    ok: chainOutcome.ok,
+    results: ranked,
+    offline: false,
+    partialFailure: !chainOutcome.ok && ranked.length === 0,
+    usedSources,
+    attempts: chainOutcome.attempts,
+    primarySourceId: chainOutcome.primarySourceId,
+    sourceStatusHint: usedSources.length > 0 ? `Fontes: ${usedSources.join(' · ')}` : '',
+  };
+}
+
+/**
+ * Busca livro por ISBN-10 ou ISBN-13 (valida dígito verificador + BrasilAPI proxy com fallback Open Library/Google Books).
+ */
+export async function fetchBookByIsbn(
+  rawIsbn,
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    nowFn = Date.now,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
+) {
+  const validation = parseAndValidateIsbn(rawIsbn);
+  if (!validation.valid) {
+    return {
+      ok: false,
+      invalidIsbn: true,
+      notFound: false,
+      isbn: validation.normalized,
+      format: validation.format,
+      error: validation.error,
+      results: [],
+      candidate: null,
+      usedSources: [],
+    };
+  }
+
+  if (isBrowserOffline()) {
+    return {
+      ok: false,
+      offline: true,
+      invalidIsbn: false,
+      notFound: false,
+      isbn: validation.normalized,
+      error: 'Sem conexão com a internet no momento.',
+      results: [],
+      candidate: null,
+      usedSources: [],
+    };
+  }
+
+  const cleanIsbn = validation.normalized;
+  const brasilOut = await fetchBrasilApiIsbnViaProxyOrDirect(cleanIsbn, {
+    signal,
+    fetchImpl,
+    timeoutMs,
+    nowFn,
+    forceProxy,
+    ...(isDev !== undefined ? { isDev } : {}),
+  });
+
+  if (brasilOut.ok && brasilOut.data) {
+    let candidate = normalizeBrasilApiIsbnResponse(brasilOut.data, cleanIsbn);
+    if (candidate) {
+      const usedSources = ['BrasilAPI'];
+      const needsGapFill =
+        !candidate.creator || !candidate.coverUrl || !candidate.totalPages || !candidate.releaseYear;
+      if (needsGapFill) {
+        let enricher = null;
+        try {
+          const olData = await fetchJsonSafe(
+            `https://openlibrary.org/search.json?isbn=${encodeURIComponent(cleanIsbn)}&limit=3`,
+            { signal, fetchImpl, timeoutMs }
+          );
+          const olList = parseOpenLibraryDocs(olData?.docs || [], {
+            mediaTypeFilter: 'book',
+            isPortugueseQuery: true,
+          });
+          if (olList[0]) {
+            enricher = olList[0];
+            usedSources.push('Open Library');
+          }
+        } catch {
+          // Segue sem interromper resultado já obtido da BrasilAPI
+        }
+        if ((!enricher || !enricher.coverUrl || !enricher.creator) && !signal?.aborted) {
+          try {
+            const gbData = await fetchJsonSafe(
+              `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(cleanIsbn)}&maxResults=3`,
+              { signal, fetchImpl, timeoutMs }
+            );
+            const gbList = parseGoogleBooksItems(gbData?.items || [], {
+              mediaTypeFilter: 'book',
+              isPortugueseQuery: true,
+            });
+            if (gbList[0]) {
+              enricher = {
+                ...gbList[0],
+                ...(enricher || {}),
+                creator: enricher?.creator || gbList[0].creator,
+                coverUrl: enricher?.coverUrl || gbList[0].coverUrl,
+                totalPages: enricher?.totalPages || gbList[0].totalPages,
+                releaseYear: enricher?.releaseYear || gbList[0].releaseYear,
+                synopsis: enricher?.synopsis || gbList[0].synopsis,
+              };
+              usedSources.push('Google Books');
+            }
+          } catch {
+            // Segue com os dados já disponíveis
+          }
+        }
+        if (enricher) {
+          const nextCreator = candidate.creator || enricher.creator || '';
+          const nextCover = candidate.coverUrl || enricher.coverUrl || null;
+          candidate = {
+            ...candidate,
+            creator: nextCreator,
+            author: nextCreator,
+            director: nextCreator,
+            coverUrl: nextCover,
+            coverSources: Array.from(
+              new Set([
+                ...(nextCover ? [nextCover] : []),
+                ...(Array.isArray(candidate.coverSources) ? candidate.coverSources : []),
+                ...(Array.isArray(enricher.coverSources) ? enricher.coverSources : []),
+              ].filter(Boolean))
+            ),
+            totalPages: candidate.totalPages || enricher.totalPages || null,
+            releaseYear: candidate.releaseYear || enricher.releaseYear || null,
+            synopsis: candidate.synopsis || enricher.synopsis || '',
+            mergedSources: Array.from(
+              new Set([...(candidate.mergedSources || []), ...usedSources.slice(1)])
+            ),
+          };
+        }
+      }
+
+      return {
+        ok: true,
+        invalidIsbn: false,
+        notFound: false,
+        isbn: cleanIsbn,
+        format: validation.format,
+        candidate,
+        results: [candidate],
+        usedSources,
+        sourceStatusHint:
+          usedSources.length > 1
+            ? `${candidate.sourceBadge} + ${usedSources.slice(1).join(' · ')}`
+            : candidate.sourceBadge,
+      };
     }
   }
 
-  const enrichedPt = enrichPortugueseBooksWithOriginals(ptCandidates, globalCandidates);
-  const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
-  const filteredGlobals = globalCandidates.filter(
-    (g) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(g.title || ''))
-  );
+  // Se não achou na BrasilAPI, tenta busca direta pelo código isbn: no Google Books e Open Library
+  try {
+    const gbData = await fetchJsonSafe(
+      `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(cleanIsbn)}&maxResults=3`,
+      { signal, fetchImpl, timeoutMs }
+    );
+    const gbCandidates = parseGoogleBooksItems(gbData?.items || [], {
+      mediaTypeFilter: 'book',
+      isPortugueseQuery: true,
+    });
+    if (gbCandidates[0]) {
+      const cand = { ...gbCandidates[0], isbnOrDoi: gbCandidates[0].isbnOrDoi || cleanIsbn };
+      return {
+        ok: true,
+        invalidIsbn: false,
+        notFound: false,
+        isbn: cleanIsbn,
+        format: validation.format,
+        candidate: cand,
+        results: [cand],
+        usedSources: ['Google Books'],
+        sourceStatusHint: 'Google Books (ISBN)',
+      };
+    }
+  } catch {
+    // Tenta Open Library abaixo
+  }
 
-  // Só mistura globais na lista principal se tivermos poucos resultados em PT; caso contrário, mantém o foco em PT
-  const combinedPool =
-    enrichedPt.length >= 6 ? enrichedPt : [...enrichedPt, ...filteredGlobals];
-
-  const deduped = deduplicateDomainCandidates(combinedPool).map((item) => {
-    const clean = { ...item };
-    delete clean._fromPtQuery;
-    return clean;
-  });
-
-  const ranked = rankReadingCandidates(deduped, cleanQuery).slice(0, 18);
+  try {
+    const olData = await fetchJsonSafe(
+      `https://openlibrary.org/search.json?isbn=${encodeURIComponent(cleanIsbn)}&limit=3`,
+      { signal, fetchImpl, timeoutMs }
+    );
+    const olCandidates = parseOpenLibraryDocs(olData?.docs || [], {
+      mediaTypeFilter: 'book',
+      isPortugueseQuery: true,
+    });
+    if (olCandidates[0]) {
+      const cand = { ...olCandidates[0], isbnOrDoi: olCandidates[0].isbnOrDoi || cleanIsbn };
+      return {
+        ok: true,
+        invalidIsbn: false,
+        notFound: false,
+        isbn: cleanIsbn,
+        format: validation.format,
+        candidate: cand,
+        results: [cand],
+        usedSources: ['Open Library'],
+        sourceStatusHint: 'Open Library (ISBN)',
+      };
+    }
+  } catch {
+    // Segue para notFound claro
+  }
 
   return {
-    ok: primaryFailed < 2 || ranked.length > 0,
-    results: ranked,
-    offline: false,
-    partialFailure: primaryFailed > 0 && ranked.length === 0,
-    usedSources: Array.from(new Set(usedSources)),
-    sourceStatusHint:
-      usedSources.length > 0 ? `Fontes: ${Array.from(new Set(usedSources)).join(' · ')}` : '',
+    ok: false,
+    invalidIsbn: false,
+    notFound: true,
+    isbn: cleanIsbn,
+    format: validation.format,
+    error: `ISBN ${cleanIsbn} não encontrado na BrasilAPI (CBL, Mercado Editorial, Open Library, Google Books). Você pode cadastrar este livro manualmente.`,
+    results: [],
+    candidate: null,
+    usedSources: [],
   };
 }
 

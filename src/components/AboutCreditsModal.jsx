@@ -65,6 +65,14 @@ const DATA_SOURCES = [
     urlLabel: GAME_ATTRIBUTION_LINKS.steam.label,
     optionalKey: false,
   },
+  {
+    name: 'BrasilAPI ISBN (CBL · Mercado Editorial · Open Library · Google Books)',
+    role: 'Consulta de livros brasileiros por ISBN-10 e ISBN-13 sem chave e sem exposição no cliente',
+    policy: 'API pública brasileira via proxy local com cache.',
+    url: 'https://brasilapi.com.br',
+    urlLabel: 'BrasilAPI',
+    optionalKey: false,
+  },
 ];
 
 export function AboutCreditsModal({ isOpen, onClose }) {

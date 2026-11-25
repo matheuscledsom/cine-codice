@@ -148,6 +148,36 @@ export const PROVIDER_LIMITS = Object.freeze({
     dailyLimit: null,
     autoStopRatio: null,
   }),
+  brasilapi: Object.freeze({
+    id: 'brasilapi',
+    label: 'BrasilAPI ISBN',
+    maxRequests: 20,
+    windowMs: 10_000,
+    minIntervalMs: 60,
+    respectRateLimitHeaders: false,
+    dailyLimit: null,
+    autoStopRatio: null,
+  }),
+  googleBooks: Object.freeze({
+    id: 'googleBooks',
+    label: 'Google Books',
+    maxRequests: 20,
+    windowMs: 10_000,
+    minIntervalMs: 50,
+    respectRateLimitHeaders: false,
+    dailyLimit: null,
+    autoStopRatio: null,
+  }),
+  openlibrary: Object.freeze({
+    id: 'openlibrary',
+    label: 'Open Library',
+    maxRequests: 20,
+    windowMs: 10_000,
+    minIntervalMs: 50,
+    respectRateLimitHeaders: false,
+    dailyLimit: null,
+    autoStopRatio: null,
+  }),
 });
 
 export const CACHE_DB_NAME = 'cine_codice_api_cache_v1';

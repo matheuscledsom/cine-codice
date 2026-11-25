@@ -160,7 +160,25 @@ function buildExternalIdsPayload(work = {}) {
       payload[key] = val;
     }
   }
+  if (rawIds.source === 'manual' || work.isManual) {
+    payload.source = 'manual';
+    if (rawIds.id || work.id) {
+      payload.id = String(rawIds.id || work.id);
+    }
+  }
+  if (rawIds.linkedFromManualId) {
+    payload.linkedFromManualId = String(rawIds.linkedFromManualId);
+  }
+  if (valIsbnOrDoi(work)) {
+    const cleanIsbn = String(work.isbnOrDoi || work.isbn || '').trim();
+    if (cleanIsbn && !payload.isbn) payload.isbn = cleanIsbn;
+  }
+
   return payload;
+}
+
+function valIsbnOrDoi(work) {
+  return Boolean(work?.isbnOrDoi || work?.isbn);
 }
 
 export function filterWorksByDomain(works = [], domain = 'cinema') {
@@ -297,6 +315,11 @@ export function mapLocalWorkToCatalogRow(
       chapters_read: chaptersRead,
       isbn_or_doi: isbnOrDoi,
       book_format: bookFormat,
+      seriesVolume: String(work.seriesVolume || '').trim(),
+      workUrl: /^https?:\/\//i.test(String(work.workUrl || '').trim())
+        ? String(work.workUrl).trim()
+        : '',
+      isManual: Boolean(work.isManual || work.ids?.source === 'manual'),
       // Games
       platform,
       platforms,
@@ -599,6 +622,9 @@ export function mapCatalogRowToLocalWork(row = {}) {
     verdict: pd.verdict ?? null,
     externalRatings,
     ids: {
+      ...(extIds.source ? { source: extIds.source } : {}),
+      ...(extIds.id ? { id: extIds.id } : {}),
+      ...(extIds.linkedFromManualId ? { linkedFromManualId: extIds.linkedFromManualId } : {}),
       ...(extIds.tmdb ? { tmdb: extIds.tmdb } : {}),
       ...(extIds.imdb ? { imdb: extIds.imdb } : {}),
       ...(extIds.tvmaze ? { tvmaze: extIds.tvmaze } : {}),
@@ -621,6 +647,11 @@ export function mapCatalogRowToLocalWork(row = {}) {
       ...(extIds.musicbrainzRecording ? { musicbrainzRecording: extIds.musicbrainzRecording } : {}),
       ...(extIds.musicbrainzArtist ? { musicbrainzArtist: extIds.musicbrainzArtist } : {}),
     },
+    isManual: Boolean(extIds.source === 'manual' || pd.isManual),
+    seriesVolume: String(pd.seriesVolume || '').trim(),
+    workUrl: /^https?:\/\//i.test(String(pd.workUrl || '').trim())
+      ? String(pd.workUrl).trim()
+      : '',
     tmdbId: extIds.tmdb ?? null,
     imdbId: extIds.imdb ? String(extIds.imdb) : '',
     tvmazeId: extIds.tvmaze ?? null,
@@ -736,6 +767,12 @@ export function mergeWorksByUpdatedAt(
         ...remote,
         id: existing.id || remote.id,
         cloudId: remote.cloudId || remoteCloudKey,
+        ...(existing.manualCoverDataUrl
+          ? {
+              manualCoverDataUrl: existing.manualCoverDataUrl,
+              coverUrl: remote.coverUrl || existing.manualCoverDataUrl,
+            }
+          : {}),
       };
       registerWork(matchedKey, winner);
       pulledCount += 1;

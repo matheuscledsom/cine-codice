@@ -20,6 +20,7 @@ import {
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
 import { normalizeAchievementsModel } from '../lib/gameDepth.js';
+import { isCompressedManualCoverDataUrl } from '../lib/manualCovers.js';
 import { stripApiKeysFromUrl } from '../api/httpClient.js';
 import {
   CACHE_TTL_MS,
@@ -370,6 +371,19 @@ export function normalizeRelationalWorkRecord(work = {}) {
     chaptersRead: Math.max(0, Math.round(Number(work.chaptersRead) || 0)),
     isbnOrDoi: String(work.isbnOrDoi || work.isbn || work.doi || '').trim(),
     bookFormat: String(work.bookFormat || '').trim(),
+    seriesVolume: String(work.seriesVolume ?? work.progress_data?.seriesVolume ?? '').trim(),
+    workUrl: /^https?:\/\//i.test(String(work.workUrl ?? work.progress_data?.workUrl ?? '').trim())
+      ? String(work.workUrl ?? work.progress_data?.workUrl).trim()
+      : '',
+    isManual: Boolean(work.isManual || work.ids?.source === 'manual' || work.progress_data?.isManual),
+    manualCoverDataUrl: isCompressedManualCoverDataUrl(work.manualCoverDataUrl)
+      ? work.manualCoverDataUrl
+      : isCompressedManualCoverDataUrl(work.coverUrl)
+        ? work.coverUrl
+        : '',
+    coverUrl:
+      work.coverUrl ||
+      (isCompressedManualCoverDataUrl(work.manualCoverDataUrl) ? work.manualCoverDataUrl : null),
     // Games (preserva plataformas reais e edição sem inventar PC)
     platform: String(work.platform || '').trim(),
     platforms: Array.isArray(work.platforms)

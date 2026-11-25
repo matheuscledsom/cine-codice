@@ -22,6 +22,10 @@ import {
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig';
 import { normalizeAchievementsModel } from '../lib/gameDepth';
+import {
+  isCompressedManualCoverDataUrl,
+  saveManualCoverInIdb,
+} from '../lib/manualCovers';
 import { initialItems } from '../data/mockData';
 import { applyCanonicalIdsToWork } from '../lib/idBridge';
 import { classifyLegacyRatingSource } from '../lib/migrations';
@@ -174,6 +178,17 @@ function normalizeItem(rawItem, spectatorDna = null) {
 
   const totalPages = normalizeNullablePositiveInt(rawItem.totalPages);
   const pagesRead = normalizeNonNegativeInt(rawItem.pagesRead);
+  const manualCoverDataUrl = isCompressedManualCoverDataUrl(rawItem.manualCoverDataUrl)
+    ? rawItem.manualCoverDataUrl
+    : isCompressedManualCoverDataUrl(rawItem.coverUrl) &&
+        (rawItem.isManual || rawItem.ids?.source === 'manual')
+      ? rawItem.coverUrl
+      : '';
+  const cleanWorkUrl = /^https?:\/\//i.test(
+    String(rawItem.workUrl ?? rawItem.progress_data?.workUrl ?? '').trim()
+  )
+    ? String(rawItem.workUrl ?? rawItem.progress_data?.workUrl).trim()
+    : '';
 
   const normalized = {
     ...rawItem,
@@ -186,6 +201,13 @@ function normalizeItem(rawItem, spectatorDna = null) {
     originalTitle: String(rawItem.originalTitle || '').trim(),
     creator: String(rawItem.creator || rawItem.director || rawItem.studio || rawItem.author || '').trim(),
     director: String(rawItem.director || rawItem.creator || rawItem.studio || rawItem.author || '').trim(),
+    coverUrl: rawItem.coverUrl || manualCoverDataUrl || null,
+    manualCoverDataUrl,
+    isManual: Boolean(
+      rawItem.isManual || rawItem.ids?.source === 'manual' || rawItem.progress_data?.isManual
+    ),
+    seriesVolume: String(rawItem.seriesVolume ?? rawItem.progress_data?.seriesVolume ?? '').trim(),
+    workUrl: cleanWorkUrl,
     // Leitura & Acadêmico
     pagesRead,
     totalPages,
@@ -710,6 +732,9 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
       );
 
       const normalizedTitle = prepared.title.trim().toLowerCase();
+      if (prepared.manualCoverDataUrl) {
+        saveManualCoverInIdb(prepared.id, prepared.manualCoverDataUrl).catch(() => {});
+      }
 
       setItems((prev) => {
         const existingIndex = prev.findIndex(
@@ -813,6 +838,10 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
             merged.ratingSource =
               updates.ratingSource ?? (score !== null ? 'manual' : null);
             merged.verdict = getVerdictForScore(score);
+          }
+
+          if (cleanUpdates.manualCoverDataUrl && merged.manualCoverDataUrl) {
+            saveManualCoverInIdb(merged.id, merged.manualCoverDataUrl).catch(() => {});
           }
 
           if (statusChanged) {

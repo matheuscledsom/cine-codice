@@ -108,6 +108,9 @@ function collectExternalIdsForDup(work = {}) {
       map[key] = String(val).trim().toLowerCase();
     }
   }
+  if (ids.source === 'manual' && ids.id) {
+    map.manual = String(ids.id).trim().toLowerCase();
+  }
   return map;
 }
 
@@ -152,6 +155,9 @@ export function findCatalogDuplicate(candidate = {}, existingItems = []) {
   const candTitle = normalizeDupTitle(candidate.title);
   if (!candTitle) return null;
   const candYear = Number(candidate.releaseYear) || null;
+  const candCreator = normalizeDupTitle(
+    candidate.creator || candidate.author || candidate.director || candidate.studio || ''
+  );
   const candEdition = normalizeGameEditionType(candidate.editionType).toLowerCase();
 
   for (const item of list) {
@@ -164,12 +170,25 @@ export function findCatalogDuplicate(candidate = {}, existingItems = []) {
     }
 
     const itemYear = Number(item.releaseYear) || null;
+    const itemCreator = normalizeDupTitle(
+      item.creator || item.author || item.director || item.studio || ''
+    );
+    const sameCreator = Boolean(
+      candCreator &&
+        itemCreator &&
+        (candCreator === itemCreator ||
+          candCreator.includes(itemCreator) ||
+          itemCreator.includes(candCreator))
+    );
+
     if (candDomain === 'games') {
       const itemEdition = normalizeGameEditionType(item.editionType).toLowerCase();
       if (candEdition !== itemEdition) continue;
-      if (candYear && itemYear && Math.abs(candYear - itemYear) >= 3) continue;
+      if (candYear && itemYear && Math.abs(candYear - itemYear) >= 3 && !sameCreator) continue;
     } else if (candYear && itemYear && candYear !== itemYear) {
-      continue;
+      if (!(candDomain === 'reading' && sameCreator)) {
+        continue;
+      }
     }
 
     return {

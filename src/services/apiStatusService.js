@@ -9,6 +9,7 @@
 
 import { ApiQuotaError, maskSecretsInText } from '../api/httpClient.js';
 import {
+  fetchBrasilApiIsbnViaProxyOrDirect,
   fetchIgdbViaProxy,
   fetchLastfmViaProxy,
   fetchOmdbViaProxyOrDirect,
@@ -119,6 +120,16 @@ export const API_STATUS_SOURCES = Object.freeze([
     supportsServerProxy: false,
     probeType: 'get',
     url: 'https://openlibrary.org/search.json?q=duna&limit=1&fields=key,title',
+  },
+  {
+    id: 'brasilApi',
+    label: 'BrasilAPI (ISBN)',
+    domainId: 'reading',
+    domainLabel: 'Leitura',
+    host: 'brasilapi.com.br',
+    supportsServerProxy: true,
+    serverOnlySecret: false,
+    probeType: 'brasilapi',
   },
   {
     id: 'igdb',
@@ -630,6 +641,55 @@ export async function probeApiSource(
         latencyMs,
         via: 'proxy',
         message: 'Online via servidor',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
+  if (meta.probeType === 'brasilapi') {
+    try {
+      const outcome = await fetchBrasilApiIsbnViaProxyOrDirect('9788535914849', {
+        dedup: false,
+        timeoutMs,
+        fetchImpl,
+        nowFn,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      });
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (!outcome.ok) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'error',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.status
+            ? `Indisponível (HTTP ${outcome.status}).`
+            : 'Falha ao consultar BrasilAPI (ISBN).',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: true,
+        state: 'online',
+        status: outcome.status || 200,
+        latencyMs,
+        via: outcome.via,
+        message: outcome.via === 'proxy' ? 'Online via servidor' : 'Online',
         checkedAt: nowFn(),
       };
     } catch {

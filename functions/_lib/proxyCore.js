@@ -16,6 +16,7 @@ export const RAWG_UPSTREAM_BASE = 'https://api.rawg.io/api';
 export const IGDB_UPSTREAM_BASE = 'https://api.igdb.com/v4';
 export const TWITCH_OAUTH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token';
 export const STEAM_STORE_UPSTREAM_BASE = 'https://store.steampowered.com/api';
+export const BRASILAPI_ISBN_UPSTREAM_BASE = 'https://brasilapi.com.br/api/isbn/v1';
 
 export const SEARCH_CACHE_TTL_SECONDS = 600; // 10 minutos
 export const DETAIL_CACHE_TTL_SECONDS = 86400; // 24 horas
@@ -589,6 +590,7 @@ export async function proxyWithDefaultCache({
   fetchImpl = fetch,
   cacheOverride = null,
   waitUntil = null,
+  timeoutMs = 8000,
 }) {
   const cache = resolveDefaultCache(cacheOverride);
   const cacheKey = new Request(cacheUrl, { method: 'GET' });
@@ -615,15 +617,27 @@ export async function proxyWithDefaultCache({
   }
 
   let upstreamRes;
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer =
+    controller && Number(timeoutMs) > 0
+      ? setTimeout(() => controller.abort(), Math.max(200, Number(timeoutMs)))
+      : null;
+
   try {
     upstreamRes = await fetchImpl(upstreamUrl, {
       method: 'GET',
       headers: {
         Accept: 'application/json',
       },
+      ...(controller ? { signal: controller.signal } : {}),
     });
-  } catch {
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      return jsonResponse({ error: 'Tempo limite excedido ao consultar provedor externo.' }, 504);
+    }
     return jsonResponse({ error: 'Falha ao consultar provedor externo.' }, 502);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 
   const rawText = await upstreamRes.text().catch(() => '');
