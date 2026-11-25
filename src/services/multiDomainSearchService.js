@@ -21,6 +21,7 @@ import {
 } from '../lib/isbn.js';
 import {
   fetchBrasilApiIsbnViaProxyOrDirect,
+  fetchGoogleBooksViaProxyOrDirect,
   fetchIgdbViaProxy,
   fetchRawgViaProxy,
   fetchSteamViaProxyOrDirect,
@@ -722,37 +723,68 @@ function enrichPortugueseBooksWithOriginals(ptCandidates = [], globalCandidates 
 async function searchReadingViaGoogleBooks(
   cleanQuery,
   mediaTypeFilter,
-  { signal, fetchImpl, timeoutMs } = {}
+  {
+    signal,
+    fetchImpl,
+    timeoutMs,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = undefined,
+    nowFn = Date.now,
+  } = {}
 ) {
-  const encoded = encodeURIComponent(cleanQuery);
   // Google Books volumes.list: langRestrict=pt + printType=books (country=BR não é parâmetro de busca pública na API v1, aplicado no ranking via accessInfo.country)
-  const gbPtUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&langRestrict=pt&printType=books&maxResults=12`;
-  const gbGlobalUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&maxResults=8`;
+  const commonProxyOpts = {
+    signal,
+    fetchImpl: fetchImpl || fetch,
+    timeoutMs,
+    nowFn,
+    accessToken,
+    supabaseClient,
+    storage,
+    forceProxy,
+    ...(isDev !== undefined ? { isDev } : {}),
+  };
 
   const [ptOutcome, globalOutcome] = await Promise.allSettled([
-    fetchJsonSafe(gbPtUrl, { signal, fetchImpl, timeoutMs }),
-    fetchJsonSafe(gbGlobalUrl, { signal, fetchImpl, timeoutMs }),
+    fetchGoogleBooksViaProxyOrDirect(
+      { q: cleanQuery, langRestrict: 'pt', printType: 'books', maxResults: '12' },
+      commonProxyOpts
+    ),
+    fetchGoogleBooksViaProxyOrDirect(
+      { q: cleanQuery, maxResults: '8' },
+      commonProxyOpts
+    ),
   ]);
 
-  if (ptOutcome.status === 'rejected' && globalOutcome.status === 'rejected') {
-    const err = ptOutcome.reason || globalOutcome.reason;
+  const ptOk = ptOutcome.status === 'fulfilled' && ptOutcome.value?.ok;
+  const globalOk = globalOutcome.status === 'fulfilled' && globalOutcome.value?.ok;
+  if (!ptOk && !globalOk) {
+    const firstErr =
+      (ptOutcome.status === 'rejected' && ptOutcome.reason?.message) ||
+      (globalOutcome.status === 'rejected' && globalOutcome.reason?.message) ||
+      (ptOutcome.status === 'fulfilled' && ptOutcome.value?.status
+        ? `Google Books HTTP ${ptOutcome.value.status}`
+        : 'Google Books indisponível');
     return {
       ok: false,
-      error: err?.message || 'Google Books indisponível',
+      error: firstErr,
       results: [],
     };
   }
 
   const ptRaw =
-    ptOutcome.status === 'fulfilled' && Array.isArray(ptOutcome.value?.items)
-      ? parseGoogleBooksItems(ptOutcome.value.items, {
+    ptOk && Array.isArray(ptOutcome.value?.data?.items)
+      ? parseGoogleBooksItems(ptOutcome.value.data.items, {
           mediaTypeFilter,
           isPortugueseQuery: true,
         })
       : [];
   const globalRaw =
-    globalOutcome.status === 'fulfilled' && Array.isArray(globalOutcome.value?.items)
-      ? parseGoogleBooksItems(globalOutcome.value.items, {
+    globalOk && Array.isArray(globalOutcome.value?.data?.items)
+      ? parseGoogleBooksItems(globalOutcome.value.data.items, {
           mediaTypeFilter,
           isPortugueseQuery: false,
         })
@@ -840,6 +872,10 @@ export async function searchReadingWorks(
     nowFn = Date.now,
     idbFactory = null,
     providers = null,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
   } = {}
 ) {
   const cleanQuery = String(query || '').trim();
@@ -910,7 +946,15 @@ export async function searchReadingWorks(
         timeoutMs: provTimeout,
       };
       if (provider.id === 'googleBooks') {
-        return searchReadingViaGoogleBooks(cleanQuery, mediaTypeFilter, commonOpts);
+        return searchReadingViaGoogleBooks(cleanQuery, mediaTypeFilter, {
+          ...commonOpts,
+          accessToken,
+          supabaseClient,
+          storage,
+          forceProxy,
+          nowFn,
+          ...(isDev !== undefined ? { isDev } : {}),
+        });
       }
       if (provider.id === 'openlibrary') {
         return searchReadingViaOpenLibrary(cleanQuery, mediaTypeFilter, commonOpts);
@@ -958,6 +1002,9 @@ export async function fetchBookByIsbn(
     nowFn = Date.now,
     forceProxy = null,
     isDev = undefined,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
   } = {}
 ) {
   const validation = parseAndValidateIsbn(rawIsbn);
@@ -1025,14 +1072,27 @@ export async function fetchBookByIsbn(
         }
         if ((!enricher || !enricher.coverUrl || !enricher.creator) && !signal?.aborted) {
           try {
-            const gbData = await fetchJsonSafe(
-              `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(cleanIsbn)}&maxResults=3`,
-              { signal, fetchImpl, timeoutMs }
+            const gbOut = await fetchGoogleBooksViaProxyOrDirect(
+              { q: `isbn:${cleanIsbn}`, maxResults: '3' },
+              {
+                signal,
+                fetchImpl,
+                timeoutMs,
+                nowFn,
+                accessToken,
+                supabaseClient,
+                storage,
+                forceProxy,
+                ...(isDev !== undefined ? { isDev } : {}),
+              }
             );
-            const gbList = parseGoogleBooksItems(gbData?.items || [], {
-              mediaTypeFilter: 'book',
-              isPortugueseQuery: true,
-            });
+            const gbList =
+              gbOut.ok && Array.isArray(gbOut.data?.items)
+                ? parseGoogleBooksItems(gbOut.data.items, {
+                    mediaTypeFilter: 'book',
+                    isPortugueseQuery: true,
+                  })
+                : [];
             if (gbList[0]) {
               enricher = {
                 ...gbList[0],
@@ -1092,16 +1152,29 @@ export async function fetchBookByIsbn(
     }
   }
 
-  // Se não achou na BrasilAPI, tenta busca direta pelo código isbn: no Google Books e Open Library
+  // Se não achou na BrasilAPI, tenta busca direta pelo código isbn: no Google Books (proxy opcional -> público) e Open Library
   try {
-    const gbData = await fetchJsonSafe(
-      `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(cleanIsbn)}&maxResults=3`,
-      { signal, fetchImpl, timeoutMs }
+    const gbOut = await fetchGoogleBooksViaProxyOrDirect(
+      { q: `isbn:${cleanIsbn}`, maxResults: '3' },
+      {
+        signal,
+        fetchImpl,
+        timeoutMs,
+        nowFn,
+        accessToken,
+        supabaseClient,
+        storage,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
     );
-    const gbCandidates = parseGoogleBooksItems(gbData?.items || [], {
-      mediaTypeFilter: 'book',
-      isPortugueseQuery: true,
-    });
+    const gbCandidates =
+      gbOut.ok && Array.isArray(gbOut.data?.items)
+        ? parseGoogleBooksItems(gbOut.data.items, {
+            mediaTypeFilter: 'book',
+            isPortugueseQuery: true,
+          })
+        : [];
     if (gbCandidates[0]) {
       const cand = { ...gbCandidates[0], isbnOrDoi: gbCandidates[0].isbnOrDoi || cleanIsbn };
       return {

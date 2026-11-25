@@ -98,6 +98,7 @@ export function ApiStatusPanel({ authenticated = false }) {
       lastfm: { configured: false },
       rawg: { configured: false },
       igdb: { configured: false },
+      googleBooks: { configured: false },
     },
   });
   const [providerPrefs, setProviderPrefs] = useState(() => loadProviderPreferences());
@@ -324,7 +325,13 @@ export function ApiStatusPanel({ authenticated = false }) {
                         ? 'Verificando...'
                         : serverConfigured
                           ? 'Sim'
-                          : 'Não'}
+                          : source.optionalServerKey
+                            ? 'Não (modo público)'
+                            : !source.serverOnlySecret &&
+                                source.id !== 'tmdb' &&
+                                source.id !== 'omdb'
+                              ? 'Sem chave (proxy ativo)'
+                              : 'Não'}
                     </strong>
                   </span>
                   {result?.message && (

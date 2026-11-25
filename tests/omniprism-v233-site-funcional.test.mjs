@@ -342,6 +342,7 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
         lastfm: { configured: false },
         rawg: { configured: false },
         igdb: { configured: false },
+        googleBooks: { configured: false },
       },
     });
 
@@ -362,6 +363,7 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
         lastfm: { configured: false },
         rawg: { configured: false },
         igdb: { configured: false },
+        googleBooks: { configured: false },
       },
     });
   });

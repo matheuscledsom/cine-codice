@@ -26,6 +26,7 @@ export async function handleStatusRequest(context, { fetchImpl = fetch } = {}) {
         lastfm: { configured: Boolean(cfg.providers.lastfm.configured) },
         rawg: { configured: Boolean(cfg.providers.rawg.configured) },
         igdb: { configured: Boolean(cfg.providers.igdb.configured) },
+        googleBooks: { configured: Boolean(cfg.providers.googleBooks.configured) },
       },
     },
     200

@@ -1,5 +1,7 @@
-import { CheckCircle2, Compass, GitBranch, Link2, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Check, CheckCircle2, Compass, GitBranch, Link2, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { inferDomainFromWork } from '../config/domainConfig';
+import { getManualEntityMeta, saveManualEntityMeta } from '../lib/entityHelpers';
 import {
   FRANCHISE_TIER_OPTIONS,
   UNCLASSIFIED_FRANCHISE_TIER,
@@ -14,6 +16,7 @@ import {
   fetchTmdbUniverseSuggestionsByKeyword,
   fetchTmdbWorkKeywords,
 } from '../services/franchiseService';
+import { fetchIgdbFranchiseGames } from '../services/gameDepthService';
 import { StatusBadge } from './StatusBadge';
 
 const MANUAL_RELATION_OPTIONS = [
@@ -40,25 +43,63 @@ export function FranchiseRadarPanel({
   const [manualTitle, setManualTitle] = useState('');
   const [relationType, setRelationType] = useState('SPIN_OFF');
   const [remoteCollectionParts, setRemoteCollectionParts] = useState([]);
+  const [remoteGameEntries, setRemoteGameEntries] = useState([]);
+  const [remoteGameSource, setRemoteGameSource] = useState(null);
+  const [loadingRemoteGames, setLoadingRemoteGames] = useState(false);
   const [activeGroupTab, setActiveGroupTab] = useState('all');
   const [activeTierTab, setActiveTierTab] = useState('all');
+  const [activeStatusTab, setActiveStatusTab] = useState('all');
+  const [editingTotal, setEditingTotal] = useState(false);
+  const [mainTotalInput, setMainTotalInput] = useState('');
+  const [universeTotalInput, setUniverseTotalInput] = useState('');
+  const [manualMetaVersion, setManualMetaVersion] = useState(0);
   const [universeOpen, setUniverseOpen] = useState(false);
   const [universeKeywords, setUniverseKeywords] = useState([]);
   const [activeKeyword, setActiveKeyword] = useState(null);
   const [universeSuggestionsRaw, setUniverseSuggestionsRaw] = useState([]);
   const [loadingUniverse, setLoadingUniverse] = useState(false);
 
+  const itemDomain = inferDomainFromWork(item || {});
+  const franchiseIdentityName = String(
+    item?.belongsToCollection?.name?.replace(/\s*Collection$/i, '') ||
+      item?.franchiseName ||
+      franchise?.name ||
+      ''
+  ).trim();
+
+  const manualMeta = useMemo(
+    () =>
+      franchiseIdentityName
+        ? getManualEntityMeta({
+            name: franchiseIdentityName,
+            domain: itemDomain,
+            role: 'franchise',
+          })
+        : null,
+    [franchiseIdentityName, itemDomain, manualMetaVersion]
+  );
+
+  useEffect(() => {
+    setMainTotalInput(manualMeta?.mainSeriesTotal ? String(manualMeta.mainSeriesTotal) : '');
+    setUniverseTotalInput(manualMeta?.universeTotal ? String(manualMeta.universeTotal) : '');
+  }, [manualMeta]);
+
   useEffect(() => {
     setActiveGroupTab('all');
     setActiveTierTab('all');
+    setActiveStatusTab('all');
+    setEditingTotal(false);
     setRemoteCollectionParts([]);
+    setRemoteGameEntries([]);
+    setRemoteGameSource(null);
     setUniverseOpen(false);
     setUniverseKeywords([]);
     setActiveKeyword(null);
     setUniverseSuggestionsRaw([]);
+
+    let cancelled = false;
     const colId = item?.belongsToCollection?.id;
     if (item?.workType === 'movie' && colId) {
-      let cancelled = false;
       fetchTmdbCollectionParts(colId, { apiKey: tmdbKey })
         .then((parts) => {
           if (!cancelled && Array.isArray(parts) && parts.length > 0) {
@@ -66,12 +107,37 @@ export function FranchiseRadarPanel({
           }
         })
         .catch(() => {});
-      return () => {
-        cancelled = true;
-      };
+    } else if (itemDomain === 'games' && (item?.franchiseName || item?.rawgId || item?.ids?.rawg)) {
+      setLoadingRemoteGames(true);
+      fetchIgdbFranchiseGames({
+        franchiseName: item.franchiseName || '',
+        rawgId: item.rawgId || item.ids?.rawg || null,
+      })
+        .then((res) => {
+          if (!cancelled && res?.available && Array.isArray(res.games) && res.games.length > 0) {
+            setRemoteGameEntries(res.games);
+            setRemoteGameSource(res.source || 'IGDB');
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) setLoadingRemoteGames(false);
+        });
     }
-    return undefined;
-  }, [item?.id, item?.workType, item?.belongsToCollection?.id, tmdbKey]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    item?.id,
+    item?.workType,
+    item?.belongsToCollection?.id,
+    item?.franchiseName,
+    item?.rawgId,
+    item?.ids?.rawg,
+    itemDomain,
+    tmdbKey,
+  ]);
 
   const universeSuggestions = useMemo(
     () => buildUniverseSuggestionsModel(universeSuggestionsRaw, allItems),
@@ -117,14 +183,34 @@ export function FranchiseRadarPanel({
   const model = useMemo(
     () =>
       item
-        ? buildUnifiedFranchiseModel(
-            item,
-            allItems,
-            remoteCollectionParts
-          )
+        ? buildUnifiedFranchiseModel(item, allItems, remoteCollectionParts, {
+            remoteEntries: remoteGameEntries,
+            manualMeta,
+            sourceLabel: remoteGameSource,
+            sourceIsComplete: Boolean(
+              remoteGameEntries.length > 0 || remoteCollectionParts.length > 0
+            ),
+          })
         : null,
-    [item, allItems, remoteCollectionParts]
+    [item, allItems, remoteCollectionParts, remoteGameEntries, manualMeta, remoteGameSource]
   );
+
+  const handleSaveManualTotals = (event) => {
+    event?.preventDefault();
+    if (!franchiseIdentityName) return;
+    const mainVal = Number(String(mainTotalInput || '').trim());
+    const uniVal = Number(String(universeTotalInput || '').trim());
+    saveManualEntityMeta(
+      { name: franchiseIdentityName, domain: itemDomain, role: 'franchise' },
+      {
+        seriesName: franchiseIdentityName,
+        mainSeriesTotal: Number.isFinite(mainVal) && mainVal > 0 ? Math.round(mainVal) : null,
+        universeTotal: Number.isFinite(uniVal) && uniVal > 0 ? Math.round(uniVal) : null,
+      }
+    );
+    setManualMetaVersion((v) => v + 1);
+    setEditingTotal(false);
+  };
 
   if (!item || !model) return null;
 
@@ -173,12 +259,33 @@ export function FranchiseRadarPanel({
       ? model.groups?.find((g) => g.id === activeGroupTab)?.entries || []
       : model.entries;
 
-  const visibleEntries =
+  const tierFilteredEntries =
     activeTierTab === 'all'
       ? groupFilteredEntries
       : groupFilteredEntries.filter(
           (entry) => inferFranchiseTier(entry) === activeTierTab
         );
+
+  const visibleEntries =
+    activeStatusTab === 'all'
+      ? tierFilteredEntries
+      : tierFilteredEntries.filter((entry) => {
+          if (activeStatusTab === 'completed') return Boolean(entry.isCompleted || entry.localState === 'completed');
+          if (activeStatusTab === 'in_catalog') {
+            return Boolean(entry.isCataloged && !(entry.isCompleted || entry.localState === 'completed'));
+          }
+          if (activeStatusTab === 'missing') return !entry.isCataloged;
+          return true;
+        });
+
+  const statusCounts = {
+    all: tierFilteredEntries.length,
+    completed: tierFilteredEntries.filter((e) => e.isCompleted || e.localState === 'completed').length,
+    in_catalog: tierFilteredEntries.filter(
+      (e) => e.isCataloged && !(e.isCompleted || e.localState === 'completed')
+    ).length,
+    missing: tierFilteredEntries.filter((e) => !e.isCataloged).length,
+  };
 
   return (
     <section
@@ -195,11 +302,15 @@ export function FranchiseRadarPanel({
             </h4>
             <p className="text-xs font-medium tabular-nums text-muted">
               {model.progressHeader}
+              {model.sourceLabel ? ` · Fonte: ${model.sourceLabel}` : ''}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {loadingRemoteGames && (
+            <RefreshCw className="h-3.5 w-3.5 animate-spin text-accent" strokeWidth={1.5} />
+          )}
           {stats?.hasComparative && stats.rankLabel && (
             <span className="text-xs font-semibold tabular-nums text-ink">
               {stats.rankLabel}
@@ -207,6 +318,15 @@ export function FranchiseRadarPanel({
                 ? ` · Média ${stats.franchiseAverageRating}`
                 : ''}
             </span>
+          )}
+          {franchiseIdentityName && (
+            <button
+              type="button"
+              onClick={() => setEditingTotal((prev) => !prev)}
+              className="inline-flex min-h-[44px] items-center rounded-[4px] border border-line bg-card px-2.5 text-[11px] font-medium text-ink hover:border-accent"
+            >
+              {editingTotal ? 'Fechar total' : 'Definir total'}
+            </button>
           )}
           <button
             type="button"
@@ -219,7 +339,64 @@ export function FranchiseRadarPanel({
         </div>
       </div>
 
-      {/* Dois indicadores transparentes: Linha Principal vs Universo Completo (v2.4.0 Fase 4.2) */}
+      {editingTotal && (
+        <form
+          onSubmit={handleSaveManualTotals}
+          className="grid grid-cols-1 gap-2 rounded-[6px] border border-line bg-card p-3 sm:grid-cols-2"
+        >
+          <label className="block space-y-1">
+            <span className="text-[11px] text-muted">Total Linha Principal</span>
+            <input
+              type="number"
+              min="1"
+              max="999"
+              value={mainTotalInput}
+              onChange={(e) => setMainTotalInput(e.target.value)}
+              placeholder="Ex.: 5"
+              className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[11px] text-muted">Total Universo Completo (opcional)</span>
+            <input
+              type="number"
+              min="1"
+              max="9999"
+              value={universeTotalInput}
+              onChange={(e) => setUniverseTotalInput(e.target.value)}
+              placeholder="Ex.: 12"
+              className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+            />
+          </label>
+          <div className="flex items-center gap-2 sm:col-span-2">
+            <button
+              type="submit"
+              className="inline-flex min-h-[44px] items-center gap-1 rounded-[6px] bg-accent px-3 text-xs font-semibold text-accent-ink"
+            >
+              <Check className="h-3.5 w-3.5" strokeWidth={1.5} />
+              <span>Salvar total</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMainTotalInput('');
+                setUniverseTotalInput('');
+                saveManualEntityMeta(
+                  { name: franchiseIdentityName, domain: itemDomain, role: 'franchise' },
+                  { mainSeriesTotal: null, universeTotal: null }
+                );
+                setManualMetaVersion((v) => v + 1);
+                setEditingTotal(false);
+              }}
+              className="inline-flex min-h-[44px] items-center rounded-[6px] border border-line bg-app px-3 text-xs font-medium text-muted hover:text-ink"
+            >
+              Total aberto
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Dois indicadores transparentes: Linha Principal vs Universo Completo (só exibe % se o total for conhecido) */}
       {scopeProgress && (
         <div
           className="grid grid-cols-1 gap-2.5 border-y border-line py-3 sm:grid-cols-2"
@@ -229,33 +406,65 @@ export function FranchiseRadarPanel({
             <div className="flex items-center justify-between gap-2 text-xs tabular-nums">
               <span className="font-semibold text-ink">Linha Principal</span>
               <span className="font-semibold text-ink">
-                {scopeProgress.mainline.label} · {scopeProgress.mainline.pct}%
+                {scopeProgress.mainline.displayLabel}
               </span>
             </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
-              <div
-                className="h-full bg-accent transition-all duration-200"
-                style={{ width: `${Math.min(100, scopeProgress.mainline.pct)}%` }}
-              />
-            </div>
+            {!scopeProgress.mainline.isOpenEnded && typeof scopeProgress.mainline.pct === 'number' && (
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+                <div
+                  className="h-full bg-accent transition-all duration-200"
+                  style={{ width: `${Math.min(100, scopeProgress.mainline.pct)}%` }}
+                />
+              </div>
+            )}
           </div>
 
           <div className="space-y-1">
             <div className="flex items-center justify-between gap-2 text-xs tabular-nums">
               <span className="font-medium text-muted">Universo Completo</span>
               <span className="font-medium text-muted">
-                {scopeProgress.universe.label} · {scopeProgress.universe.pct}%
+                {scopeProgress.universe.displayLabel}
               </span>
             </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
-              <div
-                className="h-full bg-muted transition-all duration-200"
-                style={{ width: `${Math.min(100, scopeProgress.universe.pct)}%` }}
-              />
-            </div>
+            {!scopeProgress.universe.isOpenEnded && typeof scopeProgress.universe.pct === 'number' && (
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+                <div
+                  className="h-full bg-muted transition-all duration-200"
+                  style={{ width: `${Math.min(100, scopeProgress.universe.pct)}%` }}
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
+
+      {/* Filtro rápido: Concluídas · No catálogo · Faltantes */}
+      <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filtrar obras por estado">
+        {[
+          { id: 'all', label: `Todas (${statusCounts.all})` },
+          { id: 'completed', label: `Concluídas (${statusCounts.completed})` },
+          { id: 'in_catalog', label: `No catálogo (${statusCounts.in_catalog})` },
+          { id: 'missing', label: `Faltantes (${statusCounts.missing})` },
+        ].map((tab) => {
+          const active = activeStatusTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setActiveStatusTab(tab.id)}
+              className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium tabular-nums transition-colors ${
+                active
+                  ? 'border-accent bg-accent text-accent-ink'
+                  : 'border-line bg-card text-muted hover:text-ink'
+              }`}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
 
       {/* Classificação de escopo da obra atual + filtro por escopo */}
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -491,14 +700,37 @@ export function FranchiseRadarPanel({
                     <button
                       type="button"
                       onClick={() => {
-                        const draft = buildMissingFranchiseEntryDraft(
+                        const baseDraft = buildMissingFranchiseEntryDraft(
                           effectiveFranchise || { name: model.sagaName },
                           node
                         );
+                        const draft =
+                          itemDomain === 'games' || itemDomain === 'reading'
+                            ? {
+                                ...(baseDraft || {}),
+                                domain: itemDomain,
+                                workType:
+                                  node.workType || (itemDomain === 'games' ? 'game' : 'book'),
+                                title: node.title,
+                                creator: node.creator || item.creator || '',
+                                releaseYear: node.releaseYear || null,
+                                coverUrl: node.coverUrl || null,
+                                platforms: node.platforms || [],
+                                editionType: node.editionType || (itemDomain === 'games' ? 'Jogo' : ''),
+                                franchiseName: model.sagaName,
+                                franchiseTier: node.franchiseTier || 'mainline',
+                                ids: node.ids || {},
+                                igdbId: node.igdbId || null,
+                                rawgId: node.rawgId || null,
+                                status: 'queued',
+                                isWishlist: true,
+                                inBacklog: true,
+                              }
+                            : baseDraft;
                         if (draft) {
                           onQuickCatalogItem(draft);
                           onShowToast?.({
-                            message: `"${node.title}" adicionado à fila Quero Ver`,
+                            message: `"${node.title}" adicionado ao catálogo.`,
                             type: 'success',
                           });
                         }
@@ -506,7 +738,7 @@ export function FranchiseRadarPanel({
                       className="inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[4px] border border-accent bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
                     >
                       <Plus className="h-3 w-3" strokeWidth={1.5} />
-                      <span>+ Adicionar</span>
+                      <span>+ Catalogar</span>
                     </button>
                   )
                 )}

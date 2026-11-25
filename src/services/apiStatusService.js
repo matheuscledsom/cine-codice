@@ -10,6 +10,7 @@
 import { ApiQuotaError, maskSecretsInText } from '../api/httpClient.js';
 import {
   fetchBrasilApiIsbnViaProxyOrDirect,
+  fetchGoogleBooksViaProxyOrDirect,
   fetchIgdbViaProxy,
   fetchLastfmViaProxy,
   fetchOmdbViaProxyOrDirect,
@@ -107,8 +108,10 @@ export const API_STATUS_SOURCES = Object.freeze([
     domainId: 'reading',
     domainLabel: 'Leitura',
     host: 'www.googleapis.com',
-    supportsServerProxy: false,
-    probeType: 'get',
+    supportsServerProxy: true,
+    serverOnlySecret: false,
+    optionalServerKey: true,
+    probeType: 'googleBooks',
     url: 'https://www.googleapis.com/books/v1/volumes?q=duna&maxResults=1',
   },
   {
@@ -641,6 +644,76 @@ export async function probeApiSource(
         latencyMs,
         via: 'proxy',
         message: 'Online via servidor',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
+  if (meta.probeType === 'googleBooks') {
+    try {
+      const outcome = await fetchGoogleBooksViaProxyOrDirect(
+        { q: 'duna', maxResults: '1' },
+        {
+          dedup: false,
+          timeoutMs,
+          fetchImpl,
+          nowFn,
+          accessToken,
+          supabaseClient,
+          storage,
+          forceProxy,
+          ...(isDev !== undefined ? { isDev } : {}),
+        }
+      );
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (outcome.ok) {
+        return {
+          id: meta.id,
+          ok: true,
+          state: 'online',
+          status: outcome.status || 200,
+          latencyMs,
+          via: outcome.via,
+          message:
+            outcome.via === 'proxy'
+              ? 'Online via servidor (chave ativa)'
+              : 'Online (público · chave opcional não configurada)',
+          checkedAt: nowFn(),
+        };
+      }
+      if (outcome.status === 429) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'not_configured',
+          status: 429,
+          latencyMs,
+          via: outcome.via,
+          message: 'Cota pública atingida (configure GOOGLE_BOOKS_API_KEY opcional no servidor).',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: outcome.status ?? null,
+        latencyMs,
+        via: outcome.via,
+        message: outcome.status
+          ? `Indisponível (HTTP ${outcome.status}).`
+          : 'Falha ao consultar Google Books.',
         checkedAt: nowFn(),
       };
     } catch {

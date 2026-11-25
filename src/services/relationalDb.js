@@ -19,6 +19,7 @@ import {
   normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
+import { getEditionBaseWorkId } from '../lib/bookEditions.js';
 import { normalizeAchievementsModel } from '../lib/gameDepth.js';
 import { isCompressedManualCoverDataUrl } from '../lib/manualCovers.js';
 import { stripApiKeysFromUrl } from '../api/httpClient.js';
@@ -1156,5 +1157,455 @@ export async function runRelationalSchemaMigrations({
     snapshotId,
     persisted: Boolean(worksRes.persisted),
     items: migratedItems,
+  };
+}
+
+// =============================================================================
+// FASE 3 (v2.6.0) — Deduplicação Manual + Agrupamento de Reimpressões (`editionOf`)
+// =============================================================================
+
+function normalizeDedupText(raw = '') {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractDedupExternalIds(work = {}) {
+  const out = {};
+  const ids = work?.ids && typeof work.ids === 'object' ? work.ids : {};
+  const pairs = [
+    ['tmdb', work.tmdbId || ids.tmdb],
+    ['imdb', work.imdbId || ids.imdb],
+    ['anilist', work.anilistId || ids.anilist],
+    ['mal', work.malId || ids.mal],
+    ['tvmaze', work.tvmazeId || ids.tvmaze],
+    ['igdb', work.igdbId || ids.igdb],
+    ['rawg', work.rawgId || ids.rawg],
+    ['steam', work.steamAppId || ids.steam],
+    ['isbn', work.isbnOrDoi || work.isbn || ids.isbn],
+    ['googleBooks', ids.googleBooks],
+    ['ol', ids.ol],
+    ['musicbrainz', work.musicBrainzId || ids.musicbrainz],
+    ['itunes', ids.itunes],
+  ];
+  for (const [k, v] of pairs) {
+    const clean = String(v || '').trim().toLowerCase();
+    if (clean) out[k] = clean;
+  }
+  return out;
+}
+
+/**
+ * Chave composta canônica de deduplicação:
+ * título normalizado + autor/criador normalizado + external_ids.
+ */
+export function buildWorkDeduplicationKey(work = {}) {
+  const domain = inferDomainFromWork(work);
+  const normalizedTitle = normalizeDedupText(work?.title || '');
+  const normalizedCreator = normalizeDedupText(
+    work?.creator || work?.author || work?.director || work?.artist || ''
+  );
+  const externalIds = extractDedupExternalIds(work);
+  const extParts = Object.entries(externalIds)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}:${v}`);
+  return {
+    domain,
+    normalizedTitle,
+    normalizedCreator,
+    externalIds,
+    compositeKey: `${domain}::${normalizedTitle}::${normalizedCreator}::${extParts.join('|')}`,
+  };
+}
+
+/**
+ * Pontuação determinística de completude para recomendar o registro principal na mesclagem manual.
+ */
+export function computeWorkCompletenessScore(work = {}) {
+  if (!work || typeof work !== 'object') return 0;
+  let score = 0;
+  const hasRating =
+    (typeof work.rating100 === 'number' && Number.isFinite(work.rating100)) ||
+    (typeof work.rating === 'number' && Number.isFinite(work.rating)) ||
+    (typeof work.score10 === 'number' && Number.isFinite(work.score10));
+  if (hasRating) score += 30;
+  if (work.verdict) score += 6;
+  if (work.isLifeWork) score += 4;
+
+  const criteriaObj = work.criteriaScores || work.dnaScores || null;
+  if (criteriaObj && typeof criteriaObj === 'object') {
+    const filled = Object.values(criteriaObj).filter(
+      (v) => typeof v === 'number' && Number.isFinite(v) && v > 0
+    ).length;
+    score += Math.min(25, filled * 5);
+  }
+
+  const notesLen = String(work.notes || work.review || '').trim().length;
+  if (notesLen > 0) score += Math.min(20, 8 + Math.floor(notesLen / 40));
+
+  if (Array.isArray(work.quotes) && work.quotes.length > 0) {
+    score += Math.min(12, work.quotes.length * 4);
+  }
+
+  if (work.status === 'completed') score += 20;
+  else if (work.status === 'in_progress' || work.status === 'playing' || work.status === 'rewatching') {
+    score += 12;
+  }
+
+  if (
+    Number(work.pagesRead) > 0 ||
+    Number(work.chaptersRead) > 0 ||
+    Number(work.currentEpisode) > 0 ||
+    Number(work.hoursPlayed) > 0 ||
+    Number(work.currentSeconds) > 0 ||
+    Number(work.progress) > 0
+  ) {
+    score += 10;
+  }
+
+  if (work.manualCoverDataUrl || work.coverUrl) score += 8;
+  const extCount = Object.keys(extractDedupExternalIds(work)).length;
+  if (extCount > 0) score += Math.min(10, extCount * 4);
+  if (work.synopsis) score += 4;
+  if (work.franchiseName) score += 3;
+
+  return score;
+}
+
+/**
+ * Agrupa reimpressões vinculadas via `editionOf` sob a obra principal.
+ */
+export function groupCatalogEditionsByPrimary(items = []) {
+  const list = (Array.isArray(items) ? items : []).filter((w) => w && w.inBacklog !== false);
+  const byId = new Map(list.map((w) => [String(w.id), w]));
+  const editionsByPrimaryId = new Map();
+  const primaryWorks = [];
+
+  for (const w of list) {
+    const baseId = getEditionBaseWorkId(w);
+    if (baseId && byId.has(baseId)) {
+      if (!editionsByPrimaryId.has(baseId)) editionsByPrimaryId.set(baseId, []);
+      editionsByPrimaryId.get(baseId).push(w);
+    } else {
+      primaryWorks.push(w);
+    }
+  }
+
+  return {
+    primaryWorks,
+    editionsByPrimaryId,
+  };
+}
+
+function areWorksPotentialDuplicates(a, b, keyA, keyB) {
+  if (!a || !b || String(a.id) === String(b.id)) return null;
+  if (keyA.domain !== keyB.domain) return null;
+
+  // Reimpressões ligadas via `editionOf` (ou irmãs sob a mesma obra base) ficam sob a obra principal e NÃO são duplicatas
+  const baseA = getEditionBaseWorkId(a);
+  const baseB = getEditionBaseWorkId(b);
+  if (
+    (baseA && baseA === String(b.id)) ||
+    (baseB && baseB === String(a.id)) ||
+    (baseA && baseB && baseA === baseB)
+  ) {
+    return null;
+  }
+
+  // 1. Correspondência direta por external_ids (exceto `source: 'manual'` / `id`)
+  for (const [k, valA] of Object.entries(keyA.externalIds)) {
+    const valB = keyB.externalIds[k];
+    if (!valB || valA !== valB) continue;
+    if (keyA.domain === 'music' && k === 'itunes' && a.workType !== b.workType) {
+      continue;
+    }
+    return `ID compartilhado (${k.toUpperCase()})`;
+  }
+
+  // 2. Correspondência por título normalizado + autor/criador (inclui obras manuais duplicando obra de API)
+  if (!keyA.normalizedTitle || keyA.normalizedTitle !== keyB.normalizedTitle) {
+    return null;
+  }
+
+  if (keyA.domain === 'music' && a.workType && b.workType && a.workType !== b.workType) {
+    return null;
+  }
+
+  if (keyA.domain === 'games') {
+    const edA = normalizeGameEditionType(a.editionType);
+    const edB = normalizeGameEditionType(b.editionType);
+    if (edA !== edB) return null;
+  }
+
+  const creatorA = keyA.normalizedCreator;
+  const creatorB = keyB.normalizedCreator;
+  const bothCreatorsPresent = Boolean(creatorA && creatorB);
+  const creatorsMatch =
+    bothCreatorsPresent &&
+    (creatorA === creatorB || creatorA.includes(creatorB) || creatorB.includes(creatorA));
+
+  if (creatorsMatch) {
+    return 'Mesmo título e autor/criador';
+  }
+
+  // Se um dos lados não tem autor/criador preenchido (comum em cadastro manual rápido ou API parcial)
+  if (!bothCreatorsPresent) {
+    const yA = Number(a.releaseYear) || null;
+    const yB = Number(b.releaseYear) || null;
+    const hasManualSide = Boolean(
+      a.isManual || a.ids?.source === 'manual' || b.isManual || b.ids?.source === 'manual'
+    );
+    if ((yA && yB && Math.abs(yA - yB) <= 2) || !yA || !yB || hasManualSide) {
+      return hasManualSide ? 'Obra manual com mesmo título' : 'Mesmo título';
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Detecta possíveis duplicatas no catálogo sem mesclar nada automaticamente.
+ */
+export function detectCatalogDuplicates(items = [], { domain = 'all' } = {}) {
+  const filterDomain = domain && domain !== 'all' ? normalizeDomainId(domain) : null;
+  const active = (Array.isArray(items) ? items : []).filter((w) => {
+    if (!w || !w.id || w.inBacklog === false) return false;
+    // Reimpressões/edições vinculadas explicitamente via `editionOf` ficam sob a obra principal e não entram como duplicatas
+    if (getEditionBaseWorkId(w)) return false;
+    if (filterDomain && inferDomainFromWork(w) !== filterDomain) return false;
+    return true;
+  });
+
+  if (active.length < 2) {
+    return { count: 0, totalDuplicateItems: 0, groups: [] };
+  }
+
+  const keys = active.map((w) => buildWorkDeduplicationKey(w));
+  const parent = active.map((_, i) => i);
+  const reasonsByPair = new Map();
+
+  const find = (i) => {
+    let curr = i;
+    while (parent[curr] !== curr) {
+      parent[curr] = parent[parent[curr]];
+      curr = parent[curr];
+    }
+    return curr;
+  };
+  const union = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
+
+  for (let i = 0; i < active.length; i += 1) {
+    for (let j = i + 1; j < active.length; j += 1) {
+      const reason = areWorksPotentialDuplicates(active[i], active[j], keys[i], keys[j]);
+      if (reason) {
+        union(i, j);
+        reasonsByPair.set(`${find(i)}`, reason);
+      }
+    }
+  }
+
+  const clusters = new Map();
+  for (let i = 0; i < active.length; i += 1) {
+    const root = find(i);
+    if (!clusters.has(root)) clusters.set(root, []);
+    clusters.get(root).push({ work: active[i], score: computeWorkCompletenessScore(active[i]) });
+  }
+
+  const groups = [];
+  for (const [root, members] of clusters.entries()) {
+    if (members.length < 2) continue;
+    members.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const tA = Date.parse(a.work.updatedAt || a.work.createdAt || '') || 0;
+      const tB = Date.parse(b.work.updatedAt || b.work.createdAt || '') || 0;
+      return tB - tA;
+    });
+    const orderedWorks = members.map((m) => m.work);
+    groups.push({
+      groupId: `dup:${orderedWorks.map((w) => w.id).sort().join('|')}`,
+      domain: inferDomainFromWork(orderedWorks[0]),
+      title: orderedWorks[0].title,
+      reason: reasonsByPair.get(`${root}`) || 'Mesmo título e autor/criador',
+      recommendedPrimaryId: orderedWorks[0].id,
+      scoresById: Object.fromEntries(members.map((m) => [m.work.id, m.score])),
+      items: orderedWorks,
+    });
+  }
+
+  return {
+    count: groups.length,
+    totalDuplicateItems: groups.reduce((acc, g) => acc + g.items.length, 0),
+    groups,
+  };
+}
+
+function pickRicherCriteria(a = {}, b = {}) {
+  const cA = a && typeof a === 'object' ? a : {};
+  const cB = b && typeof b === 'object' ? b : {};
+  const countValid = (obj) =>
+    Object.values(obj).filter((v) => typeof v === 'number' && Number.isFinite(v) && v > 0).length;
+  return countValid(cA) >= countValid(cB) ? { ...cB, ...cA } : { ...cA, ...cB };
+}
+
+function mergeDistinctNotes(primaryNotes = '', secondaryNotes = '') {
+  const a = String(primaryNotes || '').trim();
+  const b = String(secondaryNotes || '').trim();
+  if (!a) return b;
+  if (!b) return a;
+  if (a.toLowerCase() === b.toLowerCase() || a.toLowerCase().includes(b.toLowerCase())) return a;
+  if (b.toLowerCase().includes(a.toLowerCase())) return b;
+  return `${a}\n\n---\n${b}`;
+}
+
+function mergeQuotesUnion(quotesA = [], quotesB = []) {
+  const seen = new Set();
+  const out = [];
+  for (const q of [...(Array.isArray(quotesA) ? quotesA : []), ...(Array.isArray(quotesB) ? quotesB : [])]) {
+    const key = String(q?.text || q || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(q);
+  }
+  return out;
+}
+
+const STATUS_PROGRESS_RANK = {
+  completed: 5,
+  rewatching: 4,
+  in_progress: 3,
+  playing: 3,
+  paused: 2,
+  queued: 1,
+  dropped: 1,
+};
+
+/**
+ * Mesclagem estritamente MANUAL entre dois registros duplicados.
+ * Preserva nota, critérios, progresso, comentários, citações, capa e external_ids
+ * do registro mais completo, devolvendo snapshots completos para Desfazer imediato.
+ */
+export function mergeDuplicateWorksManual(primaryWork = {}, secondaryWork = {}) {
+  if (!primaryWork?.id || !secondaryWork?.id || String(primaryWork.id) === String(secondaryWork.id)) {
+    return null;
+  }
+
+  const nowIso = new Date().toISOString();
+  const primaryScore = computeWorkCompletenessScore(primaryWork);
+  const secondaryScore = computeWorkCompletenessScore(secondaryWork);
+  const richer = primaryScore >= secondaryScore ? primaryWork : secondaryWork;
+  const other = richer === primaryWork ? secondaryWork : primaryWork;
+
+  const hasRating = (w) =>
+    (typeof w?.rating100 === 'number' && Number.isFinite(w.rating100)) ||
+    (typeof w?.rating === 'number' && Number.isFinite(w.rating)) ||
+    (typeof w?.score10 === 'number' && Number.isFinite(w.score10));
+
+  const ratingSource = hasRating(richer) ? richer : hasRating(other) ? other : primaryWork;
+
+  const statusA = primaryWork.status || 'queued';
+  const statusB = secondaryWork.status || 'queued';
+  const bestStatus =
+    (STATUS_PROGRESS_RANK[statusA] || 0) >= (STATUS_PROGRESS_RANK[statusB] || 0)
+      ? statusA
+      : statusB;
+
+  const idsA = primaryWork.ids && typeof primaryWork.ids === 'object' ? { ...primaryWork.ids } : {};
+  const idsB = secondaryWork.ids && typeof secondaryWork.ids === 'object' ? { ...secondaryWork.ids } : {};
+  const mergedExternalIds = { ...idsB, ...idsA };
+  const hasRealApiId = Object.keys(extractDedupExternalIds({ ids: mergedExternalIds })).length > 0;
+  if (hasRealApiId && mergedExternalIds.source === 'manual') {
+    const oldManualId = mergedExternalIds.id || primaryWork.id;
+    delete mergedExternalIds.source;
+    delete mergedExternalIds.id;
+    mergedExternalIds.linkedFromManualId = mergedExternalIds.linkedFromManualId || oldManualId;
+  }
+
+  const mergedCover =
+    primaryWork.manualCoverDataUrl ||
+    secondaryWork.manualCoverDataUrl ||
+    primaryWork.coverUrl ||
+    secondaryWork.coverUrl ||
+    null;
+  const mergedManualCover =
+    primaryWork.manualCoverDataUrl || secondaryWork.manualCoverDataUrl || undefined;
+
+  const mergedWork = {
+    ...secondaryWork,
+    ...primaryWork,
+    id: primaryWork.id,
+    isManual: hasRealApiId ? false : Boolean(primaryWork.isManual && secondaryWork.isManual),
+    ids: mergedExternalIds,
+    title: String(primaryWork.title || secondaryWork.title || '').trim(),
+    originalTitle: primaryWork.originalTitle || secondaryWork.originalTitle || '',
+    creator: primaryWork.creator || secondaryWork.creator || primaryWork.author || secondaryWork.author || '',
+    author: primaryWork.author || secondaryWork.author || primaryWork.creator || secondaryWork.creator || '',
+    director: primaryWork.director || secondaryWork.director || primaryWork.creator || secondaryWork.creator || '',
+    studio: primaryWork.studio || secondaryWork.studio || '',
+    releaseYear: primaryWork.releaseYear || secondaryWork.releaseYear || null,
+    status: bestStatus,
+    rating: ratingSource.rating ?? null,
+    rating100: ratingSource.rating100 ?? null,
+    score10: ratingSource.score10 ?? null,
+    verdict: ratingSource.verdict ?? primaryWork.verdict ?? secondaryWork.verdict ?? null,
+    isLifeWork: Boolean(primaryWork.isLifeWork || secondaryWork.isLifeWork),
+    criteriaScores: pickRicherCriteria(richer.criteriaScores, other.criteriaScores),
+    dnaScores: pickRicherCriteria(richer.dnaScores, other.dnaScores),
+    notes: mergeDistinctNotes(richer.notes, other.notes),
+    review: mergeDistinctNotes(richer.review, other.review),
+    quotes: mergeQuotesUnion(primaryWork.quotes, secondaryWork.quotes),
+    tags: Array.from(new Set([...(primaryWork.tags || []), ...(secondaryWork.tags || [])].filter(Boolean))),
+    genres: Array.from(new Set([...(primaryWork.genres || []), ...(secondaryWork.genres || [])].filter(Boolean))),
+    collectionIds: Array.from(
+      new Set([...(primaryWork.collectionIds || []), ...(secondaryWork.collectionIds || [])].filter(Boolean))
+    ),
+    coverUrl: mergedCover,
+    ...(mergedManualCover ? { manualCoverDataUrl: mergedManualCover } : {}),
+    coverSources: Array.from(
+      new Set([
+        ...(mergedCover ? [mergedCover] : []),
+        ...(Array.isArray(primaryWork.coverSources) ? primaryWork.coverSources : []),
+        ...(Array.isArray(secondaryWork.coverSources) ? secondaryWork.coverSources : []),
+      ].filter(Boolean))
+    ),
+    synopsis:
+      String(primaryWork.synopsis || '').length >= String(secondaryWork.synopsis || '').length
+        ? primaryWork.synopsis || secondaryWork.synopsis || ''
+        : secondaryWork.synopsis || '',
+    totalPages: Math.max(Number(primaryWork.totalPages) || 0, Number(secondaryWork.totalPages) || 0) || null,
+    pagesRead: Math.max(Number(primaryWork.pagesRead) || 0, Number(secondaryWork.pagesRead) || 0),
+    chaptersRead: Math.max(Number(primaryWork.chaptersRead) || 0, Number(secondaryWork.chaptersRead) || 0),
+    currentEpisode: Math.max(Number(primaryWork.currentEpisode) || 0, Number(secondaryWork.currentEpisode) || 0),
+    currentSeason: Math.max(Number(primaryWork.currentSeason) || 1, Number(secondaryWork.currentSeason) || 1),
+    hoursPlayed: Math.max(Number(primaryWork.hoursPlayed) || 0, Number(secondaryWork.hoursPlayed) || 0),
+    currentSeconds: Math.max(Number(primaryWork.currentSeconds) || 0, Number(secondaryWork.currentSeconds) || 0),
+    progress: Math.max(Number(primaryWork.progress) || 0, Number(secondaryWork.progress) || 0),
+    isbnOrDoi: primaryWork.isbnOrDoi || secondaryWork.isbnOrDoi || '',
+    franchiseName: primaryWork.franchiseName || secondaryWork.franchiseName || '',
+    seriesVolume: primaryWork.seriesVolume || secondaryWork.seriesVolume || '',
+    workUrl: primaryWork.workUrl || secondaryWork.workUrl || '',
+    tmdbId: primaryWork.tmdbId || secondaryWork.tmdbId || null,
+    imdbId: primaryWork.imdbId || secondaryWork.imdbId || '',
+    anilistId: primaryWork.anilistId || secondaryWork.anilistId || null,
+    malId: primaryWork.malId || secondaryWork.malId || null,
+    igdbId: primaryWork.igdbId || secondaryWork.igdbId || null,
+    rawgId: primaryWork.rawgId || secondaryWork.rawgId || null,
+    updatedAt: nowIso,
+    updated_at: nowIso,
+  };
+
+  return {
+    mergedWork,
+    removedWorkId: secondaryWork.id,
+    undoPrimarySnapshot: { ...primaryWork },
+    undoRemovedSnapshot: { ...secondaryWork },
   };
 }

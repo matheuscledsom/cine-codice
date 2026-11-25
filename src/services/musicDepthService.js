@@ -10,6 +10,7 @@ import { apiRequest } from '../api/httpClient.js';
 import { API_TIMEOUT_MS, CACHE_STORES, CACHE_TTL_MS } from '../api/limits.js';
 import {
   SUBGENRE_TAG_MIN_VOTES,
+  categorizeMusicBrainzReleaseGroups,
   filterMusicBrainzStudioAlbums,
   normalizeMusicKey,
   selectTopSubgenreTags,
@@ -111,6 +112,7 @@ export async function fetchMusicBrainzArtistStudioAlbums(
     const rgJson = await rgRes.json().catch(() => null);
     const rawGroups = Array.isArray(rgJson?.['release-groups']) ? rgJson['release-groups'] : [];
     const studioAlbums = filterMusicBrainzStudioAlbums(rawGroups);
+    const allReleases = categorizeMusicBrainzReleaseGroups(rawGroups);
 
     const payload = {
       available: true,
@@ -119,6 +121,7 @@ export async function fetchMusicBrainzArtistStudioAlbums(
       artistMbid: resolvedMbid,
       totalStudioAlbums: studioAlbums.length,
       albums: studioAlbums,
+      allReleases,
       fromCache: false,
     };
 
@@ -134,6 +137,164 @@ export async function fetchMusicBrainzArtistStudioAlbums(
       throw err;
     }
     return { available: false, source: null, fetchedAt: null, artistMbid: null, albums: [] };
+  }
+}
+
+/**
+ * Busca a discografia categorizada completa no MusicBrainz (Estúdio, Ao Vivo, EPs/Singles, Coletâneas)
+ * respeitando 1 req/s + cache persistente.
+ */
+export async function fetchMusicBrainzArtistFullDiscography(
+  artistName,
+  {
+    artistMbid = '',
+    fetchImpl = fetch,
+    nowFn = Date.now,
+    sleepFn = undefined,
+    signal = undefined,
+    idbFactory = null,
+    forceRefresh = false,
+  } = {}
+) {
+  const cleanArtist = String(artistName || '').trim();
+  const cleanMbid = String(artistMbid || '').trim();
+  const normArtist = normalizeMusicKey(cleanArtist);
+  if (!normArtist && !cleanMbid) {
+    return {
+      available: false,
+      source: null,
+      fetchedAt: null,
+      artistMbid: null,
+      albums: [],
+      allReleases: [],
+    };
+  }
+
+  const cacheKey = `mb:full-discography:${cleanMbid || normArtist}`;
+  if (!forceRefresh) {
+    const cached = await getCachedEntry(CACHE_STORES.relations, cacheKey, {
+      idbFactory,
+      now: nowFn(),
+    }).catch(() => null);
+    if (cached?.hit && cached.data && !cached.expired) {
+      return { ...cached.data, fromCache: true };
+    }
+  }
+
+  try {
+    let resolvedMbid = cleanMbid;
+    let resolvedArtistName = cleanArtist;
+
+    if (!resolvedMbid) {
+      const searchUrl = `https://musicbrainz.org/ws/2/artist?query=${encodeURIComponent(
+        `artist:"${cleanArtist}"`
+      )}&fmt=json&limit=3`;
+      const searchRes = await apiRequest(searchUrl, {
+        provider: 'musicbrainz',
+        headers: { Accept: 'application/json' },
+        fetchImpl,
+        nowFn,
+        sleepFn,
+        signal,
+        timeoutMs: API_TIMEOUT_MS,
+        maxRetries: 1,
+      });
+      if (!searchRes?.ok) {
+        return {
+          available: false,
+          source: null,
+          fetchedAt: null,
+          artistMbid: null,
+          albums: [],
+          allReleases: [],
+        };
+      }
+      const searchJson = await searchRes.json().catch(() => null);
+      const artists = Array.isArray(searchJson?.artists) ? searchJson.artists : [];
+      const exact =
+        artists.find((a) => normalizeMusicKey(a?.name) === normArtist) || artists[0] || null;
+      resolvedMbid = String(exact?.id || '').trim();
+      resolvedArtistName = String(exact?.name || cleanArtist).trim();
+    }
+
+    if (!resolvedMbid) {
+      return {
+        available: false,
+        source: null,
+        fetchedAt: null,
+        artistMbid: null,
+        albums: [],
+        allReleases: [],
+      };
+    }
+
+    const rgUrl = `https://musicbrainz.org/ws/2/release-group?artist=${encodeURIComponent(
+      resolvedMbid
+    )}&fmt=json&limit=100`;
+    const rgRes = await apiRequest(rgUrl, {
+      provider: 'musicbrainz',
+      headers: { Accept: 'application/json' },
+      fetchImpl,
+      nowFn,
+      sleepFn,
+      signal,
+      timeoutMs: API_TIMEOUT_MS,
+      maxRetries: 1,
+    });
+
+    if (!rgRes?.ok) {
+      return {
+        available: false,
+        source: null,
+        fetchedAt: null,
+        artistMbid: resolvedMbid,
+        albums: [],
+        allReleases: [],
+      };
+    }
+
+    const rgJson = await rgRes.json().catch(() => null);
+    const rawGroups = Array.isArray(rgJson?.['release-groups']) ? rgJson['release-groups'] : [];
+    const studioAlbums = filterMusicBrainzStudioAlbums(rawGroups);
+    const allReleases = categorizeMusicBrainzReleaseGroups(rawGroups).map((rel) => ({
+      ...rel,
+      creator: resolvedArtistName,
+      artist: resolvedArtistName,
+      director: resolvedArtistName,
+    }));
+
+    const payload = {
+      available: true,
+      source: 'MusicBrainz',
+      fetchedAt: new Date(nowFn()).toISOString(),
+      artistMbid: resolvedMbid,
+      artistName: resolvedArtistName,
+      totalStudioAlbums: studioAlbums.length,
+      totalReleases: allReleases.length,
+      albums: studioAlbums,
+      allReleases,
+      fromCache: false,
+    };
+
+    await setCachedEntry(CACHE_STORES.relations, cacheKey, payload, {
+      ttlMs: MB_CACHE_TTL_MS,
+      idbFactory,
+      now: nowFn(),
+    }).catch(() => {});
+
+    return payload;
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    return {
+      available: false,
+      source: null,
+      fetchedAt: null,
+      artistMbid: null,
+      albums: [],
+      allReleases: [],
+    };
   }
 }
 

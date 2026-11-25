@@ -11,6 +11,7 @@
  *   por álbum; sem MusicBrainz mostra apenas a contagem.
  */
 
+import { computeEntityCompleteness } from './entityHelpers.js';
 import { score100ToStars } from './ratingModel.js';
 
 export const MIN_DERIVED_AVERAGE_ITEMS = 3;
@@ -305,6 +306,82 @@ export function filterMusicBrainzStudioAlbums(releaseGroups = []) {
   return albums;
 }
 
+/**
+ * Classifica todos os release-groups do MusicBrainz em categorias transparentes:
+ * - `studio`: Álbuns de Estúdio (`primary-type: Album` sem `secondary-types`)
+ * - `live`: Ao Vivo (`secondary-types` inclui Live)
+ * - `ep_single`: EPs & Singles (`primary-type: EP` ou `Single`)
+ * - `compilation`: Coletâneas, Remixes & Extras
+ */
+export function categorizeMusicBrainzReleaseGroups(releaseGroups = []) {
+  const seen = new Set();
+  const categorized = [];
+
+  for (const rg of Array.isArray(releaseGroups) ? releaseGroups : []) {
+    if (!rg || typeof rg !== 'object') continue;
+    const title = String(rg.title || '').trim();
+    const normTitle = normalizeMusicKey(title);
+    if (!normTitle) continue;
+
+    const primaryRaw = String(rg['primary-type'] ?? rg.primaryType ?? '').trim();
+    const primary = primaryRaw.toLowerCase();
+    const secondaryRaw = rg['secondary-types'] ?? rg.secondaryTypes ?? [];
+    const secondaryList = Array.isArray(secondaryRaw)
+      ? secondaryRaw.map((s) => String(s || '').trim()).filter(Boolean)
+      : [];
+    const secLower = secondaryList.map((s) => s.toLowerCase());
+
+    let releaseCategory = 'compilation';
+    let workType = 'album';
+    if (secLower.includes('live')) {
+      releaseCategory = 'live';
+      workType = 'live_show';
+    } else if (primary === 'album' && secondaryList.length === 0) {
+      releaseCategory = 'studio';
+      workType = 'album';
+    } else if (primary === 'ep' || primary === 'single') {
+      releaseCategory = 'ep_single';
+      workType = 'ep_single';
+    } else {
+      releaseCategory = 'compilation';
+      workType = 'album';
+    }
+
+    const dedupKey = `${releaseCategory}::${normTitle}`;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+
+    const firstDate = String(rg['first-release-date'] ?? rg.firstReleaseDate ?? '').trim();
+    const yearMatch = firstDate.match(/^(\d{4})/);
+    const mbid = String(rg.id || '').trim() || null;
+
+    categorized.push({
+      id: mbid ? `mb-${mbid}` : `mb-${releaseCategory}-${normTitle}`,
+      mbid,
+      key: mbid || `title:${normTitle}`,
+      title,
+      normTitle,
+      releaseYear: yearMatch ? Number(yearMatch[1]) : null,
+      primaryType: primaryRaw || 'Album',
+      secondaryTypes: secondaryList,
+      releaseCategory,
+      workType,
+      domain: 'music',
+      ids: mbid ? { musicbrainz: mbid } : {},
+      sourceBadge: 'MusicBrainz',
+    });
+  }
+
+  categorized.sort((a, b) => {
+    const ya = a.releaseYear ?? 9999;
+    const yb = b.releaseYear ?? 9999;
+    if (ya !== yb) return ya - yb;
+    return a.title.localeCompare(b.title, 'pt-BR');
+  });
+
+  return categorized;
+}
+
 export function makeDiscographyExcludeKey(entry = {}) {
   const mbid = String(entry.mbid || entry.musicBrainzId || entry.ids?.musicbrainz || '').trim();
   if (mbid) return `mbid:${mbid}`;
@@ -322,6 +399,8 @@ export function computeDiscographyCompleteness({
   catalogReleases = [],
   mbStudioAlbums = null,
   excludedKeys = [],
+  manualTotal = null,
+  manualUniverseTotal = null,
 } = {}) {
   const excludedSet = new Set(
     (Array.isArray(excludedKeys) ? excludedKeys : []).map((k) => String(k || '').trim()).filter(Boolean)
@@ -369,9 +448,26 @@ export function computeDiscographyCompleteness({
 
     const countedItems = items.filter((i) => !i.excluded);
     const excludedCount = items.length - countedItems.length;
+    const allMbReleases = Array.isArray(mbStudioAlbums.allReleases) ? mbStudioAlbums.allReleases : [];
+    const universeCountedLocal = safeCatalog.filter((rel) => !isExcluded(rel.work || rel));
+    const universeTotalKnown =
+      Number(manualUniverseTotal) > 0
+        ? Math.round(Number(manualUniverseTotal))
+        : allMbReleases.length > 0
+          ? allMbReleases.filter((r) => !isExcluded(r)).length
+          : null;
+
+    const entityComp = computeEntityCompleteness({
+      works: countedItems,
+      mainSeriesTotal: countedItems.length,
+      universeWorks: universeCountedLocal,
+      universeTotal: universeTotalKnown,
+      totalSource: 'MusicBrainz',
+    });
+
     const totalCount = countedItems.length;
-    const completedCount = countedItems.filter((i) => i.completed).length;
-    const pct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+    const completedCount = entityComp.mainline.completed;
+    const pct = totalCount > 0 ? entityComp.mainline.pct : 0;
 
     return {
       mode: 'musicbrainz',
@@ -383,29 +479,71 @@ export function computeDiscographyCompleteness({
       excludedCount,
       pct,
       label: `${completedCount}/${totalCount} álbuns de estúdio`,
+      mainlineLabel: entityComp.mainline.displayLabel,
+      universeLabel: entityComp.universe.displayLabel,
+      entityCompleteness: entityComp,
       items,
+      allReleases: allMbReleases,
     };
   }
 
-  // Sem MusicBrainz: mostra SOMENTE a contagem, nunca inventa total/percentual
+  // Sem MusicBrainz: usa total manual se definido pelo usuário; caso contrário mostra APENAS total aberto
   const countedLocal = safeCatalog.filter((rel) => !isExcluded(rel.work || rel));
+  const studioLocal = countedLocal.filter((rel) => !rel.scope || rel.scope === 'studio');
   const excludedCount = safeCatalog.length - countedLocal.length;
-  const completedCount = countedLocal.filter((rel) => {
-    const w = rel.work || rel;
-    return w?.status === 'completed' || rel.completed === true;
-  }).length;
+
+  const parsedManualTotal = Number(manualTotal);
+  const validManualTotal =
+    Number.isFinite(parsedManualTotal) && parsedManualTotal > 0 ? Math.round(parsedManualTotal) : null;
+  const parsedManualUniverse = Number(manualUniverseTotal);
+  const validManualUniverse =
+    Number.isFinite(parsedManualUniverse) && parsedManualUniverse > 0
+      ? Math.round(parsedManualUniverse)
+      : null;
+
+  const entityComp = computeEntityCompleteness({
+    works: studioLocal.length > 0 ? studioLocal : countedLocal,
+    mainSeriesTotal: validManualTotal,
+    universeWorks: countedLocal,
+    universeTotal: validManualUniverse,
+    totalSource: validManualTotal || validManualUniverse ? 'Definido por você' : null,
+  });
+
+  if (validManualTotal !== null) {
+    return {
+      mode: 'manual-total',
+      source: 'manual',
+      sourceLabel: 'Total definido por você',
+      fetchedAt: null,
+      completedCount: entityComp.mainline.completed,
+      catalogCount: countedLocal.length,
+      totalCount: validManualTotal,
+      excludedCount,
+      pct: entityComp.mainline.pct,
+      label: `${entityComp.mainline.completed}/${validManualTotal} álbuns de estúdio`,
+      mainlineLabel: entityComp.mainline.displayLabel,
+      universeLabel: entityComp.universe.displayLabel,
+      entityCompleteness: entityComp,
+      items: [],
+      allReleases: [],
+    };
+  }
 
   return {
     mode: 'count-only',
     source: null,
     sourceLabel: '',
     fetchedAt: null,
-    completedCount,
+    completedCount: entityComp.universe.completed,
     catalogCount: countedLocal.length,
     totalCount: null,
     excludedCount,
     pct: null,
-    label: `${completedCount} concluído(s) · ${countedLocal.length} no catálogo`,
+    label: `${entityComp.universe.completed} concluídos · total aberto`,
+    mainlineLabel: entityComp.mainline.displayLabel,
+    universeLabel: entityComp.universe.displayLabel,
+    entityCompleteness: entityComp,
     items: [],
+    allReleases: [],
   };
 }

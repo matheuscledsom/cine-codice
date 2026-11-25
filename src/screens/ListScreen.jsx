@@ -4,9 +4,11 @@ import {
   Check,
   CheckSquare,
   Command,
+  Copy,
   Dices,
   Disc3,
   FolderPlus,
+  GitMerge,
   LayoutGrid,
   LayoutList,
   Library,
@@ -73,7 +75,12 @@ import {
 import { isFlagEnabled } from '../config/flags';
 import { useToast } from '../context/ToastContext';
 import { SpineRenderer } from '../graphics/SpineRenderer';
+import { buildEditionLinkPatch } from '../lib/bookEditions';
 import { searchCinemaMedia } from '../services/cinemaApi';
+import {
+  detectCatalogDuplicates,
+  mergeDuplicateWorksManual,
+} from '../services/relationalDb';
 import {
   formatCatalogCardFormatBadge,
   formatFlexibleProgressMetric,
@@ -170,6 +177,8 @@ export function ListScreen({
   const [shelfGroupByTheme, setShelfGroupByTheme] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [collectionManagerOpen, setCollectionManagerOpen] = useState(false);
+  const [duplicatesModalOpen, setDuplicatesModalOpen] = useState(false);
+  const [chosenPrimaryByGroup, setChosenPrimaryByGroup] = useState({});
   const [rouletteOpen, setRouletteOpen] = useState(false);
   const [activeEntity, setActiveEntity] = useState(null);
   const [localQuery, setLocalQuery] = useState('');
@@ -705,6 +714,61 @@ export function ListScreen({
     }
   }, [selectedDomain, layoutMode]);
 
+  const duplicateReport = useMemo(
+    () => detectCatalogDuplicates(domainScopedItems),
+    [domainScopedItems]
+  );
+
+  const handleManualMergeDuplicates = useCallback(
+    (primaryWork, secondaryWork) => {
+      if (!primaryWork?.id || !secondaryWork?.id || !onUpdateItem || !onBatchRemoveItems) return;
+      const result = mergeDuplicateWorksManual(primaryWork, secondaryWork);
+      if (!result) return;
+      onUpdateItem(primaryWork.id, result.mergedWork);
+      onBatchRemoveItems([result.removedWorkId]);
+      showToast?.({
+        message: `"${result.mergedWork.title}" mesclada preservando os dados mais completos.`,
+        type: 'success',
+        duration: 7000,
+        action: {
+          label: 'Desfazer',
+          onClick: () => {
+            onUpdateItem(primaryWork.id, result.undoPrimarySnapshot);
+            onRestoreRemovedItems?.([result.undoRemovedSnapshot]);
+          },
+        },
+      });
+    },
+    [onUpdateItem, onBatchRemoveItems, onRestoreRemovedItems, showToast]
+  );
+
+  const handleMarkDuplicateAsEdition = useCallback(
+    (primaryWork, secondaryWork) => {
+      if (!primaryWork?.id || !secondaryWork?.id || !onUpdateItem) return;
+      const patch = buildEditionLinkPatch(secondaryWork, primaryWork.id, items);
+      if (!patch) return;
+      const prevEditionOf = secondaryWork.editionOf ?? null;
+      const prevProgressData = secondaryWork.progress_data
+        ? { ...secondaryWork.progress_data }
+        : undefined;
+      onUpdateItem(secondaryWork.id, patch);
+      showToast?.({
+        message: `"${secondaryWork.title}" vinculada como edição sob a obra principal.`,
+        type: 'info',
+        duration: 6000,
+        action: {
+          label: 'Desfazer',
+          onClick: () =>
+            onUpdateItem(secondaryWork.id, {
+              editionOf: prevEditionOf,
+              ...(prevProgressData ? { progress_data: prevProgressData } : {}),
+            }),
+        },
+      });
+    },
+    [items, onUpdateItem, showToast]
+  );
+
   const extraFilterCount = useMemo(() => {
     let count = 0;
     if (selectedWorkType !== 'all') count += 1;
@@ -932,6 +996,23 @@ export function ListScreen({
         items={backlogItems}
         themeMode={themeMode}
       />
+
+      {/* Aviso discreto de possíveis duplicatas (nunca mescla automaticamente) */}
+      {duplicateReport.count > 0 && (
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => setDuplicatesModalOpen(true)}
+            data-testid="duplicates-notice-button"
+            className="inline-flex min-h-[44px] items-center gap-2 rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-ink transition-colors hover:border-accent"
+          >
+            <Copy className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+            <span className="tabular-nums">
+              Possíveis duplicatas ({duplicateReport.count})
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* Elemento 2: Busca + Botão de Filtros + Seletor Grade/Lista/Estante */}
       <div className="flex items-center gap-2">
@@ -1301,6 +1382,7 @@ export function ListScreen({
             items={filteredAndSortedItems}
             onSelectItem={handleWorkCardClick}
             onUpdateItem={onUpdateItem}
+            onQuickCatalogItem={onAddItem}
             onOpenEntity={(ent) => setActiveEntity(ent)}
             onShowToast={showToast}
           />
@@ -1814,6 +1896,160 @@ export function ListScreen({
           />
         </Suspense>
       )}
+
+      {/* Modal de Comparação e Mesclagem Manual de Duplicatas (v2.6.0 Fase 3) */}
+      <ResponsiveSheet
+        isOpen={duplicatesModalOpen}
+        onClose={() => setDuplicatesModalOpen(false)}
+        title={`Possíveis duplicatas (${duplicateReport.count})`}
+        subtitle="Nada é mesclado automaticamente. Compare os registros e escolha o que deseja manter."
+        icon={GitMerge}
+        ariaLabel="Comparar e mesclar possíveis duplicatas"
+      >
+        <div className="space-y-4 p-1" data-testid="duplicates-comparison-modal">
+          {duplicateReport.groups.length === 0 ? (
+            <p className="text-xs text-muted">
+              Nenhuma duplicata pendente neste domínio.
+            </p>
+          ) : (
+            duplicateReport.groups.map((group) => {
+              const selectedPrimaryId =
+                chosenPrimaryByGroup[group.groupId] || group.recommendedPrimaryId;
+              const primaryWork =
+                group.items.find((w) => w.id === selectedPrimaryId) || group.items[0];
+              const secondaryWorks = group.items.filter((w) => w.id !== primaryWork.id);
+
+              return (
+                <section
+                  key={group.groupId}
+                  className="space-y-3 rounded-[6px] border border-line bg-app p-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <h3 className="font-editorial truncate text-sm font-semibold text-ink">
+                        {group.title}
+                      </h3>
+                      <p className="text-[11px] text-muted">{group.reason}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {group.items.map((rec) => {
+                      const isPrimary = rec.id === primaryWork.id;
+                      const isRecommended = rec.id === group.recommendedPrimaryId;
+                      const recDomain = inferDomainFromWork(rec);
+                      const recStatus = getStatusConfigForDomain(rec.status, recDomain);
+                      const recCriteriaCount = rec.criteriaScores
+                        ? Object.values(rec.criteriaScores).filter((v) => typeof v === 'number' && v > 0).length
+                        : 0;
+                      const recNotesPreview = String(rec.notes || '').trim();
+
+                      return (
+                        <div
+                          key={rec.id}
+                          className={`space-y-2 rounded-[6px] border p-2.5 ${
+                            isPrimary
+                              ? 'border-accent bg-card'
+                              : 'border-line bg-card/70'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2.5">
+                            <CoverArt
+                              item={rec}
+                              compact
+                              className={`w-10 shrink-0 rounded-[6px] ${
+                                recDomain === 'music' ? 'aspect-square' : 'aspect-[2/3]'
+                              }`}
+                            />
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <p className="font-editorial truncate text-xs font-semibold text-ink">
+                                {rec.title}
+                              </p>
+                              <p className="truncate text-[11px] text-muted">
+                                {[
+                                  rec.creator || rec.author || rec.director || null,
+                                  rec.releaseYear || null,
+                                  rec.isManual || rec.ids?.source === 'manual' ? 'Manual' : rec.sourceBadge || 'API',
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')}
+                              </p>
+                              <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[10px] tabular-nums text-subtle">
+                                <span>{recStatus?.label || rec.status}</span>
+                                {recCriteriaCount > 0 && <span>· {recCriteriaCount} critérios</span>}
+                                {Number(rec.pagesRead) > 0 && <span>· {rec.pagesRead} págs</span>}
+                                {Number(rec.hoursPlayed) > 0 && <span>· {rec.hoursPlayed}h</span>}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2">
+                            <StarRatingDisplay work={rec} size="sm" showNumeric />
+                            {isRecommended && (
+                              <span className="rounded-[4px] border border-line bg-app px-1.5 py-0.5 text-[10px] font-medium text-ink">
+                                Mais completo
+                              </span>
+                            )}
+                          </div>
+
+                          {recNotesPreview && (
+                            <p className="line-clamp-2 text-[11px] text-muted">
+                              {recNotesPreview}
+                            </p>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setChosenPrimaryByGroup((prev) => ({
+                                ...prev,
+                                [group.groupId]: rec.id,
+                              }))
+                            }
+                            aria-pressed={isPrimary}
+                            className={`inline-flex min-h-[44px] w-full items-center justify-center rounded-[6px] border px-2.5 text-xs font-medium ${
+                              isPrimary
+                                ? 'border-accent bg-accent/15 text-ink'
+                                : 'border-line bg-app text-muted hover:text-ink'
+                            }`}
+                          >
+                            {isPrimary ? 'Registro principal selecionado' : 'Manter como principal'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {secondaryWorks.map((sec) => (
+                    <div
+                      key={sec.id}
+                      className="flex flex-wrap items-center justify-end gap-2 border-t border-line pt-2"
+                    >
+                      {group.domain === 'reading' && (
+                        <button
+                          type="button"
+                          onClick={() => handleMarkDuplicateAsEdition(primaryWork, sec)}
+                          className="inline-flex min-h-[44px] items-center rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-ink hover:border-muted"
+                        >
+                          Manter como edição (editionOf)
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleManualMergeDuplicates(primaryWork, sec)}
+                        className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] bg-accent px-3.5 text-xs font-semibold text-accent-ink"
+                      >
+                        <GitMerge className="h-3.5 w-3.5" strokeWidth={1.5} />
+                        <span>Mesclar registros</span>
+                      </button>
+                    </div>
+                  ))}
+                </section>
+              );
+            })
+          )}
+        </div>
+      </ResponsiveSheet>
 
       {/* Página / Folha de Entidade (Autor, Diretor, Estúdio, Elenco, Banda) */}
       <Suspense fallback={null}>

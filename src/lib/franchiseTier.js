@@ -11,8 +11,13 @@
  * 2) Progresso do Universo Completo (ex.: 4/9)
  */
 
-import { inferDomainFromWork, normalizeDomainId } from '../config/domainConfig.js';
+import {
+  inferDomainFromWork,
+  normalizeDomainId,
+  normalizeGameEditionType,
+} from '../config/domainConfig.js';
 import { isBookEdition } from './bookEditions.js';
+import { computeEntityCompleteness } from './entityHelpers.js';
 
 export const UNCLASSIFIED_FRANCHISE_TIER = 'unclassified';
 
@@ -149,7 +154,16 @@ function isEntryCompleted(entry) {
  * - Linha Principal (somente `mainline`)
  * - Universo Completo (`mainline` + `spinoff` + `companion`)
  */
-export function computeFranchiseScopeProgress(entries = [], domain = 'cinema') {
+export function computeFranchiseScopeProgress(
+  entries = [],
+  domain = 'cinema',
+  {
+    mainSeriesTotal = null,
+    universeTotal = null,
+    hasKnownTotal = true,
+    totalSource = null,
+  } = {}
+) {
   // Edições (`editionOf`) nunca alteram o progresso da obra base nem inflam a série.
   const safeEntries = (Array.isArray(entries) ? entries : []).filter(
     (entry) => entry && !isBookEdition(entry.work || entry)
@@ -171,46 +185,78 @@ export function computeFranchiseScopeProgress(entries = [], domain = 'cinema') {
     });
   }
 
-  const mainlineTotal = grouped.mainline.length;
-  const mainlineCompleted = grouped.mainline.filter((e) => e.completed).length;
-  const mainlinePct =
-    mainlineTotal > 0 ? Math.round((mainlineCompleted / mainlineTotal) * 100) : 0;
+  const parsedMain = Number(mainSeriesTotal);
+  const overrideMainTotal =
+    Number.isFinite(parsedMain) && parsedMain > 0 ? Math.round(parsedMain) : null;
+  const parsedUni = Number(universeTotal);
+  const overrideUniTotal =
+    Number.isFinite(parsedUni) && parsedUni > 0 ? Math.round(parsedUni) : null;
 
-  const universeTotal = safeEntries.length;
-  const universeCompleted =
-    mainlineCompleted +
-    grouped.spinoff.filter((e) => e.completed).length +
-    grouped.companion.filter((e) => e.completed).length +
-    grouped.unclassified.filter((e) => e.completed).length;
+  const knownMainTotal =
+    overrideMainTotal ?? (hasKnownTotal ? grouped.mainline.length : null);
+  const knownUniverseTotal =
+    overrideUniTotal ?? (hasKnownTotal ? safeEntries.length : null);
+
+  const entityComp = computeEntityCompleteness({
+    works: grouped.mainline,
+    mainSeriesTotal: knownMainTotal,
+    universeWorks: safeEntries,
+    universeTotal: knownUniverseTotal,
+    totalSource: overrideMainTotal || overrideUniTotal ? 'Definido por você' : totalSource,
+  });
+
+  const mainlineTotal = overrideMainTotal ?? grouped.mainline.length;
+  const mainlineCompleted = entityComp.mainline.completed;
+  const mainlinePct =
+    entityComp.mainline.pct !== null
+      ? entityComp.mainline.pct
+      : hasKnownTotal && mainlineTotal > 0
+        ? Math.round((mainlineCompleted / mainlineTotal) * 100)
+        : 0;
+
+  const universeTotalCount = overrideUniTotal ?? safeEntries.length;
+  const universeCompleted = entityComp.universe.completed;
   const universePct =
-    universeTotal > 0 ? Math.round((universeCompleted / universeTotal) * 100) : 0;
+    entityComp.universe.pct !== null
+      ? entityComp.universe.pct
+      : hasKnownTotal && universeTotalCount > 0
+        ? Math.round((universeCompleted / universeTotalCount) * 100)
+        : 0;
 
   const mainlineNoun = getDomainUnitNoun(domain, mainlineTotal);
 
   return {
     domain: normalizeDomainId(domain),
+    hasKnownTotal: !entityComp.mainline.isOpenEnded || !entityComp.universe.isOpenEnded,
+    entityCompleteness: entityComp,
     mainline: {
       completed: mainlineCompleted,
-      total: mainlineTotal,
-      pct: mainlinePct,
+      total: entityComp.mainline.isOpenEnded ? null : mainlineTotal,
+      localCount: grouped.mainline.length,
+      pct: entityComp.mainline.isOpenEnded ? null : mainlinePct,
+      isOpenEnded: entityComp.mainline.isOpenEnded,
       label: `${mainlineCompleted}/${mainlineTotal} ${mainlineNoun}`,
+      displayLabel: entityComp.mainline.displayLabel,
     },
     universe: {
       completed: universeCompleted,
-      total: universeTotal,
-      pct: universePct,
-      label: `${universeCompleted}/${universeTotal}`,
+      total: entityComp.universe.isOpenEnded ? null : universeTotalCount,
+      localCount: safeEntries.length,
+      pct: entityComp.universe.isOpenEnded ? null : universePct,
+      isOpenEnded: entityComp.universe.isOpenEnded,
+      label: `${universeCompleted}/${universeTotalCount}`,
+      displayLabel: entityComp.universe.displayLabel,
     },
     unclassified: {
       completed: grouped.unclassified.filter((e) => e.completed).length,
       total: grouped.unclassified.length,
     },
     counts: {
-      mainline: mainlineTotal,
+      mainline: grouped.mainline.length,
       spinoff: grouped.spinoff.length,
       companion: grouped.companion.length,
       unclassified: grouped.unclassified.length,
-      all: universeTotal,
+      all: safeEntries.length,
     },
     grouped,
   };
@@ -228,20 +274,31 @@ function normalizeFranchiseKey(name) {
 /**
  * Monta modelo de franquia/série para Games e Livros a partir de `franchiseName` e `franchiseLinks`.
  */
-export function buildDomainFranchiseModel(item = {}, allItems = []) {
+export function buildDomainFranchiseModel(
+  item = {},
+  allItems = [],
+  {
+    remoteEntries = [],
+    manualMeta = null,
+    sourceLabel = null,
+    sourceIsComplete = false,
+  } = {}
+) {
   if (!item || typeof item !== 'object') return null;
   const domain = inferDomainFromWork(item);
-  const franchiseName = String(item.franchiseName || '').trim();
+  const franchiseName = String(item.franchiseName || manualMeta?.seriesName || '').trim();
   const normKey = normalizeFranchiseKey(franchiseName);
   const manualLinks = Array.isArray(item.franchiseLinks) ? item.franchiseLinks : [];
+  const safeRemote = Array.isArray(remoteEntries) ? remoteEntries.filter(Boolean) : [];
 
-  if (!normKey && manualLinks.length === 0) return null;
+  if (!normKey && manualLinks.length === 0 && safeRemote.length === 0) return null;
 
   const catalogWorks = (Array.isArray(allItems) ? allItems : []).filter(
     (w) => w && w.inBacklog !== false && inferDomainFromWork(w) === domain && !isBookEdition(w)
   );
 
   const byId = new Map();
+  const byTitleKey = new Map();
   const entries = [];
 
   for (const w of catalogWorks) {
@@ -250,14 +307,19 @@ export function buildDomainFranchiseModel(item = {}, allItems = []) {
     const isCurrent = String(w.id) === String(item.id);
     if (!sameFranchise && !isCurrent) continue;
     byId.set(String(w.id), w);
+    const tKey = normalizeFranchiseKey(w.title);
+    if (tKey) byTitleKey.set(tKey, w);
     entries.push({
       id: String(w.id),
       title: w.title,
       workType: w.workType,
+      editionType: domain === 'games' ? normalizeGameEditionType(w.editionType) : w.editionType || '',
       releaseYear: Number(w.releaseYear) || null,
       chronologicalOrder: Number(w.chronologicalOrder) || null,
-      coverUrl: w.coverUrl || null,
+      coverUrl: w.manualCoverDataUrl || w.coverUrl || null,
       status: w.status,
+      isCataloged: true,
+      isCompleted: w.status === 'completed',
       localState:
         w.status === 'completed'
           ? 'completed'
@@ -266,6 +328,7 @@ export function buildDomainFranchiseModel(item = {}, allItems = []) {
             : 'in-progress',
       franchiseTier: inferFranchiseTier(w),
       work: w,
+      item: w,
       isCurrent,
     });
   }
@@ -277,6 +340,9 @@ export function buildDomainFranchiseModel(item = {}, allItems = []) {
       : null;
     if (linkedLocal && byId.has(String(linkedLocal.id))) continue;
     if (linkedLocal) byId.set(String(linkedLocal.id), linkedLocal);
+    const linkTitleKey = normalizeFranchiseKey(linkedLocal?.title || link.title);
+    if (linkTitleKey && !linkedLocal && byTitleKey.has(linkTitleKey)) continue;
+    if (linkTitleKey) byTitleKey.set(linkTitleKey, linkedLocal || link);
 
     entries.push({
       id: linkedLocal ? String(linkedLocal.id) : `link:${link.title}`,
@@ -286,6 +352,8 @@ export function buildDomainFranchiseModel(item = {}, allItems = []) {
       chronologicalOrder: Number(linkedLocal?.chronologicalOrder) || null,
       coverUrl: linkedLocal?.coverUrl || null,
       status: linkedLocal?.status || null,
+      isCataloged: Boolean(linkedLocal),
+      isCompleted: Boolean(linkedLocal && linkedLocal.status === 'completed'),
       localState: linkedLocal
         ? linkedLocal.status === 'completed'
           ? 'completed'
@@ -296,11 +364,85 @@ export function buildDomainFranchiseModel(item = {}, allItems = []) {
       relationType: link.relationType || 'SEQUEL',
       franchiseTier: inferFranchiseTier(linkedLocal || link),
       work: linkedLocal,
+      item: linkedLocal,
       isCurrent: false,
     });
   }
 
-  if (entries.length < 2 && manualLinks.length === 0) return null;
+  // Incorpora entradas reais vindas da fonte externa (ex.: IGDB / RAWG / Open Library)
+  for (const rem of safeRemote) {
+    const remTitle = String(rem.title || '').trim();
+    const remTitleKey = normalizeFranchiseKey(remTitle);
+    if (!remTitleKey) continue;
+    const remIgdb = Number(rem.igdbId || rem.ids?.igdb) || null;
+    const matchedCatalog = catalogWorks.find((w) => {
+      if (remIgdb && Number(w.igdbId || w.ids?.igdb) === remIgdb) return true;
+      return normalizeFranchiseKey(w.title) === remTitleKey;
+    });
+    if (matchedCatalog && byId.has(String(matchedCatalog.id))) continue;
+    if (byTitleKey.has(remTitleKey)) continue;
+    byTitleKey.set(remTitleKey, matchedCatalog || rem);
+    if (matchedCatalog) byId.set(String(matchedCatalog.id), matchedCatalog);
+
+    const effectiveEdition =
+      domain === 'games'
+        ? normalizeGameEditionType(matchedCatalog?.editionType || rem.editionType)
+        : matchedCatalog?.editionType || rem.editionType || '';
+    const inferredRemoteTier =
+      matchedCatalog
+        ? inferFranchiseTier(matchedCatalog)
+        : rem.franchiseTier
+          ? normalizeFranchiseTier(rem.franchiseTier) || 'mainline'
+          : domain === 'games' && effectiveEdition !== 'Jogo'
+            ? effectiveEdition === 'Coletânea'
+              ? 'companion'
+              : 'spinoff'
+            : inferFranchiseTier(rem);
+
+    entries.push({
+      id: matchedCatalog ? String(matchedCatalog.id) : String(rem.id || `remote:${remTitleKey}`),
+      igdbId: remIgdb,
+      rawgId: Number(rem.rawgId || rem.ids?.rawg) || null,
+      ids: matchedCatalog?.ids || rem.ids || (remIgdb ? { igdb: remIgdb } : {}),
+      title: matchedCatalog?.title || remTitle,
+      creator: matchedCatalog?.creator || rem.creator || '',
+      domain,
+      workType: matchedCatalog?.workType || rem.workType || item.workType,
+      editionType: effectiveEdition,
+      entryKind:
+        domain === 'games'
+          ? effectiveEdition || 'Jogo'
+          : rem.entryKind || 'Capítulo da Saga',
+      platforms: matchedCatalog?.platforms || rem.platforms || [],
+      releaseYear: Number(matchedCatalog?.releaseYear || rem.releaseYear) || null,
+      chronologicalOrder: Number(matchedCatalog?.chronologicalOrder || rem.chronologicalOrder) || null,
+      coverUrl: matchedCatalog?.manualCoverDataUrl || matchedCatalog?.coverUrl || rem.coverUrl || null,
+      status: matchedCatalog?.status || null,
+      isCataloged: Boolean(matchedCatalog),
+      isCompleted: Boolean(matchedCatalog && matchedCatalog.status === 'completed'),
+      localState: matchedCatalog
+        ? matchedCatalog.status === 'completed'
+          ? 'completed'
+          : matchedCatalog.status === 'queued'
+            ? 'queued'
+            : 'in-progress'
+        : 'missing',
+      catalogStateLabel: matchedCatalog
+        ? matchedCatalog.status === 'completed'
+          ? 'Concluído'
+          : 'No catálogo'
+        : 'Faltante',
+      franchiseName: franchiseName || rem.franchiseName || '',
+      franchiseTier: inferredRemoteTier,
+      work: matchedCatalog || null,
+      item: matchedCatalog || null,
+      isCurrent: Boolean(matchedCatalog && String(matchedCatalog.id) === String(item.id)),
+    });
+  }
+
+  if (entries.length < 2 && manualLinks.length === 0 && safeRemote.length === 0 && !manualMeta?.mainSeriesTotal) {
+    return null;
+  }
 
   entries.sort((a, b) => {
     const orderA = a.chronologicalOrder ?? 9999;
@@ -312,7 +454,27 @@ export function buildDomainFranchiseModel(item = {}, allItems = []) {
     return String(a.title || '').localeCompare(String(b.title || ''), 'pt-BR');
   });
 
-  const scopeProgress = computeFranchiseScopeProgress(entries, domain);
+  const hasExternalTotal = Boolean(sourceIsComplete && safeRemote.length > 0);
+  const hasManualTotal = Boolean(
+    Number(manualMeta?.mainSeriesTotal) > 0 || Number(manualMeta?.universeTotal) > 0
+  );
+  // Retrocompatibilidade: se chamador não forneceu opções (testes legados v2.4/v2.5), preserva total local calculado;
+  // quando explicitamente informado `sourceIsComplete: false` e sem manualMeta, fica total aberto!
+  const explicitOpenEndedMode =
+    !hasExternalTotal && !hasManualTotal && arguments.length >= 3 && sourceIsComplete === false;
+
+  const scopeProgress = computeFranchiseScopeProgress(entries, domain, {
+    mainSeriesTotal: manualMeta?.mainSeriesTotal ?? null,
+    universeTotal: manualMeta?.universeTotal ?? null,
+    hasKnownTotal: !explicitOpenEndedMode,
+    totalSource: hasManualTotal ? 'Definido por você' : sourceLabel,
+  });
+
+  const progressHeader = scopeProgress.mainline.isOpenEnded
+    ? scopeProgress.mainline.displayLabel
+    : `${scopeProgress.mainline.displayLabel}${
+        !scopeProgress.universe.isOpenEnded ? ` · ${scopeProgress.universe.displayLabel}` : ''
+      }`;
 
   return {
     mode: 'domain-franchise',
@@ -321,6 +483,8 @@ export function buildDomainFranchiseModel(item = {}, allItems = []) {
     sagaName: franchiseName || item.title,
     entries,
     scopeProgress,
-    progressHeader: `Linha Principal: ${scopeProgress.mainline.label} · Universo: ${scopeProgress.universe.label}`,
+    sourceLabel: hasManualTotal ? 'Definido por você' : sourceLabel || null,
+    hasKnownTotal: scopeProgress.hasKnownTotal,
+    progressHeader,
   };
 }

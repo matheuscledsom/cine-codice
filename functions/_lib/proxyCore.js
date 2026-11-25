@@ -17,6 +17,7 @@ export const IGDB_UPSTREAM_BASE = 'https://api.igdb.com/v4';
 export const TWITCH_OAUTH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token';
 export const STEAM_STORE_UPSTREAM_BASE = 'https://store.steampowered.com/api';
 export const BRASILAPI_ISBN_UPSTREAM_BASE = 'https://brasilapi.com.br/api/isbn/v1';
+export const GOOGLE_BOOKS_UPSTREAM_BASE = 'https://www.googleapis.com/books/v1/volumes';
 
 export const SEARCH_CACHE_TTL_SECONDS = 600; // 10 minutos
 export const DETAIL_CACHE_TTL_SECONDS = 86400; // 24 horas
@@ -59,6 +60,16 @@ const ALLOWED_OMDB_PARAMS = new Map([
   ['episode', 'Episode'],
   ['page', 'page'],
   ['r', 'r'],
+]);
+const ALLOWED_GOOGLE_BOOKS_PARAMS = new Map([
+  ['q', 'q'],
+  ['langrestrict', 'langRestrict'],
+  ['printtype', 'printType'],
+  ['maxresults', 'maxResults'],
+  ['orderby', 'orderBy'],
+  ['startindex', 'startIndex'],
+  ['projection', 'projection'],
+  ['filter', 'filter'],
 ]);
 
 export function jsonResponse(body, status = 200, extraHeaders = {}) {
@@ -113,6 +124,7 @@ export function readServerEnvConfig(env = {}) {
   const rawgApiKey = String(env?.RAWG_API_KEY || '').trim();
   const twitchClientId = String(env?.TWITCH_CLIENT_ID || '').trim();
   const twitchClientSecret = String(env?.TWITCH_CLIENT_SECRET || '').trim();
+  const googleBooksApiKey = String(env?.GOOGLE_BOOKS_API_KEY || '').trim();
 
   return {
     supabaseUrl,
@@ -123,12 +135,14 @@ export function readServerEnvConfig(env = {}) {
     rawgApiKey,
     twitchClientId,
     twitchClientSecret,
+    googleBooksApiKey,
     providers: {
       tmdb: { configured: Boolean(tmdbApiKey) },
       omdb: { configured: Boolean(omdbApiKey) },
       lastfm: { configured: Boolean(lastfmApiKey) },
       rawg: { configured: Boolean(rawgApiKey) },
       igdb: { configured: Boolean(twitchClientId && twitchClientSecret) },
+      googleBooks: { configured: Boolean(googleBooksApiKey) },
     },
   };
 }
@@ -565,6 +579,50 @@ export function buildSanitizedRawgUrls(cleanPath, incomingSearchParams, rawgApiK
   const upstreamUrl = `${RAWG_UPSTREAM_BASE}/${cleanPath}?${upstreamParams.toString()}`;
 
   return { cacheUrl, upstreamUrl };
+}
+
+export function buildSanitizedGoogleBooksUrls(incomingSearchParams, googleBooksApiKey) {
+  const sanitized = new URLSearchParams();
+  if (incomingSearchParams) {
+    const collected = [];
+    for (const [rawKey, rawVal] of incomingSearchParams.entries()) {
+      if (SECRET_PARAM_RE.test(rawKey)) continue;
+      const canonical = ALLOWED_GOOGLE_BOOKS_PARAMS.get(String(rawKey).toLowerCase());
+      if (!canonical) continue;
+      const val = String(rawVal || '').trim();
+      if (!val) continue;
+      collected.push([canonical, val]);
+    }
+    collected.sort(([a], [b]) => a.localeCompare(b));
+    for (const [k, v] of collected) {
+      sanitized.set(k, v);
+    }
+  }
+
+  const qVal = sanitized.get('q') || '';
+  if (!qVal) {
+    return { ok: false, error: 'Informe o parâmetro q para buscar no Google Books.' };
+  }
+
+  const maxRes = Number(sanitized.get('maxResults'));
+  if (sanitized.has('maxResults')) {
+    const clamped = Number.isFinite(maxRes) ? Math.max(1, Math.min(20, Math.round(maxRes))) : 10;
+    sanitized.set('maxResults', String(clamped));
+  }
+
+  const cacheQuery = sanitized.toString();
+  const cacheUrl = `${GOOGLE_BOOKS_UPSTREAM_BASE}?${cacheQuery}`;
+
+  const upstreamParams = new URLSearchParams(sanitized);
+  upstreamParams.set('key', googleBooksApiKey);
+  const upstreamUrl = `${GOOGLE_BOOKS_UPSTREAM_BASE}?${upstreamParams.toString()}`;
+
+  return {
+    ok: true,
+    cacheUrl,
+    upstreamUrl,
+    ttlSeconds: SEARCH_CACHE_TTL_SECONDS,
+  };
 }
 
 export function resolveDefaultCache(cacheOverride = null) {

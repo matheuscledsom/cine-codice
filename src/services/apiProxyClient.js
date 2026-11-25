@@ -777,11 +777,10 @@ export async function fetchSteamViaProxyOrDirect(
   return { ok: Boolean(data && typeof data === 'object'), via: 'direct', status: res.status, data };
 }
 
-export const BRASILAPI_DIRECT_ISBN_BASE = 'https://brasilapi.com.br/api/isbn/v1';
-
 /**
- * Consulta ISBN na BrasilAPI (CBL, Mercado Editorial, Open Library, Google Books) via proxy `/api/isbn/{isbn}`,
- * com fallback direto apenas em DEV ou quando a função proxy não estiver montada (HTML 404).
+ * Consulta ISBN na BrasilAPI (CBL, Mercado Editorial, Open Library, Google Books)
+ * exclusivamente via proxy Cloudflare `/api/isbn/{isbn}` (sem chamadas diretas do navegador
+ * para `brasilapi.com.br`, preservando CSP mínimo).
  */
 export async function fetchBrasilApiIsbnViaProxyOrDirect(
   cleanIsbn,
@@ -807,48 +806,13 @@ export async function fetchBrasilApiIsbnViaProxyOrDirect(
   const provParam = String(providers || '').trim();
   const qs = provParam ? `?providers=${encodeURIComponent(provParam)}` : '';
 
-  if (shouldUseApiProxy({ forceProxy, isDev })) {
-    const proxyUrl = `/api/isbn/${encodeURIComponent(normalized)}${qs}`;
-    try {
-      const res = await apiRequest(proxyUrl, {
-        provider: 'brasilapi',
-        headers: { Accept: 'application/json' },
-        signal,
-        fetchImpl,
-        timeoutMs,
-        nowFn,
-        dedup,
-        maxRetries: 0,
-      });
-      const status = Number(res?.status) || 0;
-      const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
-      const isProxyMounted = !(status === 404 && !contentType.includes('application/json'));
-      if (isProxyMounted && !contentType.includes('text/html')) {
-        const data = await res.json().catch(() => null);
-        if (status === 404) {
-          return { ok: false, via: 'proxy', status: 404, notFound: true, data };
-        }
-        if (status === 400) {
-          return { ok: false, via: 'proxy', status: 400, invalidIsbn: true, data };
-        }
-        if (!res.ok) {
-          return { ok: false, via: 'proxy', status, data };
-        }
-        return { ok: Boolean(data && typeof data === 'object'), via: 'proxy', status, data };
-      }
-    } catch (err) {
-      if (err?.name === 'AbortError' || signal?.aborted) {
-        throw err;
-      }
-      if (err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT') {
-        return { ok: false, via: 'proxy', status: null, timedOut: true, data: null };
-      }
-    }
+  if (forceProxy === false) {
+    return { ok: false, via: 'none', status: 503, notConfigured: true, data: null };
   }
 
-  const directUrl = `${BRASILAPI_DIRECT_ISBN_BASE}/${encodeURIComponent(normalized)}${qs}`;
+  const proxyUrl = `/api/isbn/${encodeURIComponent(normalized)}${qs}`;
   try {
-    const res = await apiRequest(directUrl, {
+    const res = await apiRequest(proxyUrl, {
       provider: 'brasilapi',
       headers: { Accept: 'application/json' },
       signal,
@@ -859,17 +823,214 @@ export async function fetchBrasilApiIsbnViaProxyOrDirect(
       maxRetries: 0,
     });
     const status = Number(res?.status) || 0;
+    const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+    const isProxyMounted = !(status === 404 && !contentType.includes('application/json'));
+    if (!isProxyMounted || contentType.includes('text/html')) {
+      return {
+        ok: false,
+        via: 'proxy',
+        status: isDev ? 503 : status || 502,
+        notConfigured: Boolean(isDev),
+        data: null,
+      };
+    }
     const data = await res.json().catch(() => null);
     if (status === 404) {
-      return { ok: false, via: 'direct', status: 404, notFound: true, data };
+      return { ok: false, via: 'proxy', status: 404, notFound: true, data };
     }
     if (status === 400) {
-      return { ok: false, via: 'direct', status: 400, invalidIsbn: true, data };
+      return { ok: false, via: 'proxy', status: 400, invalidIsbn: true, data };
     }
     if (!res.ok) {
-      return { ok: false, via: 'direct', status, data };
+      return { ok: false, via: 'proxy', status, data };
     }
-    return { ok: Boolean(data && typeof data === 'object'), via: 'direct', status, data };
+    return { ok: Boolean(data && typeof data === 'object'), via: 'proxy', status, data };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    const timedOut = err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT';
+    return {
+      ok: false,
+      via: 'proxy',
+      status: err?.status ?? null,
+      timedOut,
+      data: null,
+    };
+  }
+}
+
+export const GOOGLE_BOOKS_DIRECT_BASE = 'https://www.googleapis.com/books/v1/volumes';
+
+/**
+ * Consulta Google Books via proxy autenticado `/api/googlebooks` (usando secret opcional
+ * `GOOGLE_BOOKS_API_KEY` no Cloudflare). Se o usuário não estiver autenticado ou a chave não
+ * existir no servidor (503), cai silenciosamente para a API pública sem erro visível.
+ */
+export async function fetchGoogleBooksViaProxyOrDirect(
+  params = {},
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = true,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+    allowDirectFallback = true,
+  } = {}
+) {
+  const cleanParams = buildQueryParams(params, { stripSecrets: true });
+  const qs = cleanParams.toString();
+  if (!cleanParams.get('q')) {
+    return { ok: false, via: 'none', status: 400, data: null, proxyNotConfigured: false };
+  }
+
+  let proxyNotConfigured = false;
+  if (shouldUseApiProxy({ forceProxy, isDev })) {
+    const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });
+    if (token) {
+      const proxyUrl = `/api/googlebooks${qs ? `?${qs}` : ''}`;
+      try {
+        const res = await apiRequest(proxyUrl, {
+          provider: 'googleBooks',
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          signal,
+          fetchImpl,
+          timeoutMs,
+          nowFn,
+          dedup,
+          maxRetries: 0,
+        });
+        const status = Number(res?.status) || 0;
+        const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+        const isProxyMounted = !(status === 404 && !contentType.includes('application/json'));
+        if (isProxyMounted && !contentType.includes('text/html')) {
+          if (status === 503) {
+            proxyNotConfigured = true;
+            if (!allowDirectFallback) {
+              return {
+                ok: false,
+                via: 'proxy',
+                status: 503,
+                notConfigured: true,
+                proxyNotConfigured: true,
+                data: null,
+              };
+            }
+          } else if (status === 401 || status === 403) {
+            if (!allowDirectFallback) {
+              return {
+                ok: false,
+                via: 'proxy',
+                status,
+                notConfigured: false,
+                proxyNotConfigured: false,
+                data: null,
+              };
+            }
+          } else if (res.ok) {
+            const data = await res.json().catch(() => null);
+            return {
+              ok: Boolean(data && typeof data === 'object'),
+              via: 'proxy',
+              status,
+              notConfigured: false,
+              proxyNotConfigured: false,
+              data,
+            };
+          } else if (!allowDirectFallback) {
+            return {
+              ok: false,
+              via: 'proxy',
+              status,
+              notConfigured: false,
+              proxyNotConfigured: false,
+              data: null,
+            };
+          }
+        }
+      } catch (err) {
+        if (err?.name === 'AbortError' || signal?.aborted) {
+          throw err;
+        }
+        if (err?.status === 503) {
+          proxyNotConfigured = true;
+        }
+        if (!allowDirectFallback) {
+          const timedOut = err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT';
+          return {
+            ok: false,
+            via: 'proxy',
+            status: err?.status ?? null,
+            notConfigured: err?.status === 503,
+            proxyNotConfigured,
+            timedOut,
+            data: null,
+          };
+        }
+      }
+    } else if (!allowDirectFallback) {
+      return {
+        ok: false,
+        via: 'none',
+        status: 401,
+        notConfigured: true,
+        proxyNotConfigured: true,
+        data: null,
+      };
+    }
+  }
+
+  if (!allowDirectFallback) {
+    return {
+      ok: false,
+      via: 'none',
+      status: null,
+      notConfigured: true,
+      proxyNotConfigured: true,
+      data: null,
+    };
+  }
+
+  const directUrl = `${GOOGLE_BOOKS_DIRECT_BASE}?${qs}`;
+  try {
+    const res = await apiRequest(directUrl, {
+      provider: 'googleBooks',
+      headers: { Accept: 'application/json' },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    if (!res.ok) {
+      return {
+        ok: false,
+        via: 'direct',
+        status,
+        notConfigured: false,
+        proxyNotConfigured,
+        data: null,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    return {
+      ok: Boolean(data && typeof data === 'object'),
+      via: 'direct',
+      status: status || 200,
+      notConfigured: false,
+      proxyNotConfigured,
+      data,
+    };
   } catch (err) {
     if (err?.name === 'AbortError' || signal?.aborted) {
       throw err;
@@ -879,6 +1040,8 @@ export async function fetchBrasilApiIsbnViaProxyOrDirect(
       ok: false,
       via: 'direct',
       status: err?.status ?? null,
+      notConfigured: false,
+      proxyNotConfigured,
       timedOut,
       data: null,
     };
@@ -904,6 +1067,7 @@ export async function fetchProxyStatus({
     lastfm: { configured: false },
     rawg: { configured: false },
     igdb: { configured: false },
+    googleBooks: { configured: false },
   };
 
   if (!shouldUseApiProxy({ forceProxy, isDev })) {
@@ -984,6 +1148,7 @@ export async function fetchProxyStatus({
         lastfm: { configured: Boolean(json.providers?.lastfm?.configured) },
         rawg: { configured: Boolean(json.providers?.rawg?.configured) },
         igdb: { configured: Boolean(json.providers?.igdb?.configured) },
+        googleBooks: { configured: Boolean(json.providers?.googleBooks?.configured) },
       },
     };
   } catch {

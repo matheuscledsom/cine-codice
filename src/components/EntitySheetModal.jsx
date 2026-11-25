@@ -6,6 +6,7 @@ import {
   normalizeDomainId,
 } from '../config/domainConfig';
 import {
+  buildEntityCompletenessPanelModel,
   computeEntityCompleteness,
   ENTITY_ROLE_LABELS,
   findCatalogWorksForEntity,
@@ -16,7 +17,9 @@ import { buildManualExternalIds } from '../lib/manualWorkLink';
 import { formatStarsNumber } from '../lib/ratingModel';
 import { searchCinemaMedia } from '../services/cinemaApi';
 import { createUuid } from '../services/codiceDatabase';
+import { fetchIgdbFranchiseGames } from '../services/gameDepthService';
 import { searchWorksByDomain } from '../services/multiDomainSearchService';
+import { fetchMusicBrainzArtistFullDiscography } from '../services/musicDepthService';
 import { findCatalogDuplicate } from '../utils/catalogDraftHelpers';
 import { CoverArt } from './CoverArt';
 import { ResponsiveSheet } from './ResponsiveSheet';
@@ -45,12 +48,18 @@ export function EntitySheetModal({
   const roleLabel = ENTITY_ROLE_LABELS[entityRole] || 'Entidade';
 
   const [externalResults, setExternalResults] = useState([]);
+  const [externalSourceMeta, setExternalSourceMeta] = useState({
+    label: null,
+    isComplete: false,
+  });
   const [loadingExternal, setLoadingExternal] = useState(false);
   const [externalError, setExternalError] = useState(false);
   const [entityMeta, setEntityMeta] = useState(null);
   const [editingTotal, setEditingTotal] = useState(false);
   const [totalInput, setTotalInput] = useState('');
+  const [universeTotalInput, setUniverseTotalInput] = useState('');
   const [seriesInput, setSeriesInput] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [showManualAddForm, setShowManualAddForm] = useState(false);
   const [manualTitle, setManualTitle] = useState('');
   const [manualYear, setManualYear] = useState('');
@@ -84,8 +93,10 @@ export function EntitySheetModal({
     });
     setEntityMeta(stored);
     setTotalInput(stored?.mainSeriesTotal ? String(stored.mainSeriesTotal) : '');
+    setUniverseTotalInput(stored?.universeTotal ? String(stored.universeTotal) : '');
     setSeriesInput(stored?.seriesName || '');
     setManualSeries(stored?.seriesName || '');
+    setStatusFilter('all');
     setEditingTotal(false);
     setShowManualAddForm(false);
     setManualTitle('');
@@ -93,14 +104,24 @@ export function EntitySheetModal({
     setManualVolume('');
   }, [isOpen, entityName, entityDomain, entityRole]);
 
-  const completeness = useMemo(
+  const panelModel = useMemo(
     () =>
-      computeEntityCompleteness({
-        works: localData.works,
-        mainSeriesTotal: entityMeta?.mainSeriesTotal ?? null,
+      buildEntityCompletenessPanelModel({
+        entity: { name: entityName, domain: entityDomain, role: entityRole },
+        localWorks: localData.works,
+        externalWorks: externalResults,
+        manualMeta: entityMeta,
+        sourceLabel: externalSourceMeta.label,
+        sourceIsComplete: externalSourceMeta.isComplete,
       }),
-    [localData.works, entityMeta]
+    [entityName, entityDomain, entityRole, localData.works, externalResults, entityMeta, externalSourceMeta]
   );
+
+  const completeness = panelModel.completeness || computeEntityCompleteness({
+    works: localData.works,
+    mainSeriesTotal: entityMeta?.mainSeriesTotal ?? null,
+    universeTotal: entityMeta?.universeTotal ?? null,
+  });
 
   const queueActionLabel = entityDomain === 'reading' ? 'Quero ler' : 'Na fila';
 
@@ -108,22 +129,30 @@ export function EntitySheetModal({
     event?.preventDefault();
     const parsed = Number(String(totalInput || '').trim());
     const validTotal = Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
+    const parsedUni = Number(String(universeTotalInput || '').trim());
+    const validUni = Number.isFinite(parsedUni) && parsedUni > 0 ? Math.round(parsedUni) : null;
     const saved = saveManualEntityMeta(
       { name: entityName, domain: entityDomain, role: entityRole },
-      { mainSeriesTotal: validTotal, seriesName: seriesInput.trim() }
+      {
+        mainSeriesTotal: validTotal,
+        universeTotal: validUni,
+        seriesName: seriesInput.trim(),
+      }
     );
     setEntityMeta(saved);
     setTotalInput(saved?.mainSeriesTotal ? String(saved.mainSeriesTotal) : '');
+    setUniverseTotalInput(saved?.universeTotal ? String(saved.universeTotal) : '');
     setEditingTotal(false);
   };
 
   const handleClearEntityTotal = () => {
     const saved = saveManualEntityMeta(
       { name: entityName, domain: entityDomain, role: entityRole },
-      { mainSeriesTotal: null, seriesName: seriesInput.trim() }
+      { mainSeriesTotal: null, universeTotal: null, seriesName: seriesInput.trim() }
     );
     setEntityMeta(saved);
     setTotalInput('');
+    setUniverseTotalInput('');
     setEditingTotal(false);
   };
 
@@ -179,23 +208,65 @@ export function EntitySheetModal({
     setLoadingExternal(true);
     setExternalError(false);
     setExternalResults([]);
+    setExternalSourceMeta({ label: null, isComplete: false });
 
     const run = async () => {
       try {
-        if (entityDomain === 'cinema') {
+        if (entityDomain === 'music') {
+          const mbDiscog = await fetchMusicBrainzArtistFullDiscography(entityName, {
+            signal: controller.signal,
+          }).catch(() => null);
+          if (!controller.signal.aborted && mbDiscog?.available && mbDiscog.allReleases.length > 0) {
+            setExternalResults(mbDiscog.allReleases);
+            setExternalSourceMeta({ label: 'MusicBrainz', isComplete: true });
+            return;
+          }
+          const res = await searchWorksByDomain('music', entityName, {
+            signal: controller.signal,
+            mediaTypeFilter: 'all',
+          });
+          if (!controller.signal.aborted) {
+            setExternalResults((res.results || []).slice(0, 18));
+            setExternalSourceMeta({
+              label: (res.usedSources || [])[0] || null,
+              isComplete: false,
+            });
+          }
+        } else if (entityDomain === 'games') {
+          const igdbFran = await fetchIgdbFranchiseGames(entityName, {
+            signal: controller.signal,
+          }).catch(() => null);
+          if (!controller.signal.aborted && igdbFran?.available && igdbFran.games.length > 0) {
+            setExternalResults(igdbFran.games);
+            setExternalSourceMeta({ label: igdbFran.source || 'IGDB', isComplete: true });
+            return;
+          }
+          const res = await searchWorksByDomain('games', entityName, {
+            signal: controller.signal,
+            mediaTypeFilter: 'all',
+          });
+          if (!controller.signal.aborted) {
+            setExternalResults((res.results || []).slice(0, 18));
+            setExternalSourceMeta({
+              label: (res.usedSources || [])[0] || null,
+              isComplete: false,
+            });
+          }
+        } else if (entityDomain === 'cinema') {
           const res = await searchCinemaMedia(entityName, {
             filter: 'all',
             tmdbApiKey: tmdbKey,
             signal: controller.signal,
             onPartialResults: (p) => {
               if (!controller.signal.aborted && Array.isArray(p?.results)) {
-                setExternalResults(p.results.slice(0, 12));
+                setExternalResults(p.results.slice(0, 18));
                 setLoadingExternal(false);
               }
             },
           });
           if (!controller.signal.aborted) {
-            setExternalResults((res.results || []).slice(0, 12));
+            setExternalResults((res.results || []).slice(0, 18));
+            setExternalSourceMeta({ label: 'TMDB / Wikidata', isComplete: false });
           }
         } else {
           const res = await searchWorksByDomain(entityDomain, entityName, {
@@ -203,13 +274,17 @@ export function EntitySheetModal({
             mediaTypeFilter: 'all',
             onPartialResults: (p) => {
               if (!controller.signal.aborted && Array.isArray(p?.results)) {
-                setExternalResults(p.results.slice(0, 12));
+                setExternalResults(p.results.slice(0, 18));
                 setLoadingExternal(false);
               }
             },
           });
           if (!controller.signal.aborted) {
-            setExternalResults((res.results || []).slice(0, 12));
+            setExternalResults((res.results || []).slice(0, 18));
+            setExternalSourceMeta({
+              label: (res.usedSources || []).join(' · ') || 'Google Books / Open Library',
+              isComplete: false,
+            });
           }
         }
       } catch (err) {
@@ -298,18 +373,25 @@ export function EntitySheetModal({
           )}
         </section>
 
-        {/* Completude local / saga definida manualmente */}
-        <section className="rounded-[8px] border border-line bg-surface p-3 space-y-2.5">
+        {/* Painel de Completude unificado (Linha Principal + Universo Completo somente quando o total é conhecido) */}
+        <section
+          className="rounded-[8px] border border-line bg-surface p-3 space-y-2.5"
+          data-testid="entity-completeness-panel"
+        >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
                 Completude{entityMeta?.seriesName ? ` · ${entityMeta.seriesName}` : ''}
+                {panelModel.sourceLabel ? ` · ${panelModel.sourceLabel}` : ''}
               </h3>
               <p className="mt-0.5 text-sm font-semibold tabular-nums text-ink">
-                {completeness.isOpenEnded
-                  ? `${completeness.completed} concluída(s) · total aberto`
-                  : `Linha Principal ${completeness.completed} / ${completeness.mainSeriesTotal} · ${completeness.pct}%`}
+                {completeness.mainline.displayLabel}
               </p>
+              {(!completeness.universe.isOpenEnded || panelModel.groups.length > 1) && (
+                <p className="text-xs tabular-nums text-muted">
+                  {completeness.universe.displayLabel}
+                </p>
+              )}
             </div>
             <button
               type="button"
@@ -318,25 +400,25 @@ export function EntitySheetModal({
             >
               {editingTotal
                 ? 'Fechar'
-                : completeness.isOpenEnded
+                : completeness.mainline.isOpenEnded
                   ? 'Definir total'
                   : 'Editar total'}
             </button>
           </div>
 
-          {!completeness.isOpenEnded && (
+          {!completeness.mainline.isOpenEnded && typeof completeness.mainline.pct === 'number' && (
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-void">
               <div
                 className="h-full rounded-full bg-accent transition-all"
-                style={{ width: `${completeness.pct}%` }}
+                style={{ width: `${Math.min(100, completeness.mainline.pct)}%` }}
               />
             </div>
           )}
 
           {editingTotal && (
-            <form onSubmit={handleSaveEntityTotal} className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
+            <form onSubmit={handleSaveEntityTotal} className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-3">
               <label className="block space-y-1">
-                <span className="text-xs text-muted">Total na saga / linha principal</span>
+                <span className="text-xs text-muted">Total Linha Principal</span>
                 <input
                   type="number"
                   min="1"
@@ -348,16 +430,28 @@ export function EntitySheetModal({
                 />
               </label>
               <label className="block space-y-1">
+                <span className="text-xs text-muted">Total Universo (opcional)</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="9999"
+                  value={universeTotalInput}
+                  onChange={(e) => setUniverseTotalInput(e.target.value)}
+                  placeholder="Ex.: 15"
+                  className="min-h-[44px] w-full rounded-[6px] border border-line bg-void px-3 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
+                />
+              </label>
+              <label className="block space-y-1">
                 <span className="text-xs text-muted">Nome da saga (opcional)</span>
                 <input
                   type="text"
                   value={seriesInput}
                   onChange={(e) => setSeriesInput(e.target.value)}
-                  placeholder="Ex.: Trilogia inicial"
+                  placeholder="Ex.: Linha principal"
                   className="min-h-[44px] w-full rounded-[6px] border border-line bg-void px-3 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none"
                 />
               </label>
-              <div className="flex items-center gap-2 sm:col-span-2">
+              <div className="flex items-center gap-2 sm:col-span-3">
                 <button
                   type="submit"
                   className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] bg-accent px-3.5 text-xs font-semibold text-on-accent"
@@ -365,17 +459,142 @@ export function EntitySheetModal({
                   <Check className="h-3.5 w-3.5" strokeWidth={1.5} />
                   <span>Salvar total</span>
                 </button>
-                {!completeness.isOpenEnded && (
+                {(!completeness.mainline.isOpenEnded || !completeness.universe.isOpenEnded) && (
                   <button
                     type="button"
                     onClick={handleClearEntityTotal}
                     className="inline-flex min-h-[44px] items-center rounded-[6px] border border-line bg-card px-3 text-xs font-semibold text-muted hover:text-ink"
                   >
-                    Deixar aberto
+                    Manter total aberto
                   </button>
                 )}
               </div>
             </form>
+          )}
+
+          {/* Filtros Concluídas · No catálogo · Faltantes + agrupamento por Saga/Cronologia/Tipo */}
+          {panelModel.groups.length > 0 && (
+            <div className="space-y-3 pt-1">
+              <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filtrar obras da entidade">
+                {[
+                  { id: 'all', label: `Todas (${panelModel.allItems.length})` },
+                  { id: 'completed', label: `Concluídas (${panelModel.completedItems.length})` },
+                  { id: 'in_catalog', label: `No catálogo (${panelModel.inCatalogItems.length})` },
+                  { id: 'missing', label: `Faltantes (${panelModel.missingItems.length})` },
+                ].map((tab) => {
+                  const active = statusFilter === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setStatusFilter(tab.id)}
+                      className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium tabular-nums ${
+                        active
+                          ? 'border-accent bg-accent text-on-accent'
+                          : 'border-line bg-card text-muted hover:text-ink'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-3">
+                {panelModel.groups.map((grp) => {
+                  const filtered =
+                    statusFilter === 'all'
+                      ? grp.items
+                      : grp.items.filter((entry) => entry.statusKind === statusFilter);
+                  if (filtered.length === 0) return null;
+                  return (
+                    <div key={grp.id} className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="text-xs font-semibold text-ink">{grp.label}</h4>
+                        <span className="text-[11px] tabular-nums text-muted">
+                          {grp.completedCount} concluída(s) · {grp.missingCount} faltante(s)
+                        </span>
+                      </div>
+                      <div className="divide-y divide-line rounded-[6px] border border-line bg-card">
+                        {filtered.map((entry) => (
+                          <div
+                            key={entry.id}
+                            className="flex items-center justify-between gap-2 px-3 py-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              {entry.inCatalog && entry.work ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onClose?.();
+                                    onSelectWork?.(entry.work);
+                                  }}
+                                  className="min-h-[44px] w-full truncate text-left text-xs font-semibold text-ink hover:text-accent"
+                                >
+                                  {entry.title}
+                                </button>
+                              ) : (
+                                <p className="truncate text-xs font-medium text-ink">
+                                  {entry.title}
+                                </p>
+                              )}
+                              <p className="truncate text-[11px] tabular-nums text-muted">
+                                {[
+                                  entry.seriesVolume || null,
+                                  entry.releaseYear || null,
+                                  entry.editionType || null,
+                                  entry.statusKind === 'completed'
+                                    ? 'Concluída'
+                                    : entry.statusKind === 'in_catalog'
+                                      ? 'No catálogo'
+                                      : 'Faltante',
+                                  entry.editions?.length > 0
+                                    ? `+${entry.editions.length} edição(ões)`
+                                    : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')}
+                              </p>
+                            </div>
+                            {entry.statusKind === 'missing' && onQuickCatalogCandidate && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onQuickCatalogCandidate({
+                                    ...(entry.candidate || {}),
+                                    domain: entry.domain || entityDomain,
+                                    workType:
+                                      entry.workType ||
+                                      ENTITY_DEFAULT_WORK_TYPE[entityDomain] ||
+                                      'book',
+                                    title: entry.title,
+                                    creator: entry.creator || entityName,
+                                    director: entry.creator || entityName,
+                                    author: entityDomain === 'reading' ? entityName : undefined,
+                                    releaseYear: entry.releaseYear || null,
+                                    coverUrl: entry.coverUrl || null,
+                                    franchiseName: entry.franchiseName || undefined,
+                                    status: 'queued',
+                                    isWishlist: true,
+                                    inBacklog: true,
+                                  })
+                                }
+                                className="inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[6px] border border-accent bg-accent/15 px-2.5 text-xs font-semibold text-accent hover:bg-accent hover:text-on-accent"
+                              >
+                                <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                                <span>+ Catalogar</span>
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
         </section>
 
