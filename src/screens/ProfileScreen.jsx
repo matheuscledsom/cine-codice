@@ -14,6 +14,7 @@ import {
   PenLine,
   Plus,
   Quote,
+  RefreshCw,
   Settings,
   Sparkles,
   Star,
@@ -59,7 +60,7 @@ import {
   inferDomainFromWork,
   normalizeDomainId,
 } from '../config/domainConfig';
-import { CODICE_RELEASE } from '../config/versioning';
+import { APP_BUILD_LABEL, CODICE_RELEASE } from '../config/versioning';
 import { useToast } from '../context/ToastContext';
 import { useAiConfig } from '../hooks/useAiConfig';
 import {
@@ -136,6 +137,10 @@ export function ProfileScreen({
   onOpenAboutCredits,
   cloudState = null,
   onOpenCloudModal,
+  pwaCheckState = 'idle',
+  pwaRemoteVersion = '',
+  onCheckPwaUpdate,
+  onApplyPwaUpdate,
 }) {
   const { showToast } = useToast();
   const { ui, cardFields } = domainConfig;
@@ -884,10 +889,10 @@ export function ProfileScreen({
             </div>
           </section>
 
-          {/* Central de Backup, Novidades da Versão e Diagnóstico — v2.4.0 Fase 5 */}
+          {/* Central de Backup, Novidades da Versão, Diagnóstico e Verificador PWA */}
           <div
             aria-label="Ferramentas do perfil"
-            className="grid grid-cols-1 gap-2 sm:grid-cols-3"
+            className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4"
           >
             <button
               type="button"
@@ -916,7 +921,7 @@ export function ProfileScreen({
                 <span>Novidades da versão</span>
               </span>
               <span className="text-[11px] tabular-nums text-subtle">
-                {CODICE_RELEASE.label}
+                {APP_BUILD_LABEL}
               </span>
             </button>
 
@@ -935,6 +940,50 @@ export function ProfileScreen({
               </span>
               <span className="text-[11px] text-subtle">Local</span>
             </button>
+
+            {pwaCheckState === 'update_available' && onApplyPwaUpdate ? (
+              <button
+                type="button"
+                onClick={onApplyPwaUpdate}
+                data-testid="profile-pwa-update-now-btn"
+                className="flex min-h-[44px] items-center justify-between gap-2 rounded-[6px] border border-accent bg-accent px-3.5 py-2.5 text-left text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <RefreshCw className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+                  <span>Atualizar agora</span>
+                </span>
+                <span className="text-[11px] tabular-nums">
+                  {pwaRemoteVersion ? `v${pwaRemoteVersion.replace(/^v/i, '')}` : APP_BUILD_LABEL}
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={pwaCheckState === 'checking'}
+                onClick={() => onCheckPwaUpdate?.()}
+                data-testid="profile-check-update-btn"
+                className="flex min-h-[44px] items-center justify-between gap-2 rounded-[6px] border border-line bg-card px-3.5 py-2.5 text-left text-xs font-medium text-ink transition-colors hover:border-accent disabled:opacity-60"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <RefreshCw
+                    className={`h-4 w-4 shrink-0 text-accent ${
+                      pwaCheckState === 'checking' ? 'animate-spin' : ''
+                    }`}
+                    strokeWidth={1.5}
+                  />
+                  <span>
+                    {pwaCheckState === 'checking'
+                      ? 'Verificando...'
+                      : pwaCheckState === 'up_to_date'
+                        ? 'App atualizado'
+                        : 'Verificar atualização'}
+                  </span>
+                </span>
+                <span className="text-[11px] tabular-nums text-subtle">
+                  {APP_BUILD_LABEL}
+                </span>
+              </button>
+            )}
           </div>
 
           {/* ATIVIDADE RECENTE */}

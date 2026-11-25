@@ -1,3 +1,5 @@
+import { isCompressedManualCoverDataUrl } from '../lib/manualCovers.js';
+
 export const CCODEX_FORMAT_VERSION = 'ccodex-v1';
 export const PBKDF2_ITERATIONS = 150000;
 export const AES_KEY_LENGTH_BITS = 256;
@@ -33,13 +35,27 @@ export function base64ToUint8(base64Str) {
   return out;
 }
 
-export function stripBase64MediaFromWorks(payload) {
+export function stripBase64MediaFromWorks(
+  payload,
+  { preserveCompressedManualCovers = false } = {}
+) {
   if (!payload || typeof payload !== 'object') return payload;
   const sanitizeWork = (work) => {
     if (!work || typeof work !== 'object') return work;
     const next = { ...work };
+    const compressedManual = preserveCompressedManualCovers
+      ? isCompressedManualCoverDataUrl(next.manualCoverDataUrl)
+        ? next.manualCoverDataUrl
+        : isCompressedManualCoverDataUrl(next.coverUrl) && (next.isManual || next.ids?.source === 'manual')
+          ? next.coverUrl
+          : ''
+      : '';
+
     if (typeof next.coverUrl === 'string' && next.coverUrl.startsWith('data:image/')) {
-      next.coverUrl = '';
+      next.coverUrl = compressedManual || '';
+    }
+    if (typeof next.manualCoverDataUrl === 'string' && next.manualCoverDataUrl.startsWith('data:image/')) {
+      next.manualCoverDataUrl = compressedManual || '';
     }
     if (typeof next.backdropUrl === 'string' && next.backdropUrl.startsWith('data:image/')) {
       next.backdropUrl = '';
@@ -122,7 +138,9 @@ async function deriveAesGcmKey(password, saltBytes, iterations = PBKDF2_ITERATIO
 }
 
 export async function encodeCcodexBackup(payload, { password = '' } = {}) {
-  const sanitizedPayload = stripBase64MediaFromWorks(payload);
+  const sanitizedPayload = stripBase64MediaFromWorks(payload, {
+    preserveCompressedManualCovers: true,
+  });
   const jsonString =
     typeof sanitizedPayload === 'string'
       ? sanitizedPayload

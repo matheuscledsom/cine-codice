@@ -504,9 +504,11 @@ export function formatCatalogCardFormatBadge(item = {}) {
         ? 'História'
         : compRaw.includes('Multiplayer')
           ? 'Ranked'
-          : compRaw || '';
+          : compRaw.includes('Sem fim')
+            ? 'Sem fim'
+            : compRaw || '';
     const parts = [platform];
-    if (edition && edition !== 'Original') parts.push(edition);
+    if (edition && edition !== 'Jogo' && edition !== 'Original') parts.push(edition);
     if (hours > 0) parts.push(`${hours}h`);
     if (compShort) parts.push(compShort);
     return {
@@ -766,7 +768,7 @@ export function formatFlexibleProgressMetric(item) {
     const comp = String(item.completionType || '').trim();
     const parts = [
       platform,
-      edition && edition !== 'Original' ? edition : null,
+      edition && edition !== 'Jogo' && edition !== 'Original' ? edition : null,
       hours > 0 ? `${hours}h` : null,
       comp || null,
     ].filter(Boolean);

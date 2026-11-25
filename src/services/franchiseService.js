@@ -675,19 +675,57 @@ export function buildDeterministicFranchiseOrUniverseModel(
 export function buildUnifiedFranchiseModel(
   work,
   allCatalogItems = [],
-  remoteCollectionParts = []
+  remoteCollectionParts = [],
+  options = null
 ) {
   if (!work || typeof work !== 'object') return null;
   const domain = inferDomainFromWork(work);
   if (domain === 'reading' || domain === 'games') {
-    return buildDomainFranchiseModel(work, allCatalogItems);
+    return options
+      ? buildDomainFranchiseModel(work, allCatalogItems, options)
+      : buildDomainFranchiseModel(work, allCatalogItems);
   }
   if (domain === 'cinema') {
-    return buildDeterministicFranchiseOrUniverseModel(
+    const base = buildDeterministicFranchiseOrUniverseModel(
       work,
       allCatalogItems,
       remoteCollectionParts
     );
+    if (!base || !options) return base;
+    const hasCollectionOrRelations = Boolean(
+      (Array.isArray(remoteCollectionParts) && remoteCollectionParts.length > 0) ||
+        (Array.isArray(work.franchiseRelations) && work.franchiseRelations.length > 0) ||
+        options.sourceIsComplete
+    );
+    const hasManualTotal = Boolean(
+      Number(options.manualMeta?.mainSeriesTotal) > 0 ||
+        Number(options.manualMeta?.universeTotal) > 0
+    );
+    const scopeProgress = computeFranchiseScopeProgress(base.entries, 'cinema', {
+      mainSeriesTotal: options.manualMeta?.mainSeriesTotal ?? null,
+      universeTotal: options.manualMeta?.universeTotal ?? null,
+      hasKnownTotal: hasCollectionOrRelations || hasManualTotal,
+      totalSource: hasManualTotal
+        ? 'Definido por você'
+        : Array.isArray(remoteCollectionParts) && remoteCollectionParts.length > 0
+          ? 'TMDB'
+          : options.sourceLabel || null,
+    });
+    return {
+      ...base,
+      scopeProgress,
+      hasKnownTotal: scopeProgress.hasKnownTotal,
+      sourceLabel: hasManualTotal
+        ? 'Definido por você'
+        : Array.isArray(remoteCollectionParts) && remoteCollectionParts.length > 0
+          ? 'TMDB'
+          : options.sourceLabel || null,
+      progressHeader: scopeProgress.mainline.isOpenEnded
+        ? scopeProgress.mainline.displayLabel
+        : `${scopeProgress.mainline.displayLabel}${
+            !scopeProgress.universe.isOpenEnded ? ` · ${scopeProgress.universe.displayLabel}` : ''
+          }`,
+    };
   }
   return null;
 }

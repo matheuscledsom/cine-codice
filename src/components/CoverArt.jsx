@@ -25,6 +25,7 @@ export const CoverArt = memo(function CoverArt({
   const sources = [
     ...(Array.isArray(item.coverCandidates) ? item.coverCandidates : []),
     ...(Array.isArray(item.coverSources) ? item.coverSources : []),
+    item.manualCoverDataUrl,
     item.coverUrl,
     item.thumbnailUrl,
     ...(Array.isArray(item.jikanCoverUrls) ? item.jikanCoverUrls : []),

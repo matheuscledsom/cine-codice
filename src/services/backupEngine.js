@@ -1,4 +1,5 @@
-import { domainConfig } from '../config/domainConfig.js';
+import { domainConfig, inferDomainFromWork } from '../config/domainConfig.js';
+import { APP_BUILD_VERSION } from '../config/versioning.js';
 import { migrateProfileData, migrateWorkItem } from '../lib/migrations.js';
 import { getTodayLocalISO } from '../utils/backlogHelpers.js';
 import { normalizeCollectionList } from '../utils/collections.js';
@@ -16,7 +17,13 @@ import {
   triggerFileDownload,
   validateReferentialIntegrity,
 } from './codiceDatabase.js';
+import { computeWorkCompletenessScore } from './relationalDb.js';
 
+export const BACKUP_ENVELOPE_FORMAT = 'omniprism-backup-v2';
+export const DEVICE_ID_STORAGE_KEY = 'omniprism_device_id_v1';
+export const LOCAL_DELETED_IDS_STORAGE_KEY = 'omniprism_local_deleted_ids_v1';
+export const LEGACY_NO_CHECKSUM_WARNING =
+  'Backup sem checksum (versão antiga) — proteção temporal aplicada';
 export const AUTO_SNAPSHOT_DB_NAME = 'cine_codice_auto_snapshots_v1';
 export const AUTO_SNAPSHOT_STORE_NAME = 'snapshots';
 export const MAX_AUTO_SNAPSHOTS = 5;
@@ -24,6 +31,9 @@ export const EMERGENCY_MIRROR_KEY = 'cine_codice_emergency_mirror_v1';
 export const LAST_BACKUP_EXPORT_KEY = 'cine_codice_last_backup_exported_at';
 export const FIRST_ACTIVITY_SEEN_KEY = 'cine_codice_first_activity_seen_at';
 export const BACKUP_REMINDER_DAYS = 7;
+
+const BACKUP_SECRET_KEY_RE =
+  /^(api_?key|apikey|tmdb_?key|omdb_?key|gemini_?key|groq_?key|openrouter_?key|rawg_?key|lastfm_?key|google_?books_?key|twitch_?client_?(?:id|secret)|access_?token|refresh_?token|auth_?token|bearer_?token|token|secret|password|authorization|service_?role|supabase_?anon_?key)$/i;
 
 const memorySnapshotStore = new Map();
 
@@ -35,6 +45,108 @@ export function clearMemorySnapshotsForTests() {
   memorySnapshotStore.clear();
 }
 
+export function readLocalDeletedIds(
+  storage = typeof localStorage !== 'undefined' ? localStorage : null
+) {
+  if (!storage || typeof storage.getItem !== 'function') return [];
+  try {
+    const raw = storage.getItem(LOCAL_DELETED_IDS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function recordLocalDeletedIds(
+  ids = [],
+  storage = typeof localStorage !== 'undefined' ? localStorage : null
+) {
+  const incoming = (Array.isArray(ids) ? ids : [ids])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean);
+  if (incoming.length === 0) return readLocalDeletedIds(storage);
+  const merged = Array.from(new Set([...readLocalDeletedIds(storage), ...incoming])).slice(-1000);
+  if (storage && typeof storage.setItem === 'function') {
+    try {
+      storage.setItem(LOCAL_DELETED_IDS_STORAGE_KEY, JSON.stringify(merged));
+    } catch {
+      // Ignora erro de cota
+    }
+  }
+  return merged;
+}
+
+export function clearLocalDeletedIds(
+  ids = [],
+  storage = typeof localStorage !== 'undefined' ? localStorage : null
+) {
+  const toClear = new Set(
+    (Array.isArray(ids) ? ids : [ids]).map((id) => String(id || '').trim()).filter(Boolean)
+  );
+  if (toClear.size === 0) return readLocalDeletedIds(storage);
+  const next = readLocalDeletedIds(storage).filter((id) => !toClear.has(id));
+  if (storage && typeof storage.setItem === 'function') {
+    try {
+      storage.setItem(LOCAL_DELETED_IDS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Ignora erro de cota
+    }
+  }
+  return next;
+}
+
+export function getOrCreateDeviceId(
+  storage = typeof localStorage !== 'undefined' ? localStorage : null
+) {
+  if (storage && typeof storage.getItem === 'function') {
+    try {
+      const existing = String(storage.getItem(DEVICE_ID_STORAGE_KEY) || '').trim();
+      if (existing) return existing;
+      const fresh = `dev-${createUuid()}`;
+      storage.setItem(DEVICE_ID_STORAGE_KEY, fresh);
+      return fresh;
+    } catch {
+      // Fallback em memória sem storage
+    }
+  }
+  return `dev-${createUuid()}`;
+}
+
+/**
+ * Remove recursivamente quaisquer chaves de API, segredos ou tokens antes de assinar/exportar o backup.
+ */
+export function stripSecretsFromBackupPayload(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripSecretsFromBackupPayload(item));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const clean = {};
+  for (const [key, val] of Object.entries(value)) {
+    if (BACKUP_SECRET_KEY_RE.test(key)) continue;
+    clean[key] = stripSecretsFromBackupPayload(val);
+  }
+  return clean;
+}
+
+export function computeCountsByDomain(works = []) {
+  const counts = { cinema: 0, reading: 0, games: 0, music: 0 };
+  for (const w of Array.isArray(works) ? works : []) {
+    if (!w || w.inBacklog === false) continue;
+    const dom = inferDomainFromWork(w);
+    if (Object.prototype.hasOwnProperty.call(counts, dom)) {
+      counts[dom] += 1;
+    } else {
+      counts.cinema += 1;
+    }
+  }
+  return counts;
+}
+
 export function stripChecksumEnvelope(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return payload;
@@ -44,17 +156,10 @@ export function stripChecksumEnvelope(payload) {
   return rest;
 }
 
-export async function computeSha256Hex(rawText) {
+export function computeFnv64Hex(rawText) {
   const input = String(rawText ?? '');
   const encoder = new TextEncoder();
   const data = encoder.encode(input);
-
-  if (typeof globalThis !== 'undefined' && globalThis.crypto?.subtle?.digest) {
-    const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', data);
-    const bytes = new Uint8Array(hashBuffer);
-    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  }
-
   let h1 = 0x811c9dc5;
   let h2 = 0x9e3779b9;
   for (let i = 0; i < data.length; i += 1) {
@@ -64,18 +169,70 @@ export async function computeSha256Hex(rawText) {
   return `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
 }
 
-export async function exportSignedBackupPayload(db) {
-  const sanitizedInput = stripBase64MediaFromWorks(db);
-  const baseDb = stripBase64MediaFromWorks(migrateDatabase(sanitizedInput));
-  const canonicalJson = JSON.stringify(stripChecksumEnvelope(baseDb));
-  const digest = await computeSha256Hex(canonicalJson);
+export async function computeSha256Hex(rawText, { forceFnvFallback = false } = {}) {
+  const input = String(rawText ?? '');
+  if (!forceFnvFallback && typeof globalThis !== 'undefined' && globalThis.crypto?.subtle?.digest) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(input);
+    const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', data);
+    const bytes = new Uint8Array(hashBuffer);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  return computeFnv64Hex(input);
+}
+
+export async function computeBackupChecksum(rawText, { forceFnvFallback = false } = {}) {
+  const canUseSha256 =
+    !forceFnvFallback && typeof globalThis !== 'undefined' && Boolean(globalThis.crypto?.subtle?.digest);
+  const digest = await computeSha256Hex(rawText, { forceFnvFallback: !canUseSha256 });
+  return {
+    algorithm: canUseSha256 ? 'SHA-256' : 'FNV-1a-64',
+    digest,
+  };
+}
+
+export async function exportSignedBackupPayload(
+  db,
+  {
+    storage = typeof localStorage !== 'undefined' ? localStorage : null,
+    appVersion = APP_BUILD_VERSION,
+    deviceId = null,
+    exportedAt = null,
+    forceFnvFallback = false,
+  } = {}
+) {
+  const secretFreeInput = stripSecretsFromBackupPayload(db);
+  const sanitizedInput = stripBase64MediaFromWorks(secretFreeInput, {
+    preserveCompressedManualCovers: true,
+  });
+  const baseDb = stripSecretsFromBackupPayload(
+    stripBase64MediaFromWorks(migrateDatabase(sanitizedInput), {
+      preserveCompressedManualCovers: true,
+    })
+  );
+  const resolvedExportedAt = exportedAt || new Date().toISOString();
+  const resolvedDeviceId = deviceId || getOrCreateDeviceId(storage);
+  const countsByDomain = computeCountsByDomain(baseDb?.tables?.works || []);
+
+  const envelopePayload = {
+    format: BACKUP_ENVELOPE_FORMAT,
+    schemaVersion: baseDb.schemaVersion,
+    exportedAt: resolvedExportedAt,
+    appVersion,
+    deviceId: resolvedDeviceId,
+    countsByDomain,
+    ...baseDb,
+  };
+
+  const canonicalJson = JSON.stringify(stripChecksumEnvelope(envelopePayload));
+  const checksumInfo = await computeBackupChecksum(canonicalJson, { forceFnvFallback });
 
   return {
-    ...baseDb,
+    ...envelopePayload,
     checksum: {
-      algorithm: 'SHA-256',
-      digest,
-      signedAt: new Date().toISOString(),
+      algorithm: checksumInfo.algorithm,
+      digest: checksumInfo.digest,
+      signedAt: resolvedExportedAt,
     },
   };
 }
@@ -108,8 +265,16 @@ export function countDatabaseEntities(db, snapshot) {
   };
 }
 
-export async function exportSignedCcodexPayload(db, { password = '' } = {}) {
-  const signedJson = await exportSignedBackupPayload(db);
+export async function exportSignedCcodexPayload(
+  db,
+  { password = '', storage, appVersion = APP_BUILD_VERSION, deviceId = null, exportedAt = null } = {}
+) {
+  const signedJson = await exportSignedBackupPayload(db, {
+    storage,
+    appVersion,
+    deviceId,
+    exportedAt,
+  });
   return encodeCcodexBackup(signedJson, { password });
 }
 
@@ -159,15 +324,20 @@ export async function inspectBackupPayload(rawText, options = {}) {
       };
     }
 
+    // Valida checksum do conteúdo DEPOIS de descriptografar (.ccodex) ou parsear (.json)
     const declaredDigest = parsed?.checksum?.digest
       ? String(parsed.checksum.digest).toLowerCase().trim()
       : '';
+    const declaredAlgorithm = String(parsed?.checksum?.algorithm || 'SHA-256').trim();
     let checksumStatus = 'unsigned';
     let computedDigest = '';
 
     if (declaredDigest) {
       const canonical = JSON.stringify(stripChecksumEnvelope(parsed));
-      computedDigest = (await computeSha256Hex(canonical)).toLowerCase();
+      const useFnv = /fnv/i.test(declaredAlgorithm);
+      computedDigest = (
+        await computeSha256Hex(canonical, { forceFnvFallback: useFnv })
+      ).toLowerCase();
       checksumStatus = computedDigest === declaredDigest ? 'valid' : 'tampered';
     } else {
       const dbTemp = migrateDatabase(parsed);
@@ -180,19 +350,55 @@ export async function inspectBackupPayload(rawText, options = {}) {
     const integrity = validateReferentialIntegrity(db);
     const snapshot = hydrateAppSnapshotFromDatabase(db);
     const counts = countDatabaseEntities(db, snapshot);
+    const envelopeFormat =
+      typeof parsed?.format === 'string' && parsed.format.trim() ? parsed.format.trim() : null;
+    const isLegacyWithoutHeader = !declaredDigest && envelopeFormat !== BACKUP_ENVELOPE_FORMAT;
+    const legacyWarning =
+      checksumStatus === 'unsigned' ? LEGACY_NO_CHECKSUM_WARNING : '';
+    const exportedAt =
+      parsed?.exportedAt ||
+      parsed?.checksum?.signedAt ||
+      parsed?.metadata?.exportedAt ||
+      null;
+    const appVersion = parsed?.appVersion || null;
+    const deviceId = parsed?.deviceId || null;
+    const countsByDomain =
+      parsed?.countsByDomain && typeof parsed.countsByDomain === 'object'
+        ? parsed.countsByDomain
+        : computeCountsByDomain(snapshot?.items || []);
+
+    let mergePreview = null;
+    if (options?.currentWorkspace && typeof options.currentWorkspace === 'object') {
+      mergePreview = smartMergeBackup({
+        currentWorkspace: options.currentWorkspace,
+        incomingSnapshot: snapshot,
+        deletedIds: Array.isArray(options.deletedIds) ? options.deletedIds : [],
+        forceReplace: false,
+        includeDeleted: Boolean(options.includeDeleted),
+      }).summary;
+    }
 
     return {
       ok: true,
       format: backupContainerFormat,
+      envelopeFormat,
+      exportedAt,
+      appVersion,
+      deviceId,
+      countsByDomain,
       encrypted: wasEncrypted,
       compressionStats,
       checksumStatus,
+      checksumAlgorithm: declaredDigest ? declaredAlgorithm : null,
+      isLegacyWithoutHeader,
+      legacyWarning,
       declaredDigest,
       computedDigest,
       integrity,
       counts,
       detectedSchemaVersion: parsed?.schemaVersion || '1.0',
       schemaVersion: db.schemaVersion,
+      mergePreview,
       db,
       snapshot,
     };
@@ -227,83 +433,291 @@ function mergeQuotesArrays(currentQuotes = [], incomingQuotes = []) {
   return Array.from(map.values());
 }
 
-export function mergeSnapshots(currentSnapshot = {}, incomingSnapshot = {}) {
-  const currentItems = Array.isArray(currentSnapshot.items)
-    ? currentSnapshot.items
-    : [];
-  const incomingItems = Array.isArray(incomingSnapshot.items)
-    ? incomingSnapshot.items
-    : [];
+function collectBackupWorkIdentityKeys(work = {}) {
+  const keys = [];
+  if (work?.id) keys.push(`id:${String(work.id).trim().toLowerCase()}`);
+  if (work?.cloudId) keys.push(`id:${String(work.cloudId).trim().toLowerCase()}`);
 
-  const itemMap = new Map();
-  for (const item of currentItems) {
-    if (item?.id) itemMap.set(String(item.id), item);
+  const domain = inferDomainFromWork(work);
+  const ids = work?.ids && typeof work.ids === 'object' ? work.ids : {};
+  const extPairs = [
+    ['tmdb', work.tmdbId || ids.tmdb],
+    ['imdb', work.imdbId || ids.imdb],
+    ['anilist', work.anilistId || ids.anilist],
+    ['mal', work.malId || ids.mal],
+    ['tvmaze', work.tvmazeId || ids.tvmaze],
+    ['igdb', work.igdbId || ids.igdb],
+    ['rawg', work.rawgId || ids.rawg],
+    ['steam', work.steamAppId || ids.steam],
+    ['isbn', work.isbnOrDoi || work.isbn || ids.isbn],
+    ['googleBooks', ids.googleBooks],
+    ['ol', ids.ol],
+    ['musicbrainz', work.musicBrainzId || ids.musicbrainz],
+    ['manual', ids.source === 'manual' ? ids.id || work.id : ids.linkedFromManualId],
+  ];
+  for (const [k, v] of extPairs) {
+    const clean = String(v || '').trim().toLowerCase();
+    if (clean) keys.push(`ext:${domain}:${k}:${clean}`);
   }
+  return keys;
+}
 
-  for (const incoming of incomingItems) {
-    if (!incoming?.id) continue;
-    const key = String(incoming.id);
-    const existing = itemMap.get(key);
-    if (!existing) {
-      itemMap.set(key, incoming);
-    } else {
-      const existingUpdated = Date.parse(existing.updatedAt || existing.createdAt || '') || 0;
-      const incomingUpdated = Date.parse(incoming.updatedAt || incoming.createdAt || '') || 0;
-      const primary = incomingUpdated > existingUpdated ? incoming : existing;
-      const secondary = primary === incoming ? existing : incoming;
-      itemMap.set(key, {
-        ...secondary,
-        ...primary,
-        quotes: mergeQuotesArrays(existing.quotes, incoming.quotes),
+function resolveWorkUpdatedMs(work = {}) {
+  if (!work || typeof work !== 'object' || work._missingUpdatedAt === true) return null;
+  const raw = work.updated_at ?? work.updatedAt ?? null;
+  if (!raw) return null;
+  const parsed = Date.parse(String(raw));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function cleanInternalMergeFlags(work = {}) {
+  if (!work || typeof work !== 'object') return work;
+  const copy = { ...work };
+  delete copy._missingUpdatedAt;
+  return copy;
+}
+
+/**
+ * Mesclagem inteligente anti-sobrescrita (OMNIPRISM v2.6.0 — Fase 4).
+ *
+ * Regras:
+ * - Compara cada obra por `id` ou `external_ids` usando `updated_at` e nível de preenchimento.
+ * - Registro mais antigo no arquivo NUNCA sobrescreve um mais recente no aparelho (exceto com `forceReplace: true`).
+ * - Obra sem `updated_at` no arquivo conta como mais antiga que obra local com `updated_at`, sem apagar nada.
+ * - Se a obra consta em `deletedIds` local, sinaliza em `summary.deletedConflicts` antes de reimportar.
+ */
+export function smartMergeBackup({
+  currentWorkspace = {},
+  incomingSnapshot = {},
+  deletedIds = [],
+  forceReplace = false,
+  includeDeleted = false,
+} = {}) {
+  const currentItems = Array.isArray(currentWorkspace.items) ? currentWorkspace.items : [];
+  const incomingItems = Array.isArray(incomingSnapshot.items) ? incomingSnapshot.items : [];
+  const deletedSet = new Set(
+    (Array.isArray(deletedIds) ? deletedIds : [])
+      .map((id) => String(id || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  let newWorks = 0;
+  let updatedWorks = 0;
+  let protectedConflicts = 0;
+  let unchangedWorks = 0;
+  const conflicts = [];
+  const deletedConflicts = [];
+
+  let mergedItems = [];
+
+  if (forceReplace) {
+    mergedItems = incomingItems
+      .filter((w) => w && w.id)
+      .map((w) => {
+        const clean = cleanInternalMergeFlags(w);
+        const ts = clean.updatedAt || clean.updated_at || new Date().toISOString();
+        return { ...clean, updatedAt: ts, updated_at: ts };
       });
+    newWorks = mergedItems.length;
+  } else {
+    const itemMap = new Map();
+    const keyIndex = new Map();
+
+    const registerLocal = (canonicalId, work) => {
+      itemMap.set(canonicalId, work);
+      for (const k of collectBackupWorkIdentityKeys(work)) {
+        keyIndex.set(k, canonicalId);
+      }
+    };
+
+    for (const item of currentItems) {
+      if (!item?.id) continue;
+      registerLocal(String(item.id), item);
     }
+
+    for (const incoming of incomingItems) {
+      if (!incoming || (!incoming.id && !incoming.title)) continue;
+      const incomingId = String(incoming.id || createUuid());
+      const incomingIdLow = incomingId.toLowerCase();
+      const incomingCloudLow = incoming.cloudId
+        ? String(incoming.cloudId).trim().toLowerCase()
+        : '';
+
+      const isDeletedLocally =
+        deletedSet.has(incomingIdLow) || (incomingCloudLow && deletedSet.has(incomingCloudLow));
+
+      const incomingKeys = collectBackupWorkIdentityKeys({ ...incoming, id: incomingId });
+      let matchedCanonicalId = null;
+      for (const k of incomingKeys) {
+        if (keyIndex.has(k)) {
+          matchedCanonicalId = keyIndex.get(k);
+          break;
+        }
+      }
+
+      if (isDeletedLocally && !matchedCanonicalId) {
+        deletedConflicts.push({
+          id: incomingId,
+          title: incoming.title || 'Obra sem título',
+          domain: inferDomainFromWork(incoming),
+          reason: 'deleted_locally',
+        });
+        if (!includeDeleted) {
+          continue;
+        }
+      }
+
+      if (!matchedCanonicalId) {
+        const cleanInc = cleanInternalMergeFlags({ ...incoming, id: incomingId });
+        const ts = cleanInc.updatedAt || cleanInc.updated_at || new Date().toISOString();
+        registerLocal(incomingId, { ...cleanInc, updatedAt: ts, updated_at: ts });
+        newWorks += 1;
+        continue;
+      }
+
+      const existing = itemMap.get(matchedCanonicalId);
+      const localMs = resolveWorkUpdatedMs(existing);
+      const incomingMs = resolveWorkUpdatedMs(incoming);
+      const localScore = computeWorkCompletenessScore(existing);
+      const incomingScore = computeWorkCompletenessScore(incoming);
+
+      // Decide vencedor com proteção anti-sobrescrita rigorosa
+      let incomingWins = false;
+      let conflictReason = null;
+
+      if (incomingMs === null && localMs !== null) {
+        // Obra sem updated_at no arquivo conta como mais antiga que obra local com updated_at
+        incomingWins = false;
+        conflictReason = 'missing_incoming_timestamp';
+      } else if (incomingMs !== null && localMs !== null) {
+        if (incomingMs > localMs) {
+          incomingWins = true;
+        } else if (incomingMs < localMs) {
+          incomingWins = false;
+          conflictReason = 'older_incoming_timestamp';
+        } else if (incomingScore > localScore) {
+          incomingWins = true;
+        } else if (localScore > incomingScore) {
+          incomingWins = false;
+          conflictReason = 'local_more_complete';
+        } else {
+          unchangedWorks += 1;
+          continue;
+        }
+      } else if (incomingMs !== null && localMs === null) {
+        if (incomingScore >= localScore) {
+          incomingWins = true;
+        } else {
+          incomingWins = false;
+          conflictReason = 'local_more_complete';
+        }
+      } else {
+        // Ambos sem timestamp -> preserva o registro mais completo
+        if (incomingScore > localScore) {
+          incomingWins = true;
+        } else if (localScore > incomingScore) {
+          incomingWins = false;
+          conflictReason = 'local_more_complete';
+        } else {
+          unchangedWorks += 1;
+          continue;
+        }
+      }
+
+      if (incomingWins) {
+        const cleanInc = cleanInternalMergeFlags(incoming);
+        const nextTs =
+          cleanInc.updatedAt ||
+          cleanInc.updated_at ||
+          existing.updatedAt ||
+          new Date().toISOString();
+        const preservedManualCover =
+          cleanInc.manualCoverDataUrl || existing.manualCoverDataUrl || undefined;
+        const winner = {
+          ...existing,
+          ...cleanInc,
+          id: existing.id,
+          ...(preservedManualCover ? { manualCoverDataUrl: preservedManualCover } : {}),
+          coverUrl: cleanInc.coverUrl || existing.coverUrl || preservedManualCover || null,
+          quotes: mergeQuotesArrays(existing.quotes, cleanInc.quotes),
+          updatedAt: nextTs,
+          updated_at: nextTs,
+        };
+        registerLocal(matchedCanonicalId, winner);
+        updatedWorks += 1;
+      } else {
+        // Protegido: mantém dados locais mais recentes/completos intactos (apenas unifica citações)
+        const protectedLocal = {
+          ...existing,
+          quotes: mergeQuotesArrays(existing.quotes, incoming.quotes),
+        };
+        registerLocal(matchedCanonicalId, protectedLocal);
+        protectedConflicts += 1;
+        conflicts.push({
+          id: existing.id,
+          title: existing.title || incoming.title || 'Obra sem título',
+          reason: conflictReason || 'older_incoming_timestamp',
+          localUpdatedAt: existing.updatedAt || existing.updated_at || null,
+          incomingUpdatedAt: incoming._missingUpdatedAt
+            ? null
+            : incoming.updatedAt || incoming.updated_at || null,
+        });
+      }
+    }
+
+    mergedItems = Array.from(itemMap.values());
   }
 
   const mergeById = (currList = [], incList = []) => {
+    if (forceReplace) return Array.isArray(incList) ? incList : [];
     const map = new Map();
-    for (const row of currList) {
+    for (const row of Array.isArray(currList) ? currList : []) {
       if (row?.id) map.set(String(row.id), row);
     }
-    for (const row of incList) {
+    for (const row of Array.isArray(incList) ? incList : []) {
       if (!row?.id) continue;
       const key = String(row.id);
       const existing = map.get(key);
       if (!existing) {
         map.set(key, row);
       } else {
-        const incT = Date.parse(row.updatedAt || row.createdAt || '') || 0;
-        const curT = Date.parse(existing.updatedAt || existing.createdAt || '') || 0;
+        const incT = Date.parse(row.updatedAt || row.updated_at || row.createdAt || '') || 0;
+        const curT = Date.parse(existing.updatedAt || existing.updated_at || existing.createdAt || '') || 0;
         if (incT > curT) map.set(key, row);
       }
     }
     return Array.from(map.values());
   };
 
-  const currProfile = currentSnapshot.profile || {};
+  const currProfile = currentWorkspace.profile || {};
   const incProfile = incomingSnapshot.profile || {};
-  const mergedProfile = {
-    ...incProfile,
-    ...currProfile,
-    displayName: currProfile.displayName || incProfile.displayName,
-    bio: currProfile.bio || incProfile.bio || '',
-    avatarUrl: currProfile.avatarUrl || incProfile.avatarUrl || '',
-    coverUrl: currProfile.coverUrl || incProfile.coverUrl || '',
-  };
+  const mergedProfile = forceReplace
+    ? incomingSnapshot.profile
+    : {
+        ...incProfile,
+        ...currProfile,
+        displayName: currProfile.displayName || incProfile.displayName,
+        bio: currProfile.bio || incProfile.bio || '',
+        avatarUrl: currProfile.avatarUrl || incProfile.avatarUrl || '',
+        coverUrl: currProfile.coverUrl || incProfile.coverUrl || '',
+      };
 
-  const currStreak = currentSnapshot.streak || { count: 0, lastDate: null, history: [], dailyLogs: {} };
+  const currStreak = currentWorkspace.streak || { count: 0, lastDate: null, history: [], dailyLogs: {} };
   const incStreak = incomingSnapshot.streak || { count: 0, lastDate: null, history: [], dailyLogs: {} };
-  const mergedHistory = Array.from(
-    new Set([...(currStreak.history || []), ...(incStreak.history || [])])
-  ).sort();
-  const mergedDailyLogs = {
-    ...(incStreak.dailyLogs && typeof incStreak.dailyLogs === 'object' ? incStreak.dailyLogs : {}),
-    ...(currStreak.dailyLogs && typeof currStreak.dailyLogs === 'object' ? currStreak.dailyLogs : {}),
-  };
-  const latestLastDate =
-    [currStreak.lastDate, incStreak.lastDate].filter(Boolean).sort().pop() || null;
+  const mergedStreak = forceReplace
+    ? incStreak
+    : {
+        count: Math.max(Number(currStreak.count) || 0, Number(incStreak.count) || 0),
+        lastDate: [currStreak.lastDate, incStreak.lastDate].filter(Boolean).sort().pop() || null,
+        history: Array.from(new Set([...(currStreak.history || []), ...(incStreak.history || [])])).sort(),
+        dailyLogs: {
+          ...(incStreak.dailyLogs && typeof incStreak.dailyLogs === 'object' ? incStreak.dailyLogs : {}),
+          ...(currStreak.dailyLogs && typeof currStreak.dailyLogs === 'object' ? currStreak.dailyLogs : {}),
+        },
+      };
 
-  const currEvalList = Array.isArray(currentSnapshot.episodeEvaluations)
-    ? currentSnapshot.episodeEvaluations
+  const currEvalList = Array.isArray(currentWorkspace.episodeEvaluations)
+    ? currentWorkspace.episodeEvaluations
     : [];
   const incEvalList = Array.isArray(incomingSnapshot.episodeEvaluations)
     ? incomingSnapshot.episodeEvaluations
@@ -311,7 +725,7 @@ export function mergeSnapshots(currentSnapshot = {}, incomingSnapshot = {}) {
   const evalMap = new Map();
   const buildEvalKey = (r) =>
     r?.evalKey || (r?.workId ? `${r.workId}:s${Number(r.season) || 1}:e${Number(r.episode) || 1}` : null);
-  for (const row of currEvalList) {
+  for (const row of forceReplace ? [] : currEvalList) {
     const k = buildEvalKey(row);
     if (k) evalMap.set(k, row);
   }
@@ -329,25 +743,45 @@ export function mergeSnapshots(currentSnapshot = {}, incomingSnapshot = {}) {
   }
 
   return {
-    items: Array.from(itemMap.values()),
-    posts: mergeById(currentSnapshot.posts, incomingSnapshot.posts),
-    readingSessions: mergeById(
-      currentSnapshot.readingSessions,
-      incomingSnapshot.readingSessions
-    ),
-    collections: normalizeCollectionList([
-      ...(currentSnapshot.collections || []),
-      ...(incomingSnapshot.collections || []),
-    ]),
-    episodeEvaluations: Array.from(evalMap.values()),
-    profile: mergedProfile,
-    streak: {
-      count: Math.max(Number(currStreak.count) || 0, Number(incStreak.count) || 0),
-      lastDate: latestLastDate,
-      history: mergedHistory,
-      dailyLogs: mergedDailyLogs,
+    workspace: {
+      items: mergedItems,
+      posts: mergeById(currentWorkspace.posts, incomingSnapshot.posts),
+      readingSessions: mergeById(
+        currentWorkspace.readingSessions,
+        incomingSnapshot.readingSessions
+      ),
+      collections: forceReplace
+        ? normalizeCollectionList(incomingSnapshot.collections || [])
+        : normalizeCollectionList([
+            ...(currentWorkspace.collections || []),
+            ...(incomingSnapshot.collections || []),
+          ]),
+      episodeEvaluations: Array.from(evalMap.values()),
+      profile: mergedProfile,
+      streak: mergedStreak,
+    },
+    summary: {
+      newWorks,
+      updatedWorks,
+      protectedConflicts,
+      unchangedWorks,
+      deletedConflictsCount: deletedConflicts.length,
+      deletedConflicts,
+      conflicts,
+      forceReplace: Boolean(forceReplace),
+      label: `${newWorks} obras novas · ${updatedWorks} atualizações mais recentes · ${protectedConflicts} conflitos protegidos`,
     },
   };
+}
+
+export function mergeSnapshots(currentSnapshot = {}, incomingSnapshot = {}, options = {}) {
+  return smartMergeBackup({
+    currentWorkspace: currentSnapshot,
+    incomingSnapshot,
+    deletedIds: options?.deletedIds || [],
+    forceReplace: false,
+    includeDeleted: Boolean(options?.includeDeleted),
+  }).workspace;
 }
 
 function openSnapshotDb() {
@@ -1066,6 +1500,8 @@ export async function restoreSnapshotWithSafety({
   currentWorkspace = {},
   incomingSnapshot = null,
   mode = 'merge',
+  deletedIds = [],
+  includeDeleted = false,
   saveSnapshotFn = saveAutoSnapshot,
 } = {}) {
   if (!incomingSnapshot || typeof incomingSnapshot !== 'object') {
@@ -1076,8 +1512,8 @@ export async function restoreSnapshotWithSafety({
   const snapshotReason = cleanMode === 'replace' ? 'pre-restore-replace' : 'pre-restore-merge';
   const snapshotLabel =
     cleanMode === 'replace'
-      ? 'Pré-restauração automática (Substituir)'
-      : 'Pré-restauração automática (Mesclar)';
+      ? 'Pré-restauração automática (Forçar substituição total)'
+      : 'Pré-restauração automática (Mesclar inteligente)';
 
   let snapshotSaved = false;
   let snapshotId = null;
@@ -1095,24 +1531,14 @@ export async function restoreSnapshotWithSafety({
     }
   }
 
-  const baseResult =
-    cleanMode === 'replace'
-      ? {
-          items: Array.isArray(incomingSnapshot.items) ? incomingSnapshot.items : [],
-          posts: Array.isArray(incomingSnapshot.posts) ? incomingSnapshot.posts : [],
-          readingSessions: Array.isArray(incomingSnapshot.readingSessions)
-            ? incomingSnapshot.readingSessions
-            : [],
-          collections: Array.isArray(incomingSnapshot.collections)
-            ? incomingSnapshot.collections
-            : [],
-          episodeEvaluations: Array.isArray(incomingSnapshot.episodeEvaluations)
-            ? incomingSnapshot.episodeEvaluations
-            : [],
-          profile: incomingSnapshot.profile,
-          streak: incomingSnapshot.streak || { count: 0, lastDate: null, history: [] },
-        }
-      : mergeSnapshots(currentWorkspace, incomingSnapshot);
+  const mergeOutcome = smartMergeBackup({
+    currentWorkspace,
+    incomingSnapshot,
+    deletedIds,
+    forceReplace: cleanMode === 'replace',
+    includeDeleted,
+  });
+  const baseResult = mergeOutcome.workspace;
 
   const migratedItems = (baseResult.items || []).map((entry) => migrateWorkItem(entry));
   const migratedProfile = baseResult.profile
@@ -1125,6 +1551,7 @@ export async function restoreSnapshotWithSafety({
     snapshotSaved,
     snapshotId,
     snapshotReason,
+    summary: mergeOutcome.summary,
     workspace: {
       ...baseResult,
       items: migratedItems,

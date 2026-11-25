@@ -16,14 +16,16 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAllEpisodeEvaluations } from '../api/cacheDb';
 import { useToast } from '../context/ToastContext';
 import {
   exportSignedCcodexPayload,
   inspectBackupPayload,
   listAutoSnapshots,
+  readLocalDeletedIds,
   saveAutoSnapshot,
+  smartMergeBackup,
 } from '../services/backupEngine';
 import {
   buildCodiceDatabase,
@@ -81,7 +83,14 @@ export function BackupRestoreModal({
   const [preview, setPreview] = useState(null);
   const [parseError, setParseError] = useState('');
   const [restoreMode, setRestoreMode] = useState('merge');
+  const [includeDeleted, setIncludeDeleted] = useState(false);
+  const [forceReplaceConfirmStep, setForceReplaceConfirmStep] = useState(0);
   const [confirmSnapshotId, setConfirmSnapshotId] = useState(null);
+
+  const localDeletedIds = useMemo(
+    () => (isOpen ? readLocalDeletedIds() : []),
+    [isOpen]
+  );
 
   const [googleClientId, setGoogleClientId] = useState(() =>
     getConfiguredGoogleClientId()
@@ -111,6 +120,8 @@ export function BackupRestoreModal({
       setImportPassword('');
       setConfirmSnapshotId(null);
       setRestoreMode('merge');
+      setIncludeDeleted(false);
+      setForceReplaceConfirmStep(0);
       setDriveStatus('');
       return;
     }
@@ -172,9 +183,14 @@ export function BackupRestoreModal({
   const runInspection = async (rawText, passwordToUse = '') => {
     setInspectingFile(true);
     setParseError('');
+    setForceReplaceConfirmStep(0);
+    setIncludeDeleted(false);
     try {
       const result = await inspectBackupPayload(rawText, {
         password: passwordToUse,
+        currentWorkspace,
+        deletedIds: localDeletedIds,
+        includeDeleted: false,
       });
       if (!result.ok) {
         if (result.requiresPassword) {
@@ -196,6 +212,16 @@ export function BackupRestoreModal({
       setInspectingFile(false);
     }
   };
+
+  const liveMergeSummary = preview?.snapshot
+    ? smartMergeBackup({
+        currentWorkspace,
+        incomingSnapshot: preview.snapshot,
+        deletedIds: localDeletedIds,
+        forceReplace: false,
+        includeDeleted,
+      }).summary
+    : null;
 
   const handleSelectBackupFile = async (e) => {
     const file = e.target.files?.[0];
@@ -312,9 +338,18 @@ export function BackupRestoreModal({
 
   const handleRestoreFromPreview = async () => {
     if (!preview?.snapshot) return;
-    await onApplyRestore?.(preview.snapshot, restoreMode, preview);
+    if (restoreMode === 'replace' && forceReplaceConfirmStep < 1) {
+      setForceReplaceConfirmStep(1);
+      return;
+    }
+    await onApplyRestore?.(preview.snapshot, restoreMode, preview, {
+      includeDeleted,
+    });
     setPreview(null);
     setSelectedFileName('');
+    setForceReplaceConfirmStep(0);
+    setIncludeDeleted(false);
+    await refreshSnapshots();
     onClose?.();
   };
 
@@ -550,27 +585,33 @@ export function BackupRestoreModal({
             )}
 
             {preview && (
-              <div className="space-y-3 rounded-[6px] border border-line bg-app p-3.5">
-                {/* Status SHA-256 & Container */}
+              <div
+                className="space-y-3 rounded-[6px] border border-line bg-app p-3.5"
+                data-testid="backup-preimport-summary"
+              >
+                {/* Status Checksum, Data do Backup & Container (exibido SOMENTE após descriptografar .ccodex) */}
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2.5">
                   <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
                     {preview.checksumStatus === 'valid' ? (
                       <>
                         <CheckCircle2 className="h-4 w-4 text-accent" strokeWidth={1.5} />
-                        <span className="text-accent">Assinatura SHA-256 verificada</span>
+                        <span className="text-accent">
+                          Checksum {preview.checksumAlgorithm || 'SHA-256'} válido
+                        </span>
                       </>
                     ) : preview.checksumStatus === 'tampered' ? (
                       <>
                         <AlertTriangle className="h-4 w-4 text-rose-400" strokeWidth={1.5} />
                         <span className="text-rose-400">
-                          Checksum SHA-256 divergente (arquivo alterado)
+                          Checksum inválido (arquivo alterado)
                         </span>
                       </>
                     ) : (
                       <>
                         <ShieldAlert className="h-4 w-4 text-muted" strokeWidth={1.5} />
                         <span className="text-ink">
-                          Backup legado ({preview.detectedSchemaVersion}) · migração v4 automática
+                          {preview.legacyWarning ||
+                            'Backup sem checksum (versão antiga) — proteção temporal aplicada'}
                         </span>
                       </>
                     )}
@@ -583,10 +624,49 @@ export function BackupRestoreModal({
                       </span>
                     )}
                   </div>
-                  <span className="font-mono text-[10px] text-muted">
-                    {preview.computedDigest.slice(0, 12)}...
-                  </span>
+                  <div className="flex items-center gap-2 text-[10px] text-muted">
+                    <span>
+                      Data:{' '}
+                      <strong className="font-semibold text-ink">
+                        {preview.exportedAt ? formatSnapshotTime(preview.exportedAt) : 'Não informada'}
+                      </strong>
+                    </span>
+                    <span className="font-mono">{preview.computedDigest.slice(0, 12)}...</span>
+                  </div>
                 </div>
+
+                {/* Resumo pré-importação anti-sobrescrita */}
+                {liveMergeSummary && (
+                  <div className="space-y-2 rounded-[6px] border border-line bg-card p-3">
+                    <p
+                      className="text-xs font-semibold tabular-nums text-ink"
+                      data-testid="backup-smart-merge-counts"
+                    >
+                      {liveMergeSummary.newWorks} obras novas ·{' '}
+                      {liveMergeSummary.updatedWorks} atualizações mais recentes ·{' '}
+                      {liveMergeSummary.protectedConflicts} conflitos protegidos
+                    </p>
+                    <p className="text-[11px] text-muted">
+                      Registros mais antigos no arquivo nunca sobrescrevem alterações mais recentes no aparelho. Um auto-snapshot será salvo antes de importar.
+                    </p>
+                    {liveMergeSummary.deletedConflictsCount > 0 && (
+                      <div className="space-y-1.5 rounded-[4px] border border-line bg-app p-2.5 text-[11px] text-ink">
+                        <p className="font-semibold">
+                          Aviso: {liveMergeSummary.deletedConflictsCount} obra(s) apagada(s) localmente constam neste backup.
+                        </p>
+                        <label className="flex min-h-[44px] cursor-pointer items-center gap-2 text-muted">
+                          <input
+                            type="checkbox"
+                            checked={includeDeleted}
+                            onChange={(e) => setIncludeDeleted(e.target.checked)}
+                            className="h-4 w-4 accent-accent"
+                          />
+                          <span>Reimportar também as obras apagadas localmente</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Contagem Prévia */}
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
@@ -615,11 +695,14 @@ export function BackupRestoreModal({
                   </p>
                 )}
 
-                {/* Estratégia: Mesclar vs Substituir */}
+                {/* Estratégia: Mesclar inteligente vs Forçar substituição total (confirmação dupla) */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setRestoreMode('merge')}
+                    onClick={() => {
+                      setRestoreMode('merge');
+                      setForceReplaceConfirmStep(0);
+                    }}
                     className={`flex min-h-[44px] items-start gap-2.5 rounded-[4px] border p-2.5 text-left transition-colors ${
                       restoreMode === 'merge'
                         ? 'border-accent bg-accent/10 text-ink'
@@ -634,17 +717,20 @@ export function BackupRestoreModal({
                     />
                     <div>
                       <p className="text-xs font-semibold text-ink">
-                        Mesclar sem sobrescrever
+                        Mesclar inteligente (anti-sobrescrita)
                       </p>
                       <p className="text-[10px] text-muted">
-                        Une obras, citações e sessões mantendo os registros mais recentes.
+                        Protege registros mais recentes no aparelho usando updated_at e preenchimento.
                       </p>
                     </div>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => setRestoreMode('replace')}
+                    onClick={() => {
+                      setRestoreMode('replace');
+                      setForceReplaceConfirmStep(0);
+                    }}
                     className={`flex min-h-[44px] items-start gap-2.5 rounded-[4px] border p-2.5 text-left transition-colors ${
                       restoreMode === 'replace'
                         ? 'border-accent bg-accent/10 text-ink'
@@ -659,14 +745,25 @@ export function BackupRestoreModal({
                     />
                     <div>
                       <p className="text-xs font-semibold text-ink">
-                        Substituir tudo
+                        Forçar substituição total
                       </p>
                       <p className="text-[10px] text-muted">
-                        Salva um auto-snapshot antes e restaura exatamente este backup.
+                        Exige confirmação dupla. Salva auto-snapshot antes e substitui todo o catálogo.
                       </p>
                     </div>
                   </button>
                 </div>
+
+                {restoreMode === 'replace' && forceReplaceConfirmStep >= 1 && (
+                  <div className="rounded-[6px] border border-line bg-card p-3 text-xs text-ink space-y-1">
+                    <p className="font-semibold">
+                      Confirmação dupla (2/2): substituir totalmente o catálogo local?
+                    </p>
+                    <p className="text-[11px] text-muted">
+                      Esta ação pode sobrescrever alterações mais recentes no aparelho. Um auto-snapshot automático será salvo antes para permitir restaurar depois.
+                    </p>
+                  </div>
+                )}
 
                 <div className="flex items-center justify-end gap-2">
                   <button
@@ -674,21 +771,24 @@ export function BackupRestoreModal({
                     onClick={() => {
                       setPreview(null);
                       setSelectedFileName('');
+                      setForceReplaceConfirmStep(0);
                     }}
-                    className="min-h-[40px] rounded-[4px] border border-line px-3 text-xs text-muted hover:text-ink"
+                    className="min-h-[44px] rounded-[4px] border border-line px-3 text-xs text-muted hover:text-ink"
                   >
                     Cancelar
                   </button>
                   <button
                     type="button"
                     onClick={handleRestoreFromPreview}
-                    className="inline-flex min-h-[40px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent px-4 text-xs font-semibold text-accent-ink hover:opacity-90"
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-accent bg-accent px-4 text-xs font-semibold text-accent-ink hover:opacity-90"
                   >
                     <Database className="h-3.5 w-3.5" strokeWidth={1.5} />
                     <span>
                       {restoreMode === 'merge'
                         ? 'Confirmar Mesclagem'
-                        : 'Substituir Catálogo'}
+                        : forceReplaceConfirmStep >= 1
+                          ? 'Confirmar substituição total (2/2)'
+                          : 'Forçar substituição total (1/2)'}
                     </span>
                   </button>
                 </div>
@@ -772,9 +872,9 @@ export function BackupRestoreModal({
                             <button
                               type="button"
                               onClick={() => setConfirmSnapshotId(snap.id)}
-                              className="inline-flex min-h-[38px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-2.5 text-xs font-medium text-ink transition-colors hover:border-accent"
+                              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[4px] border border-line bg-card px-2.5 text-xs font-medium text-ink transition-colors hover:border-accent"
                             >
-                              <span>Restaurar</span>
+                              <span>Restaurar snapshot</span>
                             </button>
                           ) : (
                             <div className="flex items-center gap-1">

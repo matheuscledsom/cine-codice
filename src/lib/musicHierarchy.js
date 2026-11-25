@@ -119,7 +119,12 @@ export function buildReleaseTracksView(work = {}) {
  */
 export function buildMusicHierarchy(
   items = [],
-  { scope = 'all', mbStudioAlbumsByArtist = {}, excludedAlbumKeysByArtist = {} } = {}
+  {
+    scope = 'all',
+    mbStudioAlbumsByArtist = {},
+    excludedAlbumKeysByArtist = {},
+    manualTotalsByArtist = {},
+  } = {}
 ) {
   const musicWorks = (Array.isArray(items) ? items : []).filter(
     (w) => w && w.inBacklog !== false && inferDomainFromWork(w) === 'music'
@@ -204,10 +209,13 @@ export function buildMusicHierarchy(
 
     const mbInfo = mbStudioAlbumsByArtist?.[group.id] || null;
     const excludedKeys = excludedAlbumKeysByArtist?.[group.id] || [];
+    const manualMeta = manualTotalsByArtist?.[group.id] || null;
     const completeness = computeDiscographyCompleteness({
       catalogReleases: group.allReleases,
       mbStudioAlbums: mbInfo,
       excludedKeys,
+      manualTotal: manualMeta?.mainSeriesTotal ?? null,
+      manualUniverseTotal: manualMeta?.universeTotal ?? null,
     });
 
     artists.push({

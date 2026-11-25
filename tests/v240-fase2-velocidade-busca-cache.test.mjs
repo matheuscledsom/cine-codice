@@ -26,6 +26,7 @@ import {
   searchMusicWorks,
   searchReadingWorks,
 } from '../src/services/multiDomainSearchService.js';
+import { resetProviderRegistryForTests } from '../src/services/providerRegistry.js';
 
 const ROOT_DIR = process.cwd();
 
@@ -155,19 +156,49 @@ describe('OMNIPRISM v2.4.0 — Fase 2.1: Busca Progressiva, Debounce 250ms, Abor
     assert.equal(partialTimeline[0].partial, true);
     assert.ok(partialTimeline[0].elapsed < 150, `Streaming parcial deve chegar antes do MusicBrainz lento (${partialTimeline[0].elapsed}ms)`);
 
-    // Games: CheapShark rápido (10ms) vs Wikidata lenta (180ms)
+    // Games: Steam Store rápido (10ms) vs Wikidata lenta (180ms)
+    resetProviderRegistryForTests();
     const gamePartials = [];
     const gStart = Date.now();
     const mockGameFetch = (url, opts) => {
-      if (url.includes('cheapshark.com')) {
+      if (url.includes('/api/igdb')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ notConfigured: true }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        );
+      }
+      if (url.includes('/api/steam') && url.includes('term=')) {
         return makeDelayedJsonResponse(
-          [{ gameID: '42', external: 'Hollow Knight', steamAppID: '367520', thumb: 'https://cdn.example/hk.jpg' }],
+          {
+            items: [
+              {
+                id: 367520,
+                name: 'Hollow Knight',
+                tiny_image: 'https://cdn.example/hk.jpg',
+              },
+            ],
+          },
           10,
           opts?.signal
         );
       }
-      if (url.includes('freetogame.com')) {
-        return makeDelayedJsonResponse([], 15, opts?.signal);
+      if (url.includes('/api/steam') && url.includes('appid=367520')) {
+        return makeDelayedJsonResponse(
+          {
+            367520: {
+              success: true,
+              data: {
+                type: 'game',
+                developers: ['Team Cherry'],
+                release_date: { date: '24 Feb, 2017' },
+              },
+            },
+          },
+          5,
+          opts?.signal
+        );
       }
       return makeDelayedJsonResponse({ search: [] }, 180, opts?.signal);
     };

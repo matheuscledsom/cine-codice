@@ -23,6 +23,7 @@ import {
   getWorkTypeLabel,
   inferDomainFromWork,
   normalizeDomainId,
+  normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
 import {
@@ -919,7 +920,7 @@ export function computeDomainStatsMetrics(items = [], domainId = 'cinema') {
 
     const edMap = new Map();
     for (const w of domainItems) {
-      const ed = String(w.editionType || '').trim() || GAME_EDITION_TYPES[0];
+      const ed = normalizeGameEditionType(w.editionType);
       const prev = edMap.get(ed) || { label: ed, count: 0, hours: 0 };
       edMap.set(ed, {
         label: ed,

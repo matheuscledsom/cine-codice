@@ -1,10 +1,11 @@
-import { ChevronDown, ChevronRight, Disc3, EyeOff, Music, RefreshCw, User } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Disc3, EyeOff, Music, Plus, RefreshCw, User } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { getManualEntityMeta, saveManualEntityMeta } from '../lib/entityHelpers.js';
 import {
   MUSIC_SCOPE_OPTIONS,
   buildMusicHierarchy,
 } from '../lib/musicHierarchy.js';
-import { fetchMusicBrainzArtistStudioAlbums } from '../services/musicDepthService.js';
+import { fetchMusicBrainzArtistFullDiscography } from '../services/musicDepthService.js';
 import { formatTrackDuration } from '../services/multiDomainSearchService.js';
 import { computeAlbumTrackRatingPatch } from '../utils/catalogDraftHelpers.js';
 import { CoverArt } from './CoverArt';
@@ -37,6 +38,7 @@ export function MusicDiscographyView({
   items = [],
   onSelectItem,
   onUpdateItem,
+  onQuickCatalogItem,
   onOpenEntity,
   onShowToast,
 }) {
@@ -46,6 +48,28 @@ export function MusicDiscographyView({
   const [mbAlbumsByArtist, setMbAlbumsByArtist] = useState({});
   const [loadingMbByArtist, setLoadingMbByArtist] = useState({});
   const [excludedByArtist, setExcludedByArtist] = useState(() => readExcludedMap());
+  const [editingArtistTotalId, setEditingArtistTotalId] = useState(null);
+  const [artistMainTotalInput, setArtistMainTotalInput] = useState('');
+  const [artistUniTotalInput, setArtistUniTotalInput] = useState('');
+  const [manualMetaVersion, setManualMetaVersion] = useState(0);
+
+  const manualTotalsByArtist = useMemo(() => {
+    const out = {};
+    const musicItems = (Array.isArray(items) ? items : []).filter(Boolean);
+    for (const w of musicItems) {
+      const name = String(w.creator || w.artist || w.director || '').trim();
+      if (!name) continue;
+      const key = name
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ');
+      if (out[key]) continue;
+      const meta = getManualEntityMeta({ name, domain: 'music', role: 'artist' });
+      if (meta) out[key] = meta;
+    }
+    return out;
+  }, [items, manualMetaVersion]);
 
   const hierarchy = useMemo(
     () =>
@@ -53,8 +77,9 @@ export function MusicDiscographyView({
         scope: activeScope,
         mbStudioAlbumsByArtist: mbAlbumsByArtist,
         excludedAlbumKeysByArtist: excludedByArtist,
+        manualTotalsByArtist,
       }),
-    [items, activeScope, mbAlbumsByArtist, excludedByArtist]
+    [items, activeScope, mbAlbumsByArtist, excludedByArtist, manualTotalsByArtist]
   );
 
   const toggleArtist = (artistId) => {
@@ -75,17 +100,34 @@ export function MusicDiscographyView({
     if (!artist?.id || loadingMbByArtist[artist.id]) return;
     setLoadingMbByArtist((prev) => ({ ...prev, [artist.id]: true }));
     try {
-      const res = await fetchMusicBrainzArtistStudioAlbums(artist.artistName);
+      const res = await fetchMusicBrainzArtistFullDiscography(artist.artistName);
       setMbAlbumsByArtist((prev) => ({ ...prev, [artist.id]: res }));
       if (!res.available) {
         onShowToast?.({
-          message: `MusicBrainz indisponível para "${artist.artistName}". Exibindo apenas a contagem local.`,
+          message: `MusicBrainz indisponível para "${artist.artistName}". Você pode definir o total manualmente.`,
           type: 'info',
         });
       }
     } finally {
       setLoadingMbByArtist((prev) => ({ ...prev, [artist.id]: false }));
     }
+  };
+
+  const handleSaveArtistManualTotal = (event, artist) => {
+    event?.preventDefault();
+    const mainParsed = Number(String(artistMainTotalInput || '').trim());
+    const uniParsed = Number(String(artistUniTotalInput || '').trim());
+    saveManualEntityMeta(
+      { name: artist.artistName, domain: 'music', role: 'artist' },
+      {
+        mainSeriesTotal:
+          Number.isFinite(mainParsed) && mainParsed > 0 ? Math.round(mainParsed) : null,
+        universeTotal:
+          Number.isFinite(uniParsed) && uniParsed > 0 ? Math.round(uniParsed) : null,
+      }
+    );
+    setManualMetaVersion((v) => v + 1);
+    setEditingArtistTotalId(null);
   };
 
   const handleToggleExcludeAlbum = (artistId, excludeKey, linkedWork = null) => {
@@ -201,9 +243,13 @@ export function MusicDiscographyView({
                         {artist.artistName}
                       </h3>
                       <p className="text-xs tabular-nums text-muted">
-                        {comp?.mode === 'musicbrainz'
-                          ? `${comp.label} (${comp.pct}%) · ${comp.sourceLabel}`
-                          : comp?.label || `${artist.activeProgress.completed} concluído(s) · ${artist.activeProgress.total} no catálogo`}
+                        {comp?.mainlineLabel
+                          ? `${comp.mainlineLabel}${
+                              comp.universeLabel && comp.entityCompleteness && !comp.entityCompleteness.universe.isOpenEnded
+                                ? ` · ${comp.universeLabel}`
+                                : ''
+                            }${comp.sourceLabel ? ` · ${comp.sourceLabel}` : ''}`
+                          : comp?.label || `${artist.activeProgress.completed} concluídos · total aberto`}
                       </p>
                       {derivedDiscog?.average !== null && (
                         <p className="text-[11px] tabular-nums text-subtle">
@@ -214,7 +260,7 @@ export function MusicDiscographyView({
                     </div>
                   </button>
 
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
                       onClick={() => handleLoadMusicBrainzCompleteness(artist)}
@@ -227,6 +273,27 @@ export function MusicDiscographyView({
                         strokeWidth={1.5}
                       />
                       <span>Completude (MusicBrainz)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (editingArtistTotalId === artist.id) {
+                          setEditingArtistTotalId(null);
+                          return;
+                        }
+                        const meta = manualTotalsByArtist[artist.id];
+                        setArtistMainTotalInput(
+                          meta?.mainSeriesTotal ? String(meta.mainSeriesTotal) : ''
+                        );
+                        setArtistUniTotalInput(
+                          meta?.universeTotal ? String(meta.universeTotal) : ''
+                        );
+                        setEditingArtistTotalId(artist.id);
+                      }}
+                      className="inline-flex min-h-[44px] shrink-0 items-center rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-ink hover:border-muted"
+                    >
+                      <span>{editingArtistTotalId === artist.id ? 'Fechar total' : 'Definir total'}</span>
                     </button>
 
                     {onOpenEntity && (
@@ -248,8 +315,64 @@ export function MusicDiscographyView({
                   </div>
                 </div>
 
-                {/* Barra de completude exibida SOMENTE quando o total vem do MusicBrainz */}
-                {comp?.mode === 'musicbrainz' && typeof comp.pct === 'number' && (
+                {editingArtistTotalId === artist.id && (
+                  <form
+                    onSubmit={(e) => handleSaveArtistManualTotal(e, artist)}
+                    className="grid grid-cols-1 gap-2 rounded-[6px] border border-line bg-app p-3 sm:grid-cols-2"
+                  >
+                    <label className="block space-y-1">
+                      <span className="text-[11px] text-muted">Total Álbuns de Estúdio</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="999"
+                        value={artistMainTotalInput}
+                        onChange={(e) => setArtistMainTotalInput(e.target.value)}
+                        placeholder="Ex.: 17"
+                        className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                    <label className="block space-y-1">
+                      <span className="text-[11px] text-muted">Total Discografia Completa (opcional)</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="9999"
+                        value={artistUniTotalInput}
+                        onChange={(e) => setArtistUniTotalInput(e.target.value)}
+                        placeholder="Ex.: 30"
+                        className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                    <div className="flex items-center gap-2 sm:col-span-2">
+                      <button
+                        type="submit"
+                        className="inline-flex min-h-[44px] items-center gap-1 rounded-[6px] bg-accent px-3 text-xs font-semibold text-accent-ink"
+                      >
+                        <Check className="h-3.5 w-3.5" strokeWidth={1.5} />
+                        <span>Salvar total</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          saveManualEntityMeta(
+                            { name: artist.artistName, domain: 'music', role: 'artist' },
+                            { mainSeriesTotal: null, universeTotal: null }
+                          );
+                          setManualMetaVersion((v) => v + 1);
+                          setEditingArtistTotalId(null);
+                        }}
+                        className="inline-flex min-h-[44px] items-center rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-muted hover:text-ink"
+                      >
+                        Total aberto
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Barra de completude exibida SOMENTE quando o total é conhecido (MusicBrainz ou definido pelo usuário) */}
+                {(comp?.mode === 'musicbrainz' || comp?.mode === 'manual-total') &&
+                  typeof comp.pct === 'number' && (
                   <div className="space-y-2" data-testid="musicbrainz-completeness-panel">
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
                       <div
@@ -278,28 +401,61 @@ export function MusicDiscographyView({
                                     ? 'Ouvido no catálogo'
                                     : mbItem.inCatalog
                                       ? 'No catálogo'
-                                      : 'Não catalogado · MusicBrainz'}
+                                      : 'Faltante · MusicBrainz'}
                               </p>
                             </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleToggleExcludeAlbum(
-                                  artist.id,
-                                  mbItem.excludeKey,
-                                  mbItem.work
-                                )
-                              }
-                              aria-pressed={mbItem.excluded}
-                              className={`inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[6px] border px-2.5 text-[11px] font-medium ${
-                                mbItem.excluded
-                                  ? 'border-accent bg-accent/15 text-ink'
-                                  : 'border-line bg-card text-muted hover:text-ink'
-                              }`}
-                            >
-                              <EyeOff className="h-3.5 w-3.5" strokeWidth={1.5} />
-                              <span>{mbItem.excluded ? 'Voltar a contar' : 'Não conta'}</span>
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                              {!mbItem.inCatalog && !mbItem.excluded && onQuickCatalogItem && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onQuickCatalogItem({
+                                      domain: 'music',
+                                      workType: 'album',
+                                      title: mbItem.title,
+                                      creator: artist.artistName,
+                                      artist: artist.artistName,
+                                      director: artist.artistName,
+                                      releaseYear: mbItem.releaseYear || null,
+                                      releaseFormat: 'Álbum de Estúdio',
+                                      musicBrainzId: mbItem.mbid || undefined,
+                                      ids: mbItem.mbid ? { musicbrainz: mbItem.mbid } : {},
+                                      status: 'queued',
+                                      isWishlist: true,
+                                      inBacklog: true,
+                                      sourceBadge: 'MusicBrainz',
+                                    });
+                                    onShowToast?.({
+                                      message: `"${mbItem.title}" adicionado à fila para ouvir.`,
+                                      type: 'success',
+                                    });
+                                  }}
+                                  className="inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[6px] border border-accent bg-accent/15 px-2.5 text-[11px] font-semibold text-accent hover:bg-accent hover:text-accent-ink"
+                                >
+                                  <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                                  <span>+ Catalogar</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleToggleExcludeAlbum(
+                                    artist.id,
+                                    mbItem.excludeKey,
+                                    mbItem.work
+                                  )
+                                }
+                                aria-pressed={mbItem.excluded}
+                                className={`inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-[6px] border px-2.5 text-[11px] font-medium ${
+                                  mbItem.excluded
+                                    ? 'border-accent bg-accent/15 text-ink'
+                                    : 'border-line bg-card text-muted hover:text-ink'
+                                }`}
+                              >
+                                <EyeOff className="h-3.5 w-3.5" strokeWidth={1.5} />
+                                <span>{mbItem.excluded ? 'Voltar a contar' : 'Não conta'}</span>
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>

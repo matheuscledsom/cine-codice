@@ -3,8 +3,10 @@ import {
   inferDomainFromWork,
   normalizeCinemaStatus,
   normalizeDomainId,
+  normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
+import { normalizeAchievementsModel } from '../lib/gameDepth.js';
 import { normalizeExternalRatings } from '../lib/ratings.js';
 import { getAllRelationalWorks, putRelationalWorks } from './relationalDb.js';
 import { getSupabaseClient, getSupabaseConfig } from './supabaseClient.js';
@@ -134,10 +136,14 @@ function buildExternalIdsPayload(work = {}) {
     'googleBooks',
     'isbn',
     'doi',
-    'cheapshark',
+    'igdb',
+    'igdbParent',
+    'igdbVersionParent',
+    'rawg',
     'steam',
-    'freetogame',
     'wikidata',
+    'cheapshark',
+    'freetogame',
     'itunes',
     'itunesTrack',
     'itunesArtist',
@@ -145,12 +151,34 @@ function buildExternalIdsPayload(work = {}) {
     'musicbrainzRecording',
     'musicbrainzArtist',
   ]) {
-    const val = rawIds[key] ?? work[key] ?? null;
+    const val =
+      rawIds[key] ??
+      work[key] ??
+      (key === 'igdb' ? work.igdbId : key === 'rawg' ? work.rawgId : null) ??
+      null;
     if (val !== null && val !== undefined && val !== '') {
       payload[key] = val;
     }
   }
+  if (rawIds.source === 'manual' || work.isManual) {
+    payload.source = 'manual';
+    if (rawIds.id || work.id) {
+      payload.id = String(rawIds.id || work.id);
+    }
+  }
+  if (rawIds.linkedFromManualId) {
+    payload.linkedFromManualId = String(rawIds.linkedFromManualId);
+  }
+  if (valIsbnOrDoi(work)) {
+    const cleanIsbn = String(work.isbnOrDoi || work.isbn || '').trim();
+    if (cleanIsbn && !payload.isbn) payload.isbn = cleanIsbn;
+  }
+
   return payload;
+}
+
+function valIsbnOrDoi(work) {
+  return Boolean(work?.isbnOrDoi || work?.isbn);
 }
 
 export function filterWorksByDomain(works = [], domain = 'cinema') {
@@ -191,7 +219,13 @@ export function mapLocalWorkToCatalogRow(
   const platforms = Array.isArray(work.platforms)
     ? Array.from(new Set(work.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
     : [];
-  const editionType = String(work.editionType || (domain === 'games' ? 'Original' : '')).trim();
+  const originalPlatforms = Array.isArray(work.originalPlatforms)
+    ? Array.from(new Set(work.originalPlatforms.map((p) => String(p || '').trim()).filter(Boolean)))
+    : [];
+  const editionType =
+    domain === 'games'
+      ? normalizeGameEditionType(work.editionType)
+      : String(work.editionType || '').trim();
   const gameRating11 =
     work.gameRating11 !== null &&
     work.gameRating11 !== undefined &&
@@ -281,6 +315,11 @@ export function mapLocalWorkToCatalogRow(
       chapters_read: chaptersRead,
       isbn_or_doi: isbnOrDoi,
       book_format: bookFormat,
+      seriesVolume: String(work.seriesVolume || '').trim(),
+      workUrl: /^https?:\/\//i.test(String(work.workUrl || '').trim())
+        ? String(work.workUrl).trim()
+        : '',
+      isManual: Boolean(work.isManual || work.ids?.source === 'manual'),
       // Games
       platform,
       platforms,
@@ -330,7 +369,14 @@ export function mapLocalWorkToCatalogRow(
       excludeFromDiscography: Boolean(
         work.excludeFromDiscography ?? work.progress_data?.excludeFromDiscography
       ),
+      igdbId: Number(work.igdbId || work.ids?.igdb) > 0 ? Math.floor(Number(work.igdbId || work.ids?.igdb)) : null,
       rawgId: Number(work.rawgId || work.ids?.rawg) > 0 ? Math.floor(Number(work.rawgId || work.ids?.rawg)) : null,
+      originalPlatforms,
+      campaignTimeHours:
+        Number(work.campaignTimeHours) > 0
+          ? Math.round(Number(work.campaignTimeHours) * 10) / 10
+          : null,
+      campaignTimeSource: String(work.campaignTimeSource || '').trim() || null,
       rawgPlaytimeHours:
         Number(work.rawgPlaytimeHours) > 0
           ? Math.round(Number(work.rawgPlaytimeHours) * 10) / 10
@@ -345,6 +391,9 @@ export function mapLocalWorkToCatalogRow(
           ? Math.round(Number(work.completion100Hours) * 10) / 10
           : null,
       completion100Source: String(work.completion100Source || '').trim() || null,
+      parentGame: work.parentGame ?? null,
+      versionParent: work.versionParent ?? null,
+      achievements: normalizeAchievementsModel(work.achievements),
       franchiseName: String(work.franchiseName || '').trim(),
       belongsToCollection: work.belongsToCollection || null,
       franchiseRelations: Array.isArray(work.franchiseRelations)
@@ -435,7 +484,13 @@ export function mapCatalogRowToLocalWork(row = {}) {
     platforms: Array.isArray(pd.platforms)
       ? Array.from(new Set(pd.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
       : [],
-    editionType: String(pd.edition_type ?? pd.editionType ?? (domain === 'games' ? 'Original' : '')).trim(),
+    originalPlatforms: Array.isArray(pd.originalPlatforms)
+      ? Array.from(new Set(pd.originalPlatforms.map((p) => String(p || '').trim()).filter(Boolean)))
+      : [],
+    editionType:
+      domain === 'games'
+        ? normalizeGameEditionType(pd.edition_type ?? pd.editionType)
+        : String(pd.edition_type ?? pd.editionType ?? '').trim(),
     gameRating11:
       (pd.game_rating_11 ?? pd.gameRating11) !== null &&
       (pd.game_rating_11 ?? pd.gameRating11) !== undefined &&
@@ -540,7 +595,13 @@ export function mapCatalogRowToLocalWork(row = {}) {
     releasedEpisodesSource: String(pd.releasedEpisodesSource || '').trim() || null,
     releasedEpisodesFetchedAt: pd.releasedEpisodesFetchedAt || null,
     excludeFromDiscography: Boolean(pd.excludeFromDiscography),
+    igdbId: Number(pd.igdbId || extIds.igdb) > 0 ? Math.floor(Number(pd.igdbId || extIds.igdb)) : null,
     rawgId: Number(pd.rawgId || extIds.rawg) > 0 ? Math.floor(Number(pd.rawgId || extIds.rawg)) : null,
+    campaignTimeHours:
+      Number(pd.campaignTimeHours) > 0
+        ? Math.round(Number(pd.campaignTimeHours) * 10) / 10
+        : null,
+    campaignTimeSource: String(pd.campaignTimeSource || '').trim() || null,
     rawgPlaytimeHours:
       Number(pd.rawgPlaytimeHours) > 0
         ? Math.round(Number(pd.rawgPlaytimeHours) * 10) / 10
@@ -555,9 +616,15 @@ export function mapCatalogRowToLocalWork(row = {}) {
         ? Math.round(Number(pd.completion100Hours) * 10) / 10
         : null,
     completion100Source: String(pd.completion100Source || '').trim() || null,
+    parentGame: pd.parentGame ?? null,
+    versionParent: pd.versionParent ?? null,
+    achievements: normalizeAchievementsModel(pd.achievements),
     verdict: pd.verdict ?? null,
     externalRatings,
     ids: {
+      ...(extIds.source ? { source: extIds.source } : {}),
+      ...(extIds.id ? { id: extIds.id } : {}),
+      ...(extIds.linkedFromManualId ? { linkedFromManualId: extIds.linkedFromManualId } : {}),
       ...(extIds.tmdb ? { tmdb: extIds.tmdb } : {}),
       ...(extIds.imdb ? { imdb: extIds.imdb } : {}),
       ...(extIds.tvmaze ? { tvmaze: extIds.tvmaze } : {}),
@@ -565,6 +632,10 @@ export function mapCatalogRowToLocalWork(row = {}) {
       ...(extIds.mal ? { mal: extIds.mal } : {}),
       ...(extIds.openlibrary ? { openlibrary: extIds.openlibrary } : {}),
       ...(extIds.googleBooks ? { googleBooks: extIds.googleBooks } : {}),
+      ...(extIds.igdb ? { igdb: extIds.igdb } : {}),
+      ...(extIds.igdbParent ? { igdbParent: extIds.igdbParent } : {}),
+      ...(extIds.igdbVersionParent ? { igdbVersionParent: extIds.igdbVersionParent } : {}),
+      ...(extIds.rawg ? { rawg: extIds.rawg } : {}),
       ...(extIds.cheapshark ? { cheapshark: extIds.cheapshark } : {}),
       ...(extIds.steam ? { steam: extIds.steam } : {}),
       ...(extIds.freetogame ? { freetogame: extIds.freetogame } : {}),
@@ -576,6 +647,11 @@ export function mapCatalogRowToLocalWork(row = {}) {
       ...(extIds.musicbrainzRecording ? { musicbrainzRecording: extIds.musicbrainzRecording } : {}),
       ...(extIds.musicbrainzArtist ? { musicbrainzArtist: extIds.musicbrainzArtist } : {}),
     },
+    isManual: Boolean(extIds.source === 'manual' || pd.isManual),
+    seriesVolume: String(pd.seriesVolume || '').trim(),
+    workUrl: /^https?:\/\//i.test(String(pd.workUrl || '').trim())
+      ? String(pd.workUrl).trim()
+      : '',
     tmdbId: extIds.tmdb ?? null,
     imdbId: extIds.imdb ? String(extIds.imdb) : '',
     tvmazeId: extIds.tvmaze ?? null,
@@ -625,7 +701,7 @@ function getWorkIdentityKeys(work = {}) {
   const type = normalizeWorkTypeForDomain(work.workType || work.mediaType, domain);
   if (cleanTitle) {
     if (domain === 'games') {
-      const edition = String(work.editionType || 'Original').trim().toLowerCase();
+      const edition = normalizeGameEditionType(work.editionType).toLowerCase();
       const yr = Number(work.releaseYear) > 1970 ? `:${Math.round(Number(work.releaseYear))}` : '';
       keys.push(`title:${domain}:${type}:${edition}::${cleanTitle}${yr}`);
     } else {
@@ -691,6 +767,12 @@ export function mergeWorksByUpdatedAt(
         ...remote,
         id: existing.id || remote.id,
         cloudId: remote.cloudId || remoteCloudKey,
+        ...(existing.manualCoverDataUrl
+          ? {
+              manualCoverDataUrl: existing.manualCoverDataUrl,
+              coverUrl: remote.coverUrl || existing.manualCoverDataUrl,
+            }
+          : {}),
       };
       registerWork(matchedKey, winner);
       pulledCount += 1;

@@ -18,8 +18,14 @@ import {
   domainConfig,
   inferDomainFromWork,
   normalizeCinemaStatus,
+  normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig';
+import { normalizeAchievementsModel } from '../lib/gameDepth';
+import {
+  isCompressedManualCoverDataUrl,
+  saveManualCoverInIdb,
+} from '../lib/manualCovers';
 import { initialItems } from '../data/mockData';
 import { applyCanonicalIdsToWork } from '../lib/idBridge';
 import { classifyLegacyRatingSource } from '../lib/migrations';
@@ -31,8 +37,11 @@ import {
 import { normalizeExternalRatings } from '../lib/ratings';
 import { safeSetLocalStorageJson } from '../lib/storagePersistence';
 import {
+  clearLocalDeletedIds,
   exportSignedBackupPayload,
   loadEmergencyMirror,
+  readLocalDeletedIds,
+  recordLocalDeletedIds,
   recordBackupExportTimestamp,
 } from '../services/backupEngine';
 import {
@@ -65,6 +74,7 @@ import {
 
 const STORAGE_KEY = domainConfig.storageKey;
 const SESSIONS_STORAGE_KEY = 'cine_codice_watch_sessions_v1';
+export { clearLocalDeletedIds, readLocalDeletedIds, recordLocalDeletedIds };
 
 function normalizeRating(value) {
   if (value === '' || value === null || value === undefined) return null;
@@ -172,6 +182,17 @@ function normalizeItem(rawItem, spectatorDna = null) {
 
   const totalPages = normalizeNullablePositiveInt(rawItem.totalPages);
   const pagesRead = normalizeNonNegativeInt(rawItem.pagesRead);
+  const manualCoverDataUrl = isCompressedManualCoverDataUrl(rawItem.manualCoverDataUrl)
+    ? rawItem.manualCoverDataUrl
+    : isCompressedManualCoverDataUrl(rawItem.coverUrl) &&
+        (rawItem.isManual || rawItem.ids?.source === 'manual')
+      ? rawItem.coverUrl
+      : '';
+  const cleanWorkUrl = /^https?:\/\//i.test(
+    String(rawItem.workUrl ?? rawItem.progress_data?.workUrl ?? '').trim()
+  )
+    ? String(rawItem.workUrl ?? rawItem.progress_data?.workUrl).trim()
+    : '';
 
   const normalized = {
     ...rawItem,
@@ -184,6 +205,13 @@ function normalizeItem(rawItem, spectatorDna = null) {
     originalTitle: String(rawItem.originalTitle || '').trim(),
     creator: String(rawItem.creator || rawItem.director || rawItem.studio || rawItem.author || '').trim(),
     director: String(rawItem.director || rawItem.creator || rawItem.studio || rawItem.author || '').trim(),
+    coverUrl: rawItem.coverUrl || manualCoverDataUrl || null,
+    manualCoverDataUrl,
+    isManual: Boolean(
+      rawItem.isManual || rawItem.ids?.source === 'manual' || rawItem.progress_data?.isManual
+    ),
+    seriesVolume: String(rawItem.seriesVolume ?? rawItem.progress_data?.seriesVolume ?? '').trim(),
+    workUrl: cleanWorkUrl,
     // Leitura & Acadêmico
     pagesRead,
     totalPages,
@@ -195,7 +223,19 @@ function normalizeItem(rawItem, spectatorDna = null) {
     platforms: Array.isArray(rawItem.platforms)
       ? Array.from(new Set(rawItem.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
       : [],
-    editionType: String(rawItem.editionType || (domain === 'games' ? 'Original' : '')).trim(),
+    originalPlatforms: Array.isArray(rawItem.originalPlatforms ?? rawItem.progress_data?.originalPlatforms)
+      ? Array.from(
+          new Set(
+            (rawItem.originalPlatforms ?? rawItem.progress_data?.originalPlatforms)
+              .map((p) => String(p || '').trim())
+              .filter(Boolean)
+          )
+        )
+      : [],
+    editionType:
+      domain === 'games'
+        ? normalizeGameEditionType(rawItem.editionType)
+        : String(rawItem.editionType || '').trim(),
     gameRating11,
     masterpieceJustification: String(rawItem.masterpieceJustification || '').trim().slice(0, 400),
     hoursPlayed: Math.max(0, Number(rawItem.hoursPlayed) || 0),
@@ -323,10 +363,21 @@ function normalizeItem(rawItem, spectatorDna = null) {
     excludeFromDiscography: Boolean(
       rawItem.excludeFromDiscography ?? rawItem.progress_data?.excludeFromDiscography
     ),
-    rawgId:
-      Number(rawItem.rawgId ?? rawItem.progress_data?.rawgId) > 0
-        ? Math.floor(Number(rawItem.rawgId ?? rawItem.progress_data?.rawgId))
+    igdbId:
+      Number(rawItem.igdbId ?? rawItem.ids?.igdb ?? rawItem.progress_data?.igdbId) > 0
+        ? Math.floor(Number(rawItem.igdbId ?? rawItem.ids?.igdb ?? rawItem.progress_data?.igdbId))
         : null,
+    rawgId:
+      Number(rawItem.rawgId ?? rawItem.ids?.rawg ?? rawItem.progress_data?.rawgId) > 0
+        ? Math.floor(Number(rawItem.rawgId ?? rawItem.ids?.rawg ?? rawItem.progress_data?.rawgId))
+        : null,
+    campaignTimeHours:
+      Number(rawItem.campaignTimeHours ?? rawItem.progress_data?.campaignTimeHours) > 0
+        ? Math.round(Number(rawItem.campaignTimeHours ?? rawItem.progress_data?.campaignTimeHours) * 10) / 10
+        : null,
+    campaignTimeSource:
+      String(rawItem.campaignTimeSource ?? rawItem.progress_data?.campaignTimeSource ?? '').trim() ||
+      null,
     rawgPlaytimeHours:
       Number(rawItem.rawgPlaytimeHours ?? rawItem.progress_data?.rawgPlaytimeHours) > 0
         ? Math.round(Number(rawItem.rawgPlaytimeHours ?? rawItem.progress_data?.rawgPlaytimeHours) * 10) / 10
@@ -345,6 +396,11 @@ function normalizeItem(rawItem, spectatorDna = null) {
     completion100Source:
       String(rawItem.completion100Source ?? rawItem.progress_data?.completion100Source ?? '').trim() ||
       null,
+    parentGame: rawItem.parentGame ?? rawItem.progress_data?.parentGame ?? null,
+    versionParent: rawItem.versionParent ?? rawItem.progress_data?.versionParent ?? null,
+    achievements: normalizeAchievementsModel(
+      rawItem.achievements ?? rawItem.progress_data?.achievements
+    ),
     externalRatings,
     reviewCriteria,
     verdict: rating !== null ? (rawItem.verdict || getVerdictForScore(rating)) : (rawItem.verdict || null),
@@ -366,7 +422,8 @@ function normalizeItem(rawItem, spectatorDna = null) {
     isWishlist: Boolean(rawItem.isWishlist),
     inBacklog: rawItem.inBacklog !== undefined ? Boolean(rawItem.inBacklog) : true,
     createdAt: rawItem.createdAt || nowIso,
-    updatedAt: rawItem.updatedAt || nowIso,
+    updatedAt: rawItem.updatedAt || rawItem.updated_at || nowIso,
+    updated_at: rawItem.updatedAt || rawItem.updated_at || nowIso,
   };
 
   normalized.progress = calculateWorkProgress(normalized);
@@ -671,6 +728,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
             inBacklog: true,
             createdAt: nowIso,
             updatedAt: nowIso,
+            updated_at: nowIso,
           },
           spectatorDna
         ),
@@ -679,7 +737,11 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
         spectatorDna
       );
 
+      clearLocalDeletedIds([prepared.id]);
       const normalizedTitle = prepared.title.trim().toLowerCase();
+      if (prepared.manualCoverDataUrl) {
+        saveManualCoverInIdb(prepared.id, prepared.manualCoverDataUrl).catch(() => {});
+      }
 
       setItems((prev) => {
         const existingIndex = prev.findIndex(
@@ -697,6 +759,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
                   id: item.id,
                   createdAt: item.createdAt,
                   updatedAt: nowIso,
+                  updated_at: nowIso,
                   inBacklog: true,
                 }
               : item
@@ -722,6 +785,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
                 inBacklog: true,
                 createdAt: rec.createdAt || nowIso,
                 updatedAt: nowIso,
+                updated_at: nowIso,
               },
               spectatorDna
             ),
@@ -753,14 +817,17 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
           const cleanUpdates = { ...updates };
           delete cleanUpdates.preserveUpdatedAt;
 
+          const nextUpdatedAt = preserveUpdatedAt
+            ? item.updatedAt || item.updated_at || nowIso
+            : cleanUpdates.updatedAt || cleanUpdates.updated_at || nowIso;
+
           let merged = normalizeItem(
             {
               ...item,
               ...cleanUpdates,
               status: nextStatus,
-              updatedAt: preserveUpdatedAt
-                ? item.updatedAt || nowIso
-                : cleanUpdates.updatedAt || nowIso,
+              updatedAt: nextUpdatedAt,
+              updated_at: nextUpdatedAt,
             },
             spectatorDna
           );
@@ -785,6 +852,10 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
             merged.verdict = getVerdictForScore(score);
           }
 
+          if (cleanUpdates.manualCoverDataUrl && merged.manualCoverDataUrl) {
+            saveManualCoverInIdb(merged.id, merged.manualCoverDataUrl).catch(() => {});
+          }
+
           if (statusChanged) {
             merged = applyStatusTransitionDefaults(merged, nextStatus, item, spectatorDna);
           } else if (nextStatus === 'completed') {
@@ -802,6 +873,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
   );
 
   const removeItem = useCallback((id) => {
+    recordLocalDeletedIds([id]);
     setItems((prev) => prev.filter((item) => item.id !== id));
     setReadingSessions((prev) => prev.filter((session) => session.workId !== id));
   }, []);
@@ -814,7 +886,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
       setItems((prev) =>
         prev.map((item) => {
           if (!idSet.has(String(item.id))) return item;
-          let merged = { ...item, updatedAt: nowIso };
+          let merged = { ...item, updatedAt: nowIso, updated_at: nowIso };
           if (updates.status) {
             const st = normalizeCinemaStatus(updates.status);
             merged.status = st;
@@ -843,6 +915,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
       if (idSet.size === 0) return { removedItems: [], removedSessions: [] };
       const removedItems = items.filter((item) => idSet.has(String(item.id)));
       const removedSessions = readingSessions.filter((s) => idSet.has(String(s.workId)));
+      recordLocalDeletedIds(Array.from(idSet));
       setItems((prev) => prev.filter((item) => !idSet.has(String(item.id))));
       setReadingSessions((prev) => prev.filter((s) => !idSet.has(String(s.workId))));
       return { removedItems, removedSessions };
@@ -852,12 +925,16 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
 
   const restoreRemovedItems = useCallback(
     ({ removedItems = [], removedSessions = [] } = {}) => {
+      const nowIso = new Date().toISOString();
       if (Array.isArray(removedItems) && removedItems.length > 0) {
+        clearLocalDeletedIds(removedItems.map((i) => i?.id).filter(Boolean));
         setItems((prev) => {
           const existingIds = new Set(prev.map((i) => String(i.id)));
           const restored = removedItems
             .filter((i) => !existingIds.has(String(i.id)))
-            .map((i) => normalizeItem(i, spectatorDna));
+            .map((i) =>
+              normalizeItem({ ...i, updatedAt: nowIso, updated_at: nowIso }, spectatorDna)
+            );
           return [...restored, ...prev];
         });
       }
@@ -905,6 +982,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
   const deleteCollection = useCallback((collectionId) => {
     if (!collectionId) return;
     const targetId = String(collectionId);
+    const nowIso = new Date().toISOString();
     setCollections((prev) => prev.filter((col) => col.id !== targetId));
     setItems((prev) =>
       prev.map((item) =>
@@ -912,7 +990,8 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
           ? {
               ...item,
               collectionIds: item.collectionIds.filter((id) => id !== targetId),
-              updatedAt: new Date().toISOString(),
+              updatedAt: nowIso,
+              updated_at: nowIso,
             }
           : item
       )
@@ -921,13 +1000,15 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
 
   const toggleWorkCollection = useCallback((workId, collectionId) => {
     if (!workId || !collectionId) return;
+    const nowIso = new Date().toISOString();
     setItems((prev) =>
       prev.map((item) =>
         item.id === workId
           ? {
               ...item,
               collectionIds: toggleWorkInCollection(item.collectionIds, collectionId),
-              updatedAt: new Date().toISOString(),
+              updatedAt: nowIso,
+              updated_at: nowIso,
             }
           : item
       )
@@ -954,8 +1035,18 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
       notes: String(session.notes || ''),
       createdAt: nowIso,
       updatedAt: nowIso,
+      updated_at: nowIso,
     };
     setReadingSessions((prev) => [record, ...prev].slice(0, 500));
+    if (record.workId) {
+      setItems((prev) =>
+        prev.map((item) =>
+          String(item.id) === record.workId
+            ? { ...item, updatedAt: nowIso, updated_at: nowIso }
+            : item
+        )
+      );
+    }
     return record;
   }, []);
 

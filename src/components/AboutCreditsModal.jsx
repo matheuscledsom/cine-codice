@@ -1,6 +1,7 @@
 import { Database, ShieldCheck, Tv, X } from 'lucide-react';
 import { useEffect } from 'react';
 import { CODICE_RELEASE } from '../config/versioning';
+import { GAME_ATTRIBUTION_LINKS } from '../lib/gameDepth';
 import { OmniLogo } from './OmniLogo';
 
 const DATA_SOURCES = [
@@ -38,6 +39,38 @@ const DATA_SOURCES = [
     name: 'Wikidata · IMDb Suggestion · Internet Archive',
     role: 'Metadados abertos bilíngues, sugestões rápidas de busca e domínio público',
     policy: 'Fontes abertas gratuitas sem chave nem conta.',
+    optionalKey: false,
+  },
+  {
+    name: 'IGDB (Twitch / Internet Game Database)',
+    role: 'Catálogo principal de Games: capas, desenvolvedoras, plataformas reais, edições e tempo para zerar',
+    policy: 'Dados fornecidos por IGDB.com via autenticação Twitch no servidor.',
+    url: GAME_ATTRIBUTION_LINKS.igdb.url,
+    urlLabel: GAME_ATTRIBUTION_LINKS.igdb.label,
+    optionalKey: true,
+  },
+  {
+    name: 'RAWG Video Games Database',
+    role: 'Catálogo secundário de Games, edições relacionadas e tempo médio de campanha dos jogadores',
+    policy: 'Crédito e link direto obrigatórios para RAWG nas telas de Games.',
+    url: GAME_ATTRIBUTION_LINKS.rawg.url,
+    urlLabel: GAME_ATTRIBUTION_LINKS.rawg.label,
+    optionalKey: true,
+  },
+  {
+    name: 'Steam Store',
+    role: 'Catálogo terciário de Games no PC (capas verticais de biblioteca, desenvolvedoras e lançamento)',
+    policy: 'Consulta via proxy sem exposição de credenciais no navegador.',
+    url: GAME_ATTRIBUTION_LINKS.steam.url,
+    urlLabel: GAME_ATTRIBUTION_LINKS.steam.label,
+    optionalKey: false,
+  },
+  {
+    name: 'BrasilAPI ISBN (CBL · Mercado Editorial · Open Library · Google Books)',
+    role: 'Consulta de livros brasileiros por ISBN-10 e ISBN-13 sem chave e sem exposição no cliente',
+    policy: 'API pública brasileira via proxy local com cache.',
+    url: 'https://brasilapi.com.br',
+    urlLabel: 'BrasilAPI',
     optionalKey: false,
   },
 ];
@@ -126,6 +159,19 @@ export function AboutCreditsModal({ isOpen, onClose }) {
                   <p className="mt-1 text-[11px] text-muted">{source.role}</p>
                   <p className="mt-1.5 text-[11px] font-medium text-ink">
                     {source.policy}
+                    {source.url && (
+                      <>
+                        {' '}
+                        <a
+                          href={source.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-accent underline underline-offset-2 hover:opacity-85"
+                        >
+                          {source.urlLabel || source.url}
+                        </a>
+                      </>
+                    )}
                   </p>
                 </div>
               ))}

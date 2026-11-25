@@ -3,6 +3,7 @@ import {
   inferDomainFromWork,
   normalizeCinemaStatus,
   normalizeDomainId,
+  normalizeGameEditionType,
 } from '../config/domainConfig.js';
 import {
   advanceEpisodeProgress,
@@ -30,6 +31,8 @@ export function getQuickSheetLeanFields(domain = 'cinema', status = '') {
     return {
       statusSelected: false,
       askGamePlatform: false,
+      askGameEdition: false,
+      askGameCompletionType: false,
       askCurrentPage: false,
       askStarRating: false,
       showConfirmFullPages: false,
@@ -42,6 +45,8 @@ export function getQuickSheetLeanFields(domain = 'cinema', status = '') {
   return {
     statusSelected: true,
     askGamePlatform: cleanDomain === 'games' && isInProgress,
+    askGameEdition: cleanDomain === 'games' && isInProgress,
+    askGameCompletionType: cleanDomain === 'games' && isCompleted,
     askCurrentPage: cleanDomain === 'reading' && isInProgress,
     askStarRating: isCompleted,
     showConfirmFullPages: cleanDomain === 'reading' && isCompleted,
@@ -49,6 +54,10 @@ export function getQuickSheetLeanFields(domain = 'cinema', status = '') {
 }
 
 const DUPLICATE_EXTERNAL_ID_KEYS = [
+  'igdb',
+  'rawg',
+  'steam',
+  'wikidata',
   'tmdb',
   'imdb',
   'anilist',
@@ -58,10 +67,6 @@ const DUPLICATE_EXTERNAL_ID_KEYS = [
   'googleBooks',
   'isbn',
   'doi',
-  'steam',
-  'cheapshark',
-  'freetogame',
-  'wikidata',
   'itunes',
   'itunesTrack',
   'musicbrainz',
@@ -102,6 +107,9 @@ function collectExternalIdsForDup(work = {}) {
     if (val !== null && val !== undefined && String(val).trim() !== '') {
       map[key] = String(val).trim().toLowerCase();
     }
+  }
+  if (ids.source === 'manual' && ids.id) {
+    map.manual = String(ids.id).trim().toLowerCase();
   }
   return map;
 }
@@ -147,7 +155,10 @@ export function findCatalogDuplicate(candidate = {}, existingItems = []) {
   const candTitle = normalizeDupTitle(candidate.title);
   if (!candTitle) return null;
   const candYear = Number(candidate.releaseYear) || null;
-  const candEdition = String(candidate.editionType || 'Original').trim().toLowerCase();
+  const candCreator = normalizeDupTitle(
+    candidate.creator || candidate.author || candidate.director || candidate.studio || ''
+  );
+  const candEdition = normalizeGameEditionType(candidate.editionType).toLowerCase();
 
   for (const item of list) {
     if (inferDomainFromWork(item) !== candDomain) continue;
@@ -159,12 +170,25 @@ export function findCatalogDuplicate(candidate = {}, existingItems = []) {
     }
 
     const itemYear = Number(item.releaseYear) || null;
+    const itemCreator = normalizeDupTitle(
+      item.creator || item.author || item.director || item.studio || ''
+    );
+    const sameCreator = Boolean(
+      candCreator &&
+        itemCreator &&
+        (candCreator === itemCreator ||
+          candCreator.includes(itemCreator) ||
+          itemCreator.includes(candCreator))
+    );
+
     if (candDomain === 'games') {
-      const itemEdition = String(item.editionType || 'Original').trim().toLowerCase();
+      const itemEdition = normalizeGameEditionType(item.editionType).toLowerCase();
       if (candEdition !== itemEdition) continue;
-      if (candYear && itemYear && Math.abs(candYear - itemYear) >= 3) continue;
+      if (candYear && itemYear && Math.abs(candYear - itemYear) >= 3 && !sameCreator) continue;
     } else if (candYear && itemYear && candYear !== itemYear) {
-      continue;
+      if (!(candDomain === 'reading' && sameCreator)) {
+        continue;
+      }
     }
 
     return {

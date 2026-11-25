@@ -8,6 +8,7 @@ import {
   FileSpreadsheet,
   Film,
   Gamepad2,
+  Link2,
   Music,
   PenLine,
   Plus,
@@ -15,6 +16,7 @@ import {
   Search,
   SlidersHorizontal,
   Sparkles,
+  Upload,
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -24,6 +26,7 @@ import { StarRatingPicker } from '../components/StarRatingPicker';
 import { WorkTypeSelector } from '../components/WorkTypeSelector';
 import {
   BOOK_FORMATS,
+  EXTENDED_GAME_PLATFORMS,
   GAME_COMPLETION_TYPES,
   GAME_EDITION_TYPES,
   GAME_PLATFORMS,
@@ -37,8 +40,10 @@ import {
   getStatusConfigForDomain,
   getWorkTypeLabel,
   normalizeDomainId,
+  normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig';
+import { GAME_ATTRIBUTION_LINKS, extractGameDepthDraftFields } from '../lib/gameDepth';
 import {
   CINEMA_API_SOURCES,
   CINEMA_SOURCE_PRESETS,
@@ -55,6 +60,7 @@ import {
   searchMockCinema,
 } from '../services/cinemaApi';
 import {
+  fetchBookByIsbn,
   fetchMusicReleaseTracks,
   formatTrackDuration,
   getDisplayGenres,
@@ -62,6 +68,13 @@ import {
   getQuickSuggestionsForDomain,
   searchWorksByDomain,
 } from '../services/multiDomainSearchService';
+import {
+  cleanIsbn,
+  looksLikeIsbnInput,
+  parseAndValidateIsbn,
+} from '../lib/isbn';
+import { compressManualCoverImage } from '../lib/manualCovers';
+import { buildManualExternalIds } from '../lib/manualWorkLink';
 import { getPresentExternalRatingBadges, workHasAnyExternalIds } from '../lib/ratings';
 import {
   SEARCH_DEBOUNCE_MS,
@@ -231,6 +244,12 @@ export function AddScreen({
   const [manualOpen, setManualOpen] = useState(false);
   const [manualDraft, setManualDraft] = useState(null);
   const [manualMoreDetailsOpen, setManualMoreDetailsOpen] = useState(false);
+  const [manualCoverMode, setManualCoverMode] = useState('upload'); // 'upload' | 'url'
+  const [manualCoverBusy, setManualCoverBusy] = useState(false);
+  const [manualCoverError, setManualCoverError] = useState('');
+  const [isbnInput, setIsbnInput] = useState('');
+  const [isbnLoading, setIsbnLoading] = useState(false);
+  const [isbnFeedback, setIsbnFeedback] = useState(null); // { type: 'error' | 'not_found' | 'ok', message: string }
   const searchInputRef = useRef(null);
 
   useEffect(() => {
@@ -668,8 +687,10 @@ export function AddScreen({
       const genres = Array.isArray(candidate?.genres) ? candidate.genres.slice(0, 4) : [];
       const resolvedEdition =
         candDomain === 'games'
-          ? String(cardOverride.editionType || candidate?.editionType || 'Original').trim()
+          ? normalizeGameEditionType(cardOverride.editionType || candidate?.editionType)
           : '';
+      const gameDepthFields =
+        candDomain === 'games' ? extractGameDepthDraftFields(candidate) : {};
       // Folha rápida enxuta (v2.4.0 Fase 4.1): sem status nem plataforma pré-selecionados
       const baseDomainDraft = {
         id: draftId,
@@ -707,6 +728,7 @@ export function AddScreen({
         isbnOrDoi: String(candidate?.isbnOrDoi || '').trim(),
         bookFormat: candidate?.bookFormat || '',
         favoriteScene: String(candidate?.favoriteScene || '').trim(),
+        ...gameDepthFields,
         platform: '',
         platforms: Array.isArray(candidate?.platforms) ? candidate.platforms : [],
         editionType: resolvedEdition,
@@ -916,33 +938,56 @@ export function AddScreen({
     }
   };
 
-  const handleOpenManualModal = () => {
+  const handleOpenManualModal = (prefillOverrides = {}) => {
+    const overrides =
+      prefillOverrides && typeof prefillOverrides === 'object' && !prefillOverrides.nativeEvent
+        ? prefillOverrides
+        : {};
     setManualMoreDetailsOpen(false);
+    setManualCoverMode('upload');
+    setManualCoverError('');
+    setManualCoverBusy(false);
     const validTypes = domainMediaTypes.map((m) => m.id);
     const defaultType =
       searchFilter !== 'all' && validTypes.includes(searchFilter)
         ? searchFilter
         : validTypes[0] || 'movie';
-    const cleanTitle = query.trim();
+    const rawTyped = String(query || '').trim();
+    const typedIsbn =
+      overrides.isbnOrDoi ||
+      (effectiveDomain === 'reading' && looksLikeIsbnInput(rawTyped)
+        ? cleanIsbn(rawTyped)
+        : effectiveDomain === 'reading' && isbnInput.trim()
+          ? cleanIsbn(isbnInput)
+          : '');
+    const prefilledTitle =
+      overrides.title ??
+      (looksLikeIsbnInput(rawTyped) ? '' : rawTyped);
+    const manualId = createUuid();
     setManualDraft(
       buildDraftWithStatus(
         {
-          id: createUuid(),
+          id: manualId,
           domain: effectiveDomain,
           workType: defaultType,
-          title: cleanTitle,
+          title: prefilledTitle,
           originalTitle: '',
           creator: '',
           director: '',
           author: '',
           studio: '',
           franchiseName: '',
+          seriesVolume: '',
+          workUrl: '',
           releaseYear: domainConfig.currentYear,
           coverUrl: '',
+          manualCoverDataUrl: '',
+          isManual: true,
+          ids: buildManualExternalIds(manualId, { isbn: typedIsbn }),
           durationMinutes: defaultType === 'movie' ? 120 : null,
           totalSeconds: defaultType === 'movie' ? 7200 : null,
           currentSeconds: 0,
-          totalSeasons: defaultType === 'movie' ? 1 : 1,
+          totalSeasons: 1,
           currentSeason: 1,
           totalEpisodes: defaultType === 'movie' ? null : 12,
           currentEpisode: 0,
@@ -950,7 +995,7 @@ export function AddScreen({
           pagesRead: 0,
           totalPages: effectiveDomain === 'reading' ? 280 : null,
           chaptersRead: 0,
-          isbnOrDoi: '',
+          isbnOrDoi: typedIsbn,
           bookFormat: BOOK_FORMATS[0],
           favoriteScene: '',
           platform: '',
@@ -985,6 +1030,72 @@ export function AddScreen({
     setManualOpen(true);
   };
 
+  const handleManualCoverFile = async (file) => {
+    if (!file) return;
+    setManualCoverBusy(true);
+    setManualCoverError('');
+    try {
+      const res = await compressManualCoverImage(file);
+      if (!res.ok || !res.dataUrl) {
+        setManualCoverError(res.error || 'Não foi possível processar a imagem.');
+        return;
+      }
+      setManualDraft((curr) =>
+        curr
+          ? {
+              ...curr,
+              coverUrl: res.dataUrl,
+              manualCoverDataUrl: res.dataUrl,
+            }
+          : curr
+      );
+    } finally {
+      setManualCoverBusy(false);
+    }
+  };
+
+  const handleIsbnLookup = async (e) => {
+    e?.preventDefault?.();
+    const raw = isbnInput.trim();
+    const parsed = parseAndValidateIsbn(raw);
+    if (!parsed.valid) {
+      setIsbnFeedback({ type: 'error', message: parsed.error });
+      return;
+    }
+    setIsbnLoading(true);
+    setIsbnFeedback(null);
+    setPartialFailure(false);
+    setAllFailed(false);
+    setOfflineNotice(false);
+    try {
+      const outcome = await fetchBookByIsbn(raw);
+      if (outcome.offline) {
+        setOfflineNotice(true);
+        setIsbnFeedback({ type: 'error', message: outcome.error });
+        return;
+      }
+      if (outcome.ok && outcome.results.length > 0) {
+        setResults(outcome.results);
+        setSourceStatusHint(outcome.sourceStatusHint || 'BrasilAPI (ISBN)');
+        setIsbnFeedback({
+          type: 'ok',
+          message: `Livro encontrado pelo ${outcome.format} (${outcome.isbn}).`,
+        });
+      } else {
+        setResults([]);
+        setSourceStatusHint('');
+        setIsbnFeedback({
+          type: 'not_found',
+          message:
+            outcome.error ||
+            `ISBN ${parsed.normalized} não encontrado nas bases. Você pode cadastrar manualmente.`,
+        });
+      }
+    } finally {
+      setIsbnLoading(false);
+    }
+  };
+
   const handleSaveManual = (e) => {
     e.preventDefault();
     if (!manualDraft?.title?.trim()) return;
@@ -993,13 +1104,21 @@ export function AddScreen({
       .map((g) => g.trim())
       .filter(Boolean)
       .slice(0, 4);
+    const nowIso = new Date().toISOString();
     const title = manualDraft.title.trim();
     const targetDomain = normalizeDomainId(manualDraft.domain || effectiveDomain);
     const durationMin = Number(manualDraft.durationMinutes) || null;
     const creatorName = String(manualDraft.director || manualDraft.creator || '').trim();
-    const cleanCoverUrl = String(manualDraft.coverUrl || '').trim() || null;
+    const cleanCoverUrl = String(manualDraft.manualCoverDataUrl || manualDraft.coverUrl || '').trim() || null;
+    const manualUuid = String(manualDraft.id || createUuid());
+    const cleanIsbnVal = targetDomain === 'reading' ? cleanIsbn(manualDraft.isbnOrDoi || '') : '';
+    const safeWorkUrl = /^https?:\/\//i.test(String(manualDraft.workUrl || '').trim())
+      ? String(manualDraft.workUrl).trim()
+      : '';
+
     const payload = {
       ...manualDraft,
+      id: manualUuid,
       domain: targetDomain,
       workType: normalizeWorkTypeForDomain(manualDraft.workType, targetDomain),
       title,
@@ -1008,8 +1127,16 @@ export function AddScreen({
       author: creatorName,
       studio: String(manualDraft.studio || (targetDomain === 'games' ? creatorName : '')).trim(),
       franchiseName: String(manualDraft.franchiseName || '').trim(),
+      seriesVolume: String(manualDraft.seriesVolume || '').trim(),
+      workUrl: safeWorkUrl,
+      isbnOrDoi: String(manualDraft.isbnOrDoi || '').trim(),
+      isManual: true,
+      ids: buildManualExternalIds(manualUuid, { isbn: cleanIsbnVal }),
       coverUrl: cleanCoverUrl,
+      manualCoverDataUrl: manualDraft.manualCoverDataUrl || '',
       coverSources: cleanCoverUrl ? [cleanCoverUrl] : [],
+      sourceBadge: 'Cadastro Manual',
+      mergedSources: ['Cadastro Manual'],
       totalSeconds:
         targetDomain === 'cinema' && manualDraft.workType === 'movie' && durationMin
           ? durationMin * 60
@@ -1023,6 +1150,8 @@ export function AddScreen({
       monogram: createMonogram(title),
       palette: null,
       inBacklog: true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
     delete payload.genresText;
     onAddItem(payload);
@@ -1034,9 +1163,9 @@ export function AddScreen({
 
   const domainApiHint =
     effectiveDomain === 'reading'
-      ? 'Open Library · Google Books'
+      ? 'Google Books (PT/BR) · Open Library · BrasilAPI (ISBN)'
       : effectiveDomain === 'games'
-        ? 'CheapShark · FreeToGame · Wikidata'
+        ? 'IGDB · RAWG · Steam · Wikidata'
         : effectiveDomain === 'music'
           ? 'iTunes · MusicBrainz'
           : '';
@@ -1155,17 +1284,79 @@ export function AddScreen({
         <div className="flex flex-wrap items-center justify-between gap-2 px-0.5 text-xs text-muted">
           <button
             type="button"
-            onClick={handleOpenManualModal}
+            onClick={() => handleOpenManualModal()}
             data-testid="manual-catalog-link"
             className="inline-flex min-h-[44px] items-center gap-1.5 text-xs font-medium text-muted underline-offset-4 hover:text-ink hover:underline"
           >
             <PenLine className="h-3.5 w-3.5" strokeWidth={1.5} />
-            <span>Não encontrou? {add.manualButtonLabel}</span>
+            <span>Não achou? Cadastrar manualmente</span>
           </button>
           {effectiveDomain !== 'cinema' && domainApiHint && (
             <span className="text-[11px] text-subtle">{domainApiHint}</span>
           )}
         </div>
+
+        {effectiveDomain === 'reading' && (
+          <form
+            onSubmit={handleIsbnLookup}
+            data-testid="reading-isbn-lookup-form"
+            className="space-y-1.5 rounded-[6px] border border-line bg-card p-2.5"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor="reading-isbn-input" className="text-[11px] font-semibold text-ink">
+                Buscar por ISBN
+              </label>
+              <input
+                id="reading-isbn-input"
+                type="text"
+                inputMode="numeric"
+                value={isbnInput}
+                onChange={(e) => {
+                  setIsbnInput(e.target.value);
+                  if (isbnFeedback) setIsbnFeedback(null);
+                }}
+                placeholder="ISBN-10 ou ISBN-13 (com ou sem hífen)"
+                aria-label="Buscar por ISBN"
+                className="min-h-[44px] min-w-[190px] flex-1 rounded-[6px] border border-line bg-app px-3 text-xs tabular-nums text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={isbnLoading || !isbnInput.trim()}
+                className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-[6px] border border-line bg-app px-3 text-xs font-semibold text-ink transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
+              >
+                {isbnLoading ? (
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin text-accent" strokeWidth={1.5} />
+                ) : (
+                  <Search className="h-3.5 w-3.5" strokeWidth={1.5} />
+                )}
+                <span>{isbnLoading ? 'Buscando...' : 'Buscar ISBN'}</span>
+              </button>
+            </div>
+            {isbnFeedback && (
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                <span
+                  role={isbnFeedback.type === 'error' ? 'alert' : 'status'}
+                  className={
+                    isbnFeedback.type === 'ok'
+                      ? 'font-medium text-accent'
+                      : 'text-muted'
+                  }
+                >
+                  {isbnFeedback.message}
+                </span>
+                {isbnFeedback.type === 'not_found' && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenManualModal({ isbnOrDoi: cleanIsbn(isbnInput) })}
+                    className="min-h-[36px] font-semibold text-accent underline underline-offset-2"
+                  >
+                    Cadastrar manualmente com este ISBN
+                  </button>
+                )}
+              </div>
+            )}
+          </form>
+        )}
 
         {sourcesPopoverOpen && effectiveDomain === 'cinema' && (
           <div className="mt-2 space-y-3 rounded-[6px] border border-line bg-card p-3.5 shadow-sm">
@@ -1448,10 +1639,11 @@ export function AddScreen({
           </p>
           <button
             type="button"
-            onClick={handleOpenManualModal}
-            className="min-h-[44px] rounded-[6px] border border-line bg-card px-4 text-xs font-semibold text-ink hover:border-muted"
+            data-testid="empty-results-manual-btn"
+            onClick={() => handleOpenManualModal()}
+            className="min-h-[44px] rounded-[6px] border border-line bg-card px-4 text-xs font-semibold text-ink hover:border-accent"
           >
-            {add.manualButtonLabel} ({domainMeta.shortLabel})
+            Não achou? Cadastrar manualmente ({domainMeta.shortLabel})
           </button>
         </div>
       ) : (
@@ -1552,6 +1744,41 @@ export function AddScreen({
                 </article>
               );
             })}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-line">
+            <button
+              type="button"
+              data-testid="results-footer-manual-btn"
+              onClick={() => handleOpenManualModal()}
+              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-card px-3.5 text-xs font-semibold text-ink hover:border-accent"
+            >
+              <PenLine className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+              <span>Não achou? Cadastrar manualmente</span>
+            </button>
+
+            {effectiveDomain === 'games' && results.length > 0 && (
+              <p className="text-[10px] text-subtle">
+                Fontes de Games:{' '}
+                <a
+                  href={GAME_ATTRIBUTION_LINKS.igdb.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-2 hover:text-ink"
+                >
+                  {GAME_ATTRIBUTION_LINKS.igdb.label}
+                </a>{' '}
+                ·{' '}
+                <a
+                  href={GAME_ATTRIBUTION_LINKS.rawg.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-2 hover:text-ink"
+                >
+                  {GAME_ATTRIBUTION_LINKS.rawg.label}
+                </a>
+              </p>
+            )}
           </div>
         </section>
       )}
@@ -1708,15 +1935,25 @@ export function AddScreen({
               </div>
             </div>
 
-            {/* Games em andamento: "Onde você está jogando?" com plataformas da API + "Outra plataforma" */}
+            {/* Games em andamento: "Onde você está jogando?" (original destacada) + Tipo de Edição + Origem */}
             {draftLeanFields.askGamePlatform && (
               <div className="space-y-2.5 border-t border-line pt-3">
                 <p className="text-xs font-semibold text-ink">
                   Onde você está jogando?
                 </p>
                 <div className="flex flex-wrap gap-1.5">
-                  {(Array.isArray(draftItem.platforms) ? draftItem.platforms : []).map((plat) => {
+                  {Array.from(
+                    new Set([
+                      ...(Array.isArray(draftItem.platforms) ? draftItem.platforms : []),
+                      ...(Array.isArray(draftItem.originalPlatforms)
+                        ? draftItem.originalPlatforms
+                        : []),
+                    ])
+                  ).map((plat) => {
                     const active = draftItem.platform === plat && !otherPlatformOpen;
+                    const isOriginal =
+                      Array.isArray(draftItem.originalPlatforms) &&
+                      draftItem.originalPlatforms.includes(plat);
                     return (
                       <button
                         key={plat}
@@ -1730,13 +1967,20 @@ export function AddScreen({
                             platform: curr.platform === plat ? '' : plat,
                           }));
                         }}
-                        className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium transition-colors ${
+                        className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border px-3 text-xs font-medium transition-colors ${
                           active
                             ? 'border-accent bg-accent text-accent-ink'
-                            : 'border-line bg-app text-muted hover:text-ink'
+                            : isOriginal
+                              ? 'border-accent/60 bg-app text-ink hover:border-accent'
+                              : 'border-line bg-app text-muted hover:text-ink'
                         }`}
                       >
-                        {plat}
+                        <span>{plat}</span>
+                        {isOriginal && (
+                          <span className="rounded-[3px] border border-current/30 px-1 py-0.5 text-[9px] uppercase tracking-wide">
+                            Original
+                          </span>
+                        )}
                       </button>
                     );
                   })}
@@ -1768,7 +2012,7 @@ export function AddScreen({
                       className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
                     />
                     <div className="flex flex-wrap gap-1.5">
-                      {GAME_PLATFORMS.filter(
+                      {EXTENDED_GAME_PLATFORMS.filter(
                         (p) => !(draftItem.platforms || []).includes(p)
                       ).map((plat) => (
                         <button
@@ -1790,6 +2034,86 @@ export function AddScreen({
                     </div>
                   </div>
                 )}
+
+                {draftLeanFields.askGameEdition && (
+                  <div className="space-y-1.5 pt-1">
+                    <p className="text-[11px] font-medium text-muted">Tipo de edição</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {GAME_EDITION_TYPES.map((ed) => {
+                        const isSelected = normalizeGameEditionType(draftItem.editionType) === ed;
+                        return (
+                          <button
+                            key={ed}
+                            type="button"
+                            aria-pressed={isSelected}
+                            onClick={() =>
+                              setDraftItem((curr) => ({ ...curr, editionType: ed }))
+                            }
+                            className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium transition-colors ${
+                              isSelected
+                                ? 'border-accent bg-accent text-accent-ink'
+                                : 'border-line bg-app text-muted hover:text-ink'
+                            }`}
+                          >
+                            {ed}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <label className="block pt-1">
+                  <span className="mb-1 block text-[11px] font-medium text-muted">
+                    Origem / Loja (opcional)
+                  </span>
+                  <select
+                    value={draftItem.storeOrLauncher || ''}
+                    onChange={(e) =>
+                      setDraftItem((curr) => ({ ...curr, storeOrLauncher: e.target.value }))
+                    }
+                    className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                  >
+                    <option value="">Não informar</option>
+                    {GAME_STORES_LAUNCHERS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
+
+            {/* Games zerados: Tipo de conclusão */}
+            {draftLeanFields.askGameCompletionType && (
+              <div className="space-y-1.5 border-t border-line pt-3">
+                <p className="text-xs font-semibold text-ink">Tipo de conclusão</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {GAME_COMPLETION_TYPES.map((ctype) => {
+                    const active = draftItem.completionType === ctype;
+                    return (
+                      <button
+                        key={ctype}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() =>
+                          setDraftItem((curr) => ({
+                            ...curr,
+                            completionType: curr.completionType === ctype ? '' : ctype,
+                          }))
+                        }
+                        className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium transition-colors ${
+                          active
+                            ? 'border-accent bg-accent text-accent-ink'
+                            : 'border-line bg-app text-muted hover:text-ink'
+                        }`}
+                      >
+                        {ctype}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -1913,14 +2237,54 @@ export function AddScreen({
               </button>
             </div>
 
-            <WorkTypeSelector
-              domain={manualDomain}
-              label={manualVocab.workTypeLabel}
-              value={manualDraft.workType}
-              onChange={(nextType) =>
-                setManualDraft((curr) => ({ ...curr, workType: nextType }))
-              }
-            />
+            {(manualDomain === 'reading' || manualDomain === 'cinema') && (
+              <WorkTypeSelector
+                domain={manualDomain}
+                label={manualVocab.workTypeLabel}
+                value={manualDraft.workType}
+                onChange={(nextType) =>
+                  setManualDraft((curr) => ({ ...curr, workType: nextType }))
+                }
+              />
+            )}
+
+            {manualDomain === 'music' && (
+              <div>
+                <p className="mb-1.5 text-xs font-medium text-muted">Tipo *</p>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[
+                    { id: 'album', label: 'Álbum', workType: 'album', releaseFormat: 'Álbum de Estúdio' },
+                    { id: 'ep', label: 'EP', workType: 'ep_single', releaseFormat: 'EP' },
+                    { id: 'single', label: 'Single', workType: 'ep_single', releaseFormat: 'Single' },
+                    { id: 'live', label: 'Ao Vivo', workType: 'live_show', releaseFormat: 'Ao Vivo' },
+                  ].map((opt) => {
+                    const active =
+                      (manualDraft.releaseFormat || MUSIC_RELEASE_FORMATS[0]) === opt.releaseFormat ||
+                      (opt.id === 'album' && !manualDraft.releaseFormat);
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          setManualDraft((curr) => ({
+                            ...curr,
+                            workType: opt.workType,
+                            releaseFormat: opt.releaseFormat,
+                          }))
+                        }
+                        className={`min-h-[44px] rounded-[4px] border px-2 text-xs font-medium transition-colors ${
+                          active
+                            ? 'border-accent bg-accent/15 text-ink'
+                            : 'border-line bg-app text-muted hover:text-ink'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-muted">
@@ -1938,6 +2302,241 @@ export function AddScreen({
               />
             </label>
 
+            {manualDomain !== 'cinema' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">
+                    {manualDomain === 'reading'
+                      ? 'Autor(es)'
+                      : manualDomain === 'games'
+                        ? 'Desenvolvedor'
+                        : 'Artista / Banda'}
+                  </span>
+                  <input
+                    type="text"
+                    value={manualDraft.director || manualDraft.creator || ''}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({
+                        ...curr,
+                        director: e.target.value,
+                        creator: e.target.value,
+                        author: e.target.value,
+                      }))
+                    }
+                    placeholder={
+                      manualDomain === 'reading'
+                        ? 'Ex.: Machado de Assis, Maria Silva'
+                        : manualDomain === 'games'
+                          ? 'Ex.: FromSoftware'
+                          : 'Ex.: Iron Maiden'
+                    }
+                    className="min-h-[44px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">
+                    {add.manualYearLabel}
+                  </span>
+                  <input
+                    type="number"
+                    min="1500"
+                    max="2099"
+                    value={manualDraft.releaseYear || ''}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({
+                        ...curr,
+                        releaseYear: e.target.value ? Number(e.target.value) : null,
+                      }))
+                    }
+                    className="min-h-[44px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                  />
+                </label>
+              </div>
+            )}
+
+            {manualDomain === 'cinema' && (
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-muted">
+                  {add.manualYearLabel}
+                </span>
+                <input
+                  type="number"
+                  min="1888"
+                  max="2099"
+                  value={manualDraft.releaseYear || ''}
+                  onChange={(e) =>
+                    setManualDraft((curr) => ({
+                      ...curr,
+                      releaseYear: e.target.value ? Number(e.target.value) : null,
+                    }))
+                  }
+                  className="min-h-[44px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                />
+              </label>
+            )}
+
+            {manualDomain === 'reading' && (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">Formato</span>
+                  <select
+                    value={manualDraft.bookFormat || BOOK_FORMATS[0]}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({ ...curr, bookFormat: e.target.value }))
+                    }
+                    className="min-h-[44px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                  >
+                    {BOOK_FORMATS.map((fmt) => (
+                      <option key={fmt} value={fmt}>
+                        {fmt}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-muted">Páginas</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={manualDraft.totalPages || ''}
+                    onChange={(e) =>
+                      setManualDraft((curr) => ({
+                        ...curr,
+                        totalPages: e.target.value ? Number(e.target.value) : null,
+                      }))
+                    }
+                    placeholder="Opcional"
+                    className="min-h-[44px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                  />
+                </label>
+              </div>
+            )}
+
+            {manualDomain === 'games' && (
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-muted">
+                  Plataforma
+                </span>
+                <select
+                  value={manualDraft.platform || ''}
+                  onChange={(e) =>
+                    setManualDraft((curr) => ({ ...curr, platform: e.target.value }))
+                  }
+                  className="min-h-[44px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                >
+                  <option value="">{GAME_PLATFORM_UNSET_LABEL}</option>
+                  {EXTENDED_GAME_PLATFORMS.map((plat) => (
+                    <option key={plat} value={plat}>
+                      {plat}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {/* Capa (enviar arquivo da galeria/câmera OU colar URL) */}
+            <div className="space-y-2 rounded-[6px] border border-line bg-app p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-muted">Capa (opcional)</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setManualCoverMode('upload')}
+                    className={`inline-flex min-h-[36px] items-center gap-1 rounded-[4px] border px-2 text-[11px] font-medium ${
+                      manualCoverMode === 'upload'
+                        ? 'border-accent bg-accent/15 text-ink'
+                        : 'border-line bg-card text-muted'
+                    }`}
+                  >
+                    <Upload className="h-3 w-3" strokeWidth={1.5} />
+                    <span>Enviar</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManualCoverMode('url')}
+                    className={`inline-flex min-h-[36px] items-center gap-1 rounded-[4px] border px-2 text-[11px] font-medium ${
+                      manualCoverMode === 'url'
+                        ? 'border-accent bg-accent/15 text-ink'
+                        : 'border-line bg-card text-muted'
+                    }`}
+                  >
+                    <Link2 className="h-3 w-3" strokeWidth={1.5} />
+                    <span>Colar URL</span>
+                  </button>
+                </div>
+              </div>
+
+              {manualCoverMode === 'upload' ? (
+                <div className="flex items-center gap-2.5">
+                  {manualDraft.manualCoverDataUrl && (
+                    <img
+                      src={manualDraft.manualCoverDataUrl}
+                      alt="Prévia da capa enviada"
+                      className={`w-12 shrink-0 rounded-[4px] object-cover border border-line ${
+                        manualDomain === 'music' ? 'aspect-square' : 'aspect-[2/3]'
+                      }`}
+                    />
+                  )}
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <label className="inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-[4px] border border-line bg-card px-3 text-xs font-medium text-ink hover:border-accent">
+                      <Upload className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                      <span>
+                        {manualCoverBusy
+                          ? 'Comprimindo...'
+                          : manualDraft.manualCoverDataUrl
+                            ? 'Trocar imagem'
+                            : 'Escolher da galeria / câmera'}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="sr-only"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleManualCoverFile(file);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                    {manualDraft.manualCoverDataUrl && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setManualDraft((curr) => ({
+                            ...curr,
+                            coverUrl: '',
+                            manualCoverDataUrl: '',
+                          }))
+                        }
+                        className="ml-2 text-[11px] text-muted underline underline-offset-2 hover:text-ink"
+                      >
+                        Remover
+                      </button>
+                    )}
+                    {manualCoverError && (
+                      <p className="text-[11px] text-rose-400">{manualCoverError}</p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <input
+                  type="url"
+                  value={manualDraft.manualCoverDataUrl ? '' : manualDraft.coverUrl || ''}
+                  onChange={(e) =>
+                    setManualDraft((curr) => ({
+                      ...curr,
+                      coverUrl: e.target.value,
+                      manualCoverDataUrl: '',
+                    }))
+                  }
+                  placeholder="https://..."
+                  aria-label="URL da capa"
+                  className="min-h-[44px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                />
+              )}
+            </div>
+
             <div>
               <p className="mb-1.5 text-xs font-medium text-muted">{add.drawerStatusLabel}</p>
               <div className="grid grid-cols-3 gap-1.5">
@@ -1951,7 +2550,7 @@ export function AddScreen({
                       onClick={() =>
                         setManualDraft((curr) => buildDraftWithStatus(curr, statusId))
                       }
-                      className={`min-h-[40px] rounded-[4px] border px-2 text-xs font-medium transition-colors ${
+                      className={`min-h-[44px] rounded-[4px] border px-2 text-xs font-medium transition-colors ${
                         active
                           ? 'border-accent bg-accent/15 text-ink'
                           : 'border-line bg-app text-muted hover:text-ink'
@@ -1964,190 +2563,11 @@ export function AddScreen({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-muted">
-                  {manualVocab.creatorLabel}
-                </span>
-                <input
-                  type="text"
-                  value={manualDraft.director || manualDraft.creator || ''}
-                  onChange={(e) =>
-                    setManualDraft((curr) => ({
-                      ...curr,
-                      director: e.target.value,
-                      creator: e.target.value,
-                    }))
-                  }
-                  placeholder={manualVocab.creatorLabel}
-                  className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-muted">
-                  {add.manualYearLabel}
-                </span>
-                <input
-                  type="number"
-                  min="1500"
-                  max="2099"
-                  value={manualDraft.releaseYear || ''}
-                  onChange={(e) =>
-                    setManualDraft((curr) => ({
-                      ...curr,
-                      releaseYear: e.target.value ? Number(e.target.value) : null,
-                    }))
-                  }
-                  className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                />
-              </label>
-            </div>
-
-            {manualDomain === 'reading' && (
-              <div className="grid grid-cols-2 gap-2">
-                <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-muted">Formato</span>
-                  <select
-                    value={manualDraft.bookFormat || BOOK_FORMATS[0]}
-                    onChange={(e) =>
-                      setManualDraft((curr) => ({ ...curr, bookFormat: e.target.value }))
-                    }
-                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                  >
-                    {BOOK_FORMATS.map((fmt) => (
-                      <option key={fmt} value={fmt}>
-                        {fmt}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-muted">Total págs</span>
-                  <input
-                    type="number"
-                    min="1"
-                    value={manualDraft.totalPages || ''}
-                    onChange={(e) =>
-                      setManualDraft((curr) => ({
-                        ...curr,
-                        totalPages: e.target.value ? Number(e.target.value) : null,
-                      }))
-                    }
-                    placeholder="Opcional"
-                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
-              </div>
-            )}
-
-            {manualDomain === 'games' && (
-              <div className="grid grid-cols-2 gap-2">
-                <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-muted">
-                    Plataforma Jogada
-                  </span>
-                  <select
-                    value={manualDraft.platform || ''}
-                    onChange={(e) =>
-                      setManualDraft((curr) => ({ ...curr, platform: e.target.value }))
-                    }
-                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                  >
-                    <option value="">{GAME_PLATFORM_UNSET_LABEL}</option>
-                    {GAME_PLATFORMS.map((plat) => (
-                      <option key={plat} value={plat}>
-                        {plat}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-muted">
-                    Tipo de Edição
-                  </span>
-                  <select
-                    value={manualDraft.editionType || GAME_EDITION_TYPES[0]}
-                    onChange={(e) =>
-                      setManualDraft((curr) => ({ ...curr, editionType: e.target.value }))
-                    }
-                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                  >
-                    {GAME_EDITION_TYPES.map((ed) => (
-                      <option key={ed} value={ed}>
-                        {ed}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            )}
-
-            {manualDomain === 'cinema' &&
-              (manualDraft.workType === 'movie' ? (
-                <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-muted">
-                    {add.manualDurationLabel}
-                  </span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="1200"
-                    value={manualDraft.durationMinutes || ''}
-                    onChange={(e) =>
-                      setManualDraft((curr) => ({
-                        ...curr,
-                        durationMinutes: e.target.value ? Number(e.target.value) : null,
-                      }))
-                    }
-                    placeholder="Ex: 148"
-                    className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                  />
-                </label>
-              ) : (
-                <div className="grid grid-cols-2 gap-2.5">
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Temporadas
-                    </span>
-                    <input
-                      type="number"
-                      min="1"
-                      value={manualDraft.totalSeasons || 1}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          totalSeasons: Math.max(1, Number(e.target.value) || 1),
-                        }))
-                      }
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-muted">
-                      Total de episódios
-                    </span>
-                    <input
-                      type="number"
-                      min="1"
-                      value={manualDraft.totalEpisodes || ''}
-                      onChange={(e) =>
-                        setManualDraft((curr) => ({
-                          ...curr,
-                          totalEpisodes: e.target.value ? Number(e.target.value) : null,
-                        }))
-                      }
-                      className="min-h-[42px] w-full rounded-[4px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
-                    />
-                  </label>
-                </div>
-              ))}
-
             <button
               type="button"
               onClick={() => setManualMoreDetailsOpen((v) => !v)}
               aria-expanded={manualMoreDetailsOpen}
-              className="flex min-h-[40px] w-full items-center justify-between rounded-[4px] border border-line bg-app px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
+              className="flex min-h-[44px] w-full items-center justify-between rounded-[4px] border border-line bg-app px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
             >
               <span>Mais detalhes (opcional)</span>
               {manualMoreDetailsOpen ? (
@@ -2159,18 +2579,255 @@ export function AddScreen({
 
             {manualMoreDetailsOpen && (
               <div className="space-y-3 rounded-[6px] border border-line bg-app p-3">
+                {manualDomain === 'reading' && (
+                  <>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-muted">
+                          Saga / Série
+                        </span>
+                        <input
+                          type="text"
+                          value={manualDraft.franchiseName || ''}
+                          onChange={(e) =>
+                            setManualDraft((curr) => ({ ...curr, franchiseName: e.target.value }))
+                          }
+                          placeholder="Ex.: Crônicas do Sul"
+                          className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-muted">Volume</span>
+                        <input
+                          type="text"
+                          value={manualDraft.seriesVolume || ''}
+                          onChange={(e) =>
+                            setManualDraft((curr) => ({ ...curr, seriesVolume: e.target.value }))
+                          }
+                          placeholder="Ex.: 1 ou Livro I"
+                          className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                    </div>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        ISBN (opcional)
+                      </span>
+                      <input
+                        type="text"
+                        value={manualDraft.isbnOrDoi || ''}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({ ...curr, isbnOrDoi: e.target.value }))
+                        }
+                        placeholder="Se possuir"
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        Link da obra (Amazon, Wattpad, site do autor)
+                      </span>
+                      <input
+                        type="url"
+                        value={manualDraft.workUrl || ''}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({ ...curr, workUrl: e.target.value }))
+                        }
+                        placeholder="https://..."
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        Título Original
+                      </span>
+                      <input
+                        type="text"
+                        value={manualDraft.originalTitle || ''}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({ ...curr, originalTitle: e.target.value }))
+                        }
+                        placeholder="Opcional"
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                  </>
+                )}
+
+                {manualDomain === 'games' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        Tipo de Edição
+                      </span>
+                      <select
+                        value={manualDraft.editionType || GAME_EDITION_TYPES[0]}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({ ...curr, editionType: e.target.value }))
+                        }
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                      >
+                        {GAME_EDITION_TYPES.map((ed) => (
+                          <option key={ed} value={ed}>
+                            {ed}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        Origem / Loja
+                      </span>
+                      <select
+                        value={manualDraft.storeOrLauncher || ''}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({
+                            ...curr,
+                            storeOrLauncher: e.target.value,
+                          }))
+                        }
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                      >
+                        <option value="">A definir</option>
+                        {GAME_STORES_LAUNCHERS.map((st) => (
+                          <option key={st} value={st}>
+                            {st}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block col-span-2">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        Tipo de conclusão
+                      </span>
+                      <select
+                        value={manualDraft.completionType || GAME_COMPLETION_TYPES[0]}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({
+                            ...curr,
+                            completionType: e.target.value,
+                          }))
+                        }
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
+                      >
+                        {GAME_COMPLETION_TYPES.map((ct) => (
+                          <option key={ct} value={ct}>
+                            {ct}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
+
+                {manualDomain === 'music' && (
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-muted">Subgênero</span>
+                    <input
+                      type="text"
+                      value={manualDraft.subgenre || ''}
+                      onChange={(e) =>
+                        setManualDraft((curr) => ({ ...curr, subgenre: e.target.value }))
+                      }
+                      placeholder="MPB, Heavy Metal..."
+                      className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                )}
+
+                {manualDomain === 'cinema' && (
+                  <>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-muted">
+                        {manualVocab.creatorLabel}
+                      </span>
+                      <input
+                        type="text"
+                        value={manualDraft.director || manualDraft.creator || ''}
+                        onChange={(e) =>
+                          setManualDraft((curr) => ({
+                            ...curr,
+                            director: e.target.value,
+                            creator: e.target.value,
+                          }))
+                        }
+                        placeholder="Opcional"
+                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      />
+                    </label>
+                    {manualDraft.workType === 'movie' ? (
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-muted">
+                          {add.manualDurationLabel}
+                        </span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="1200"
+                          value={manualDraft.durationMinutes || ''}
+                          onChange={(e) =>
+                            setManualDraft((curr) => ({
+                              ...curr,
+                              durationMinutes: e.target.value ? Number(e.target.value) : null,
+                            }))
+                          }
+                          placeholder="Ex: 148"
+                          className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium text-muted">
+                            Temporadas
+                          </span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={manualDraft.totalSeasons || 1}
+                            onChange={(e) =>
+                              setManualDraft((curr) => ({
+                                ...curr,
+                                totalSeasons: Math.max(1, Number(e.target.value) || 1),
+                              }))
+                            }
+                            className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-medium text-muted">
+                            Total de episódios
+                          </span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={manualDraft.totalEpisodes || ''}
+                            onChange={(e) =>
+                              setManualDraft((curr) => ({
+                                ...curr,
+                                totalEpisodes: e.target.value ? Number(e.target.value) : null,
+                              }))
+                            }
+                            className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                          />
+                        </label>
+                      </div>
+                    )}
+                  </>
+                )}
+
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-muted">
-                    Capa por URL (opcional)
+                    Sinopse (opcional)
                   </span>
-                  <input
-                    type="url"
-                    value={manualDraft.coverUrl || ''}
+                  <textarea
+                    rows={3}
+                    value={manualDraft.synopsis || ''}
                     onChange={(e) =>
-                      setManualDraft((curr) => ({ ...curr, coverUrl: e.target.value }))
+                      setManualDraft((curr) => ({ ...curr, synopsis: e.target.value }))
                     }
-                    placeholder="https://..."
-                    className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                    placeholder="Breve descrição da obra..."
+                    className="w-full rounded-[4px] border border-line bg-card p-2.5 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
                   />
                 </label>
 
@@ -2213,121 +2870,6 @@ export function AddScreen({
                         + {g}
                       </button>
                     ))}
-                  </div>
-                )}
-
-                {manualDomain === 'reading' && (
-                  <>
-                    <label className="block">
-                      <span className="mb-1 block text-xs font-medium text-muted">
-                        Título Original
-                      </span>
-                      <input
-                        type="text"
-                        value={manualDraft.originalTitle || ''}
-                        onChange={(e) =>
-                          setManualDraft((curr) => ({ ...curr, originalTitle: e.target.value }))
-                        }
-                        placeholder="Ex: Die Verwandlung"
-                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                      />
-                    </label>
-                    <label className="block">
-                      <span className="mb-1 block text-xs font-medium text-muted">ISBN / DOI</span>
-                      <input
-                        type="text"
-                        value={manualDraft.isbnOrDoi || ''}
-                        onChange={(e) =>
-                          setManualDraft((curr) => ({ ...curr, isbnOrDoi: e.target.value }))
-                        }
-                        placeholder="Opcional"
-                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                      />
-                    </label>
-                  </>
-                )}
-
-                {manualDomain === 'games' && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="block">
-                      <span className="mb-1 block text-xs font-medium text-muted">
-                        Loja / Launcher
-                      </span>
-                      <select
-                        value={manualDraft.storeOrLauncher || ''}
-                        onChange={(e) =>
-                          setManualDraft((curr) => ({
-                            ...curr,
-                            storeOrLauncher: e.target.value,
-                          }))
-                        }
-                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                      >
-                        <option value="">A definir</option>
-                        {GAME_STORES_LAUNCHERS.map((st) => (
-                          <option key={st} value={st}>
-                            {st}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="block">
-                      <span className="mb-1 block text-xs font-medium text-muted">
-                        Tipo de conclusão
-                      </span>
-                      <select
-                        value={manualDraft.completionType || GAME_COMPLETION_TYPES[0]}
-                        onChange={(e) =>
-                          setManualDraft((curr) => ({
-                            ...curr,
-                            completionType: e.target.value,
-                          }))
-                        }
-                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                      >
-                        {GAME_COMPLETION_TYPES.map((ct) => (
-                          <option key={ct} value={ct}>
-                            {ct}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                )}
-
-                {manualDomain === 'music' && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="block">
-                      <span className="mb-1 block text-xs font-medium text-muted">Formato</span>
-                      <select
-                        value={manualDraft.releaseFormat || MUSIC_RELEASE_FORMATS[0]}
-                        onChange={(e) =>
-                          setManualDraft((curr) => ({
-                            ...curr,
-                            releaseFormat: e.target.value,
-                          }))
-                        }
-                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-                      >
-                        {MUSIC_RELEASE_FORMATS.map((rf) => (
-                          <option key={rf} value={rf}>
-                            {rf}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="block">
-                      <span className="mb-1 block text-xs font-medium text-muted">Subgênero</span>
-                      <input
-                        type="text"
-                        value={manualDraft.subgenre || ''}
-                        onChange={(e) =>
-                          setManualDraft((curr) => ({ ...curr, subgenre: e.target.value }))
-                        }
-                        placeholder="Power Metal..."
-                        className="min-h-[40px] w-full rounded-[4px] border border-line bg-card px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                      />
-                    </label>
                   </div>
                 )}
               </div>

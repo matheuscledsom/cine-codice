@@ -9,10 +9,14 @@
 
 import { ApiQuotaError, maskSecretsInText } from '../api/httpClient.js';
 import {
+  fetchBrasilApiIsbnViaProxyOrDirect,
+  fetchGoogleBooksViaProxyOrDirect,
+  fetchIgdbViaProxy,
   fetchLastfmViaProxy,
   fetchOmdbViaProxyOrDirect,
   fetchProxyStatus,
   fetchRawgViaProxy,
+  fetchSteamViaProxyOrDirect,
   fetchTmdbViaProxyOrDirect,
 } from './apiProxyClient.js';
 import { loadOmdbApiKey, loadTmdbApiKey } from './cinemaApi.js';
@@ -23,6 +27,7 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'tmdb',
     label: 'TMDB',
+    domainId: 'cinema',
     domainLabel: 'Cinema',
     host: 'api.themoviedb.org',
     supportsServerProxy: true,
@@ -31,6 +36,7 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'omdb',
     label: 'OMDb',
+    domainId: 'cinema',
     domainLabel: 'Cinema',
     host: 'www.omdbapi.com',
     supportsServerProxy: true,
@@ -39,6 +45,7 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'anilist',
     label: 'AniList',
+    domainId: 'cinema',
     domainLabel: 'Cinema',
     host: 'graphql.anilist.co',
     supportsServerProxy: false,
@@ -48,6 +55,7 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'jikan',
     label: 'Jikan (MAL)',
+    domainId: 'cinema',
     domainLabel: 'Cinema',
     host: 'api.jikan.moe',
     supportsServerProxy: false,
@@ -57,6 +65,7 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'tvmaze',
     label: 'TVmaze',
+    domainId: 'cinema',
     domainLabel: 'Cinema',
     host: 'api.tvmaze.com',
     supportsServerProxy: false,
@@ -66,6 +75,7 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'imdb',
     label: 'IMDb',
+    domainId: 'cinema',
     domainLabel: 'Cinema',
     host: 'v3.sg.media-imdb.com',
     supportsServerProxy: false,
@@ -75,6 +85,7 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'wikidata',
     label: 'Wikidata',
+    domainId: 'games',
     domainLabel: 'Cinema / Games',
     host: 'www.wikidata.org',
     supportsServerProxy: false,
@@ -84,6 +95,7 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'internetArchive',
     label: 'Internet Archive',
+    domainId: 'cinema',
     domainLabel: 'Cinema',
     host: 'archive.org',
     supportsServerProxy: false,
@@ -91,8 +103,21 @@ export const API_STATUS_SOURCES = Object.freeze([
     url: 'https://archive.org/advancedsearch.php?q=mediatype%3Amovies&rows=1&output=json',
   },
   {
+    id: 'googleBooks',
+    label: 'Google Books',
+    domainId: 'reading',
+    domainLabel: 'Leitura',
+    host: 'www.googleapis.com',
+    supportsServerProxy: true,
+    serverOnlySecret: false,
+    optionalServerKey: true,
+    probeType: 'googleBooks',
+    url: 'https://www.googleapis.com/books/v1/volumes?q=duna&maxResults=1',
+  },
+  {
     id: 'openlibrary',
     label: 'Open Library',
+    domainId: 'reading',
     domainLabel: 'Leitura',
     host: 'openlibrary.org',
     supportsServerProxy: false,
@@ -100,35 +125,49 @@ export const API_STATUS_SOURCES = Object.freeze([
     url: 'https://openlibrary.org/search.json?q=duna&limit=1&fields=key,title',
   },
   {
-    id: 'googleBooks',
-    label: 'Google Books',
+    id: 'brasilApi',
+    label: 'BrasilAPI (ISBN)',
+    domainId: 'reading',
     domainLabel: 'Leitura',
-    host: 'www.googleapis.com',
-    supportsServerProxy: false,
-    probeType: 'get',
-    url: 'https://www.googleapis.com/books/v1/volumes?q=duna&maxResults=1',
+    host: 'brasilapi.com.br',
+    supportsServerProxy: true,
+    serverOnlySecret: false,
+    probeType: 'brasilapi',
   },
   {
-    id: 'cheapshark',
-    label: 'CheapShark',
+    id: 'igdb',
+    label: 'IGDB',
+    domainId: 'games',
     domainLabel: 'Games',
-    host: 'www.cheapshark.com',
-    supportsServerProxy: false,
-    probeType: 'get',
-    url: 'https://www.cheapshark.com/api/1.0/games?title=portal&limit=1',
+    host: 'api.igdb.com',
+    supportsServerProxy: true,
+    serverOnlySecret: true,
+    probeType: 'igdb',
   },
   {
-    id: 'freetogame',
-    label: 'FreeToGame',
+    id: 'rawg',
+    label: 'RAWG',
+    domainId: 'games',
     domainLabel: 'Games',
-    host: 'www.freetogame.com',
-    supportsServerProxy: false,
-    probeType: 'get',
-    url: 'https://www.freetogame.com/api/games?platform=pc',
+    host: 'api.rawg.io',
+    supportsServerProxy: true,
+    serverOnlySecret: true,
+    probeType: 'rawg',
+  },
+  {
+    id: 'steam',
+    label: 'Steam Store',
+    domainId: 'games',
+    domainLabel: 'Games',
+    host: 'store.steampowered.com',
+    supportsServerProxy: true,
+    serverOnlySecret: false,
+    probeType: 'steam',
   },
   {
     id: 'itunes',
     label: 'iTunes',
+    domainId: 'music',
     domainLabel: 'Música',
     host: 'itunes.apple.com',
     supportsServerProxy: false,
@@ -138,6 +177,7 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'musicbrainz',
     label: 'MusicBrainz',
+    domainId: 'music',
     domainLabel: 'Música',
     host: 'musicbrainz.org',
     supportsServerProxy: false,
@@ -147,20 +187,12 @@ export const API_STATUS_SOURCES = Object.freeze([
   {
     id: 'lastfm',
     label: 'Last.fm',
+    domainId: 'music',
     domainLabel: 'Música',
     host: 'ws.audioscrobbler.com',
     supportsServerProxy: true,
     serverOnlySecret: true,
     probeType: 'lastfm',
-  },
-  {
-    id: 'rawg',
-    label: 'RAWG',
-    domainLabel: 'Games',
-    host: 'api.rawg.io',
-    supportsServerProxy: true,
-    serverOnlySecret: true,
-    probeType: 'rawg',
   },
 ]);
 
@@ -177,6 +209,7 @@ export async function loadServerApiStatus(options = {}) {
       omdb: { configured: Boolean(res.providers?.omdb?.configured) },
       lastfm: { configured: Boolean(res.providers?.lastfm?.configured) },
       rawg: { configured: Boolean(res.providers?.rawg?.configured) },
+      igdb: { configured: Boolean(res.providers?.igdb?.configured) },
     },
   };
 }
@@ -439,6 +472,126 @@ export async function probeApiSource(
     }
   }
 
+  if (meta.probeType === 'igdb') {
+    try {
+      const outcome = await fetchIgdbViaProxy(
+        'games',
+        { search: 'portal', limit: '1', probe: '1' },
+        {
+          dedup: false,
+          timeoutMs,
+          fetchImpl,
+          nowFn,
+          accessToken,
+          supabaseClient,
+          storage,
+          forceProxy,
+          ...(isDev !== undefined ? { isDev } : {}),
+        }
+      );
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (outcome.notConfigured || outcome.status === 503) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'not_configured',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: 'Sem chave no servidor (TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET).',
+          checkedAt: nowFn(),
+        };
+      }
+      if (!outcome.ok) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'error',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.status
+            ? `Indisponível (HTTP ${outcome.status}).`
+            : 'Falha ao consultar IGDB via servidor.',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: true,
+        state: 'online',
+        status: outcome.status || 200,
+        latencyMs,
+        via: 'proxy',
+        message: 'Online via servidor',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
+  if (meta.probeType === 'steam') {
+    try {
+      const outcome = await fetchSteamViaProxyOrDirect(
+        { term: 'portal' },
+        {
+          dedup: false,
+          timeoutMs,
+          fetchImpl,
+          nowFn,
+          forceProxy,
+          ...(isDev !== undefined ? { isDev } : {}),
+        }
+      );
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (!outcome.ok) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'error',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.status
+            ? `Indisponível (HTTP ${outcome.status}).`
+            : 'Falha ao consultar Steam Store.',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: true,
+        state: 'online',
+        status: outcome.status || 200,
+        latencyMs,
+        via: outcome.via,
+        message: outcome.via === 'proxy' ? 'Online via servidor' : 'Online',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
   if (meta.probeType === 'rawg') {
     try {
       const outcome = await fetchRawgViaProxy(
@@ -491,6 +644,125 @@ export async function probeApiSource(
         latencyMs,
         via: 'proxy',
         message: 'Online via servidor',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
+  if (meta.probeType === 'googleBooks') {
+    try {
+      const outcome = await fetchGoogleBooksViaProxyOrDirect(
+        { q: 'duna', maxResults: '1' },
+        {
+          dedup: false,
+          timeoutMs,
+          fetchImpl,
+          nowFn,
+          accessToken,
+          supabaseClient,
+          storage,
+          forceProxy,
+          ...(isDev !== undefined ? { isDev } : {}),
+        }
+      );
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (outcome.ok) {
+        return {
+          id: meta.id,
+          ok: true,
+          state: 'online',
+          status: outcome.status || 200,
+          latencyMs,
+          via: outcome.via,
+          message:
+            outcome.via === 'proxy'
+              ? 'Online via servidor (chave ativa)'
+              : 'Online (público · chave opcional não configurada)',
+          checkedAt: nowFn(),
+        };
+      }
+      if (outcome.status === 429) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'not_configured',
+          status: 429,
+          latencyMs,
+          via: outcome.via,
+          message: 'Cota pública atingida (configure GOOGLE_BOOKS_API_KEY opcional no servidor).',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: outcome.status ?? null,
+        latencyMs,
+        via: outcome.via,
+        message: outcome.status
+          ? `Indisponível (HTTP ${outcome.status}).`
+          : 'Falha ao consultar Google Books.',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
+  if (meta.probeType === 'brasilapi') {
+    try {
+      const outcome = await fetchBrasilApiIsbnViaProxyOrDirect('9788535914849', {
+        dedup: false,
+        timeoutMs,
+        fetchImpl,
+        nowFn,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      });
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (!outcome.ok) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'error',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.status
+            ? `Indisponível (HTTP ${outcome.status}).`
+            : 'Falha ao consultar BrasilAPI (ISBN).',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: true,
+        state: 'online',
+        status: outcome.status || 200,
+        latencyMs,
+        via: outcome.via,
+        message: outcome.via === 'proxy' ? 'Online via servidor' : 'Online',
         checkedAt: nowFn(),
       };
     } catch {

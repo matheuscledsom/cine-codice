@@ -24,6 +24,7 @@ import {
   searchReadingWorks,
   searchWorksByDomain,
 } from '../src/services/multiDomainSearchService.js';
+import { resetProviderRegistryForTests } from '../src/services/providerRegistry.js';
 import {
   filterWorksByDomain,
   mapCatalogRowToLocalWork,
@@ -154,7 +155,7 @@ describe('OmniPrism v2.1.0 — 4 Portais de Domínio (Cinema, Leitura, Games e M
     }
   });
 
-  it('2. Busca pública Leitura (Open Library + Google Books), Games (CheapShark/FreeToGame/Wikidata) e Música (iTunes 600x600 + MusicBrainz + Tracklist)', async () => {
+  it('2. Busca pública Leitura (Open Library + Google Books), Games (IGDB/RAWG/Steam/Wikidata) e Música (iTunes 600x600 + MusicBrainz + Tracklist)', async () => {
     const mockReadingFetch = async (url) => {
       if (url.includes('openlibrary.org')) {
         return {
@@ -206,36 +207,50 @@ describe('OmniPrism v2.1.0 — 4 Portais de Domínio (Cinema, Leitura, Games e M
     assert.equal(readingRes.results[0].totalPages, 412);
     assert.equal(readingRes.results[1].coverUrl, 'https://books.google.com/thumb.jpg');
 
+    resetProviderRegistryForTests();
     const mockGamesFetch = async (url) => {
-      if (url.includes('cheapshark.com')) {
+      if (url.includes('/api/igdb')) {
+        return { ok: false, status: 503, async json() { return { notConfigured: true }; } };
+      }
+      if (url.includes('/api/steam') && url.includes('term=')) {
         return {
           ok: true,
           async json() {
-            return [{ gameID: '201', steamAppID: '1245620', external: 'Elden Ring' }];
+            return {
+              items: [
+                {
+                  id: 1245620,
+                  name: 'Elden Ring',
+                  tiny_image:
+                    'https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/1245620/capsule_231x87.jpg',
+                },
+              ],
+            };
           },
         };
       }
-      if (url.includes('freetogame.com')) {
+      if (url.includes('/api/steam') && url.includes('appid=1245620')) {
         return {
           ok: true,
           async json() {
-            return [
-              {
-                id: 99,
-                title: 'Elden Arena Companion',
-                developer: 'Indie',
-                genre: 'Action RPG',
-                release_date: '2024-01-01',
-                thumbnail: 'https://www.freetogame.com/g/99/thumb.jpg',
+            return {
+              1245620: {
+                success: true,
+                data: {
+                  type: 'game',
+                  developers: ['FromSoftware'],
+                  publishers: ['Bandai Namco'],
+                  release_date: { date: '24 Feb, 2022' },
+                },
               },
-            ];
+            };
           },
         };
       }
       return { ok: true, async json() { return { search: [] }; } };
     };
 
-    const gamesRes = await searchGamesWorks('elden', { fetchImpl: mockGamesFetch });
+    const gamesRes = await searchGamesWorks('elden ring', { fetchImpl: mockGamesFetch });
     assert.equal(gamesRes.ok, true);
     assert.equal(gamesRes.results[0].domain, 'games');
     assert.match(gamesRes.results[0].coverUrl, /steamstatic\.com.*1245620/);

@@ -5,8 +5,28 @@ import {
   GAME_EDITION_TYPES,
   GAME_PLATFORM_UNSET_LABEL,
   normalizeDomainId,
+  normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
+import {
+  IGDB_CAMPAIGN_TIME_SOURCE_LABEL,
+  RAWG_CAMPAIGN_TIME_SOURCE_LABEL,
+  normalizePlatformName,
+  parseIgdbGameMetadata,
+  parseRawgGameMetadata,
+} from '../lib/gameDepth.js';
+import {
+  normalizeBrasilApiIsbnResponse,
+  parseAndValidateIsbn,
+} from '../lib/isbn.js';
+import {
+  fetchBrasilApiIsbnViaProxyOrDirect,
+  fetchGoogleBooksViaProxyOrDirect,
+  fetchIgdbViaProxy,
+  fetchRawgViaProxy,
+  fetchSteamViaProxyOrDirect,
+} from './apiProxyClient.js';
+import { executeDomainProviderChain } from './providerRegistry.js';
 
 const REQUEST_TIMEOUT_MS = 8000;
 const MUSICBRAINZ_TIMEOUT_MS = 12000;
@@ -66,6 +86,8 @@ const WIKIDATA_PLATFORM_QIDS = {
 
 const WIKIDATA_REMAKE_QIDS = new Set(['Q4393107']);
 const WIKIDATA_REMASTER_QIDS = new Set(['Q65963104', 'Q21125433']);
+const WIKIDATA_COLLECTION_QIDS = new Set(['Q110925077', 'Q200538', 'Q16070115']);
+const WIKIDATA_PORT_QIDS = new Set(['Q106114409']);
 const WIKIDATA_DLC_QIDS = new Set(['Q209163', 'Q1066707', 'Q848991']);
 const WIKIDATA_GAME_INSTANCE_QIDS = new Set([
   'Q7889',
@@ -76,6 +98,31 @@ const WIKIDATA_GAME_INSTANCE_QIDS = new Set([
   'Q1066707',
   'Q848991',
   'Q7058673',
+  'Q106114409',
+  'Q110925077',
+  'Q2249149',
+  'Q726242',
+]);
+const WIKIDATA_NON_GAME_QIDS = new Set([
+  'Q11424',     // film
+  'Q5398426',   // television series
+  'Q1107',      // anime
+  'Q202866',    // animated film
+  'Q24856',     // film series
+  'Q506240',    // television film
+  'Q21191270',  // animated television series
+  'Q226730',    // film trilogy
+  'Q15416',     // television program
+  'Q7725634',   // literary work
+  'Q47461344',  // written work
+  'Q571',       // book
+  'Q482994',    // album
+  'Q134556',    // single
+  'Q215380',    // musical group
+  'Q5',         // human
+  'Q1114461',   // comic
+  'Q21198342',  // manga series
+  'Q20650540',  // film soundtrack / soundtrack album
 ]);
 
 function isBrowserOffline() {
@@ -121,34 +168,7 @@ export function formatTrackDuration(durationMs) {
 }
 
 export function normalizePlatformLabel(raw) {
-  const clean = String(raw || '').trim();
-  if (!clean) return '';
-  const low = clean.toLowerCase();
-  if (/playstation\s*5|\bps5\b/.test(low)) return 'PS5';
-  if (/playstation\s*4|\bps4\b/.test(low)) return 'PS4';
-  if (/playstation\s*3|\bps3\b/.test(low)) return 'PS3';
-  if (/playstation\s*2|\bps2\b/.test(low)) return 'PS2';
-  if (/playstation\s*portable|\bpsp\b/.test(low)) return 'PSP';
-  if (/playstation\s*vita|\bps\s*vita\b/.test(low)) return 'PS Vita';
-  if (/playstation(\s*1)?|\bps1\b|\bpsx\b/.test(low)) return 'PS1';
-  if (/nintendo\s*switch|\bswitch\b/.test(low)) return 'Switch';
-  if (/super\s*nintendo|super\s*famicom|\bsnes\b/.test(low)) return 'SNES';
-  if (/game\s*boy\s*advance|\bgba\b/.test(low)) return 'GBA';
-  if (/nintendo\s*3ds|\b3ds\b/.test(low)) return '3DS';
-  if (/nintendo\s*ds|\bnds\b|\bds\b/.test(low)) return 'DS';
-  if (/\b(microsoft\s*windows|windows|pc|mac\s?os|os\s?x|linux|steam\s?os|web\s*browser|browser)\b/.test(low)) {
-    return 'PC';
-  }
-  if (/\b(android|ios|iphone|ipad|mobile)\b/.test(low)) return 'Mobile';
-  if (/xbox\s*series/.test(low)) return 'Xbox Series X/S';
-  if (/xbox\s*one/.test(low)) return 'Xbox One';
-  if (/xbox\s*360/.test(low)) return 'Xbox 360';
-  if (/\bxbox\b/.test(low)) return 'Xbox';
-  if (/gamecube/.test(low)) return 'GameCube';
-  if (/wii\s*u/.test(low)) return 'Wii U';
-  if (/\bwii\b/.test(low)) return 'Wii';
-  if (/nintendo\s*64|\bn64\b/.test(low)) return 'N64';
-  return clean;
+  return normalizePlatformName(raw);
 }
 
 export function detectGameEditionType({
@@ -158,38 +178,49 @@ export function detectGameEditionType({
   instanceQids = [],
   basedOn = false,
   isDerivativeWork = false,
+  isAddition = false,
+  sourceEdition = '',
 } = {}) {
+  if (sourceEdition) {
+    return normalizeGameEditionType(sourceEdition);
+  }
+
   const combined = `${title} ${description}`.toLowerCase();
   const qidSet = new Set(Array.isArray(instanceQids) ? instanceQids : []);
 
-  if (workType === 'dlc' || [...qidSet].some((q) => WIKIDATA_DLC_QIDS.has(q))) {
-    return 'DLC/Expansão';
+  if (workType === 'dlc' || isAddition || [...qidSet].some((q) => WIKIDATA_DLC_QIDS.has(q))) {
+    // Mesmo se for addition da RAWG, checa antes se o título é explicitamente Remake/Remaster/Port/Coletânea
+    if (/\bremake\b/i.test(title)) return 'Remake';
+    if (/\b(remaster|remastered|hd)\b/i.test(title)) return 'Remaster';
+    if (/\b(collection|colet[âa]nea|trilogy|anthology|bundle)\b/i.test(title)) {
+      return 'Coletânea';
+    }
+    return 'DLC';
   }
   if (/\b(dlc|expansion|expans[ãa]o|season pass|add-on)\b/i.test(combined)) {
-    return 'DLC/Expansão';
+    return 'DLC';
   }
   if ([...qidSet].some((q) => WIKIDATA_REMAKE_QIDS.has(q)) || /\bremake\b/i.test(combined)) {
     return 'Remake';
   }
-  // Se a fonte textual disser explicitamente "remaster", mantém Remaster
+  if ([...qidSet].some((q) => WIKIDATA_COLLECTION_QIDS.has(q)) || /\b(collection|colet[âa]nea|trilogy|anthology|bundle)\b/i.test(title)) {
+    return 'Coletânea';
+  }
   if (
-    /\b(remaster|remastered|hd collection|definitive edition|director'?s cut|anniversary edition)\b/i.test(
+    /\b(remaster|remastered|definitive edition|director'?s cut|anniversary edition)\b/i.test(
       combined
-    )
+    ) ||
+    [...qidSet].some((q) => WIKIDATA_REMASTER_QIDS.has(q))
   ) {
     return 'Remaster';
   }
-  if (/\b(port|re-?release|relan[çc]amento)\b/i.test(combined)) {
+  if ([...qidSet].some((q) => WIKIDATA_PORT_QIDS.has(q)) || /\b(port|relan[çc]amento)\b/i.test(combined)) {
     return 'Port';
   }
-  // Relação de obra derivada na Wikidata (P4969 / P144) sem marcação explícita de remaster -> Remake
   if (isDerivativeWork || basedOn) {
     return 'Remake';
   }
-  if ([...qidSet].some((q) => WIKIDATA_REMASTER_QIDS.has(q))) {
-    return 'Remaster';
-  }
-  return GAME_EDITION_TYPES[0]; // 'Original'
+  return GAME_EDITION_TYPES[0]; // 'Jogo'
 }
 
 const WIKIDATA_SHORT_DESC_REGEX =
@@ -324,8 +355,8 @@ function getCandidateDedupKey(item) {
   const creator = item.creator || item.director || '';
 
   if (domain === 'games') {
-    const edition = item.editionType || 'Original';
-    // Preserva separadamente Original vs Remake/Remaster/Port/DLC e anos distintos (>= 3 anos)
+    const edition = normalizeGameEditionType(item.editionType);
+    // Preserva separadamente Jogo vs Remake/Remaster/Port/Coletânea/DLC e anos distintos (>= 3 anos)
     const yearBucket =
       Number(item.releaseYear) > 1970 ? String(Math.floor(Number(item.releaseYear) / 3)) : '';
     return normalizeSearchKey(title, '', `${edition}::${yearBucket}`);
@@ -385,7 +416,7 @@ function deduplicateDomainCandidates(candidates = []) {
       platforms: mergedPlatforms,
       platform: preferredPlatform,
       storeOrLauncher: existing.storeOrLauncher || item.storeOrLauncher || '',
-      editionType: existing.editionType || item.editionType || 'Original',
+      editionType: existing.editionType || item.editionType || GAME_EDITION_TYPES[0],
       albumName: existing.albumName || item.albumName || '',
       durationMs: existing.durationMs || item.durationMs || null,
       durationLabel: existing.durationLabel || item.durationLabel || '',
@@ -531,6 +562,7 @@ function parseGoogleBooksItems(
           ? 'manga'
           : 'book';
     const langCode = String(info.language || '').trim().toLowerCase();
+    const countryCode = String(vol?.accessInfo?.country || '').trim().toUpperCase();
     const effectiveLang = isPortugueseCode(langCode)
       ? 'pt'
       : langCode || (isPortugueseQuery ? 'pt' : '');
@@ -543,6 +575,7 @@ function parseGoogleBooksItems(
       originalTitle: '',
       creator: author,
       director: author,
+      studio: String(info.publisher || '').trim(),
       releaseYear: info.publishedDate ? Number(String(info.publishedDate).slice(0, 4)) || null : null,
       coverUrl,
       synopsis: String(info.description || '').trim(),
@@ -552,9 +585,11 @@ function parseGoogleBooksItems(
       isbnOrDoi: isbnObj?.identifier ? String(isbnObj.identifier) : '',
       bookFormat: 'Físico',
       language: effectiveLang,
+      country: countryCode,
       _fromPtQuery: Boolean(isPortugueseQuery),
       genres,
       ids: { googleBooks: vol.id || null },
+      source: 'googleBooks',
       sourceBadge: 'Google Books',
       mergedSources: ['Google Books'],
     });
@@ -590,6 +625,9 @@ export function rankReadingCandidates(candidates = [], query = '') {
     const isPt = isPortugueseCode(item.language);
     if (isPt && !isNonLatin && !looksForeignTitle) {
       score += 240;
+      if (item.country === 'BR') {
+        score += 80;
+      }
       if (isLikelyPortugueseTitle(title)) {
         score += 70;
       }
@@ -682,189 +720,516 @@ function enrichPortugueseBooksWithOriginals(ptCandidates = [], globalCandidates 
   });
 }
 
-/**
- * Busca gratuita para Leitura & Acadêmico (Open Library `language=por` + Google Books `langRestrict=pt`
- * com consulta secundária para `originalTitle` e capas em alta resolução).
- */
-export async function searchReadingWorks(
-  query,
-  { signal, fetchImpl, mediaTypeFilter = 'all', onPartialResults = null } = {}
+async function searchReadingViaGoogleBooks(
+  cleanQuery,
+  mediaTypeFilter,
+  {
+    signal,
+    fetchImpl,
+    timeoutMs,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = undefined,
+    nowFn = Date.now,
+  } = {}
 ) {
-  const cleanQuery = String(query || '').trim();
-  if (!cleanQuery) return { ok: true, results: [], offline: false, partialFailure: false, usedSources: [] };
-  if (isBrowserOffline()) {
-    return { ok: false, results: [], offline: true, partialFailure: false, usedSources: [] };
+  // Google Books volumes.list: langRestrict=pt + printType=books (country=BR não é parâmetro de busca pública na API v1, aplicado no ranking via accessInfo.country)
+  const commonProxyOpts = {
+    signal,
+    fetchImpl: fetchImpl || fetch,
+    timeoutMs,
+    nowFn,
+    accessToken,
+    supabaseClient,
+    storage,
+    forceProxy,
+    ...(isDev !== undefined ? { isDev } : {}),
+  };
+
+  const [ptOutcome, globalOutcome] = await Promise.allSettled([
+    fetchGoogleBooksViaProxyOrDirect(
+      { q: cleanQuery, langRestrict: 'pt', printType: 'books', maxResults: '12' },
+      commonProxyOpts
+    ),
+    fetchGoogleBooksViaProxyOrDirect(
+      { q: cleanQuery, maxResults: '8' },
+      commonProxyOpts
+    ),
+  ]);
+
+  const ptOk = ptOutcome.status === 'fulfilled' && ptOutcome.value?.ok;
+  const globalOk = globalOutcome.status === 'fulfilled' && globalOutcome.value?.ok;
+  if (!ptOk && !globalOk) {
+    const firstErr =
+      (ptOutcome.status === 'rejected' && ptOutcome.reason?.message) ||
+      (globalOutcome.status === 'rejected' && globalOutcome.reason?.message) ||
+      (ptOutcome.status === 'fulfilled' && ptOutcome.value?.status
+        ? `Google Books HTTP ${ptOutcome.value.status}`
+        : 'Google Books indisponível');
+    return {
+      ok: false,
+      error: firstErr,
+      results: [],
+    };
   }
 
+  const ptRaw =
+    ptOk && Array.isArray(ptOutcome.value?.data?.items)
+      ? parseGoogleBooksItems(ptOutcome.value.data.items, {
+          mediaTypeFilter,
+          isPortugueseQuery: true,
+        })
+      : [];
+  const globalRaw =
+    globalOk && Array.isArray(globalOutcome.value?.data?.items)
+      ? parseGoogleBooksItems(globalOutcome.value.data.items, {
+          mediaTypeFilter,
+          isPortugueseQuery: false,
+        })
+      : [];
+
+  const enrichedPt = enrichPortugueseBooksWithOriginals(ptRaw, globalRaw);
+  const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
+  const filteredGlobals = globalRaw.filter(
+    (g) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(g.title || ''))
+  );
+  const combined =
+    enrichedPt.length >= 6 ? enrichedPt : [...enrichedPt, ...filteredGlobals];
+
+  return {
+    ok: true,
+    results: deduplicateDomainCandidates(combined),
+  };
+}
+
+async function searchReadingViaOpenLibrary(
+  cleanQuery,
+  mediaTypeFilter,
+  { signal, fetchImpl, timeoutMs } = {}
+) {
   const encoded = encodeURIComponent(cleanQuery);
   const olFields =
     'key,title,author_name,first_publish_year,number_of_pages_median,cover_i,isbn,subject,first_sentence,language,editions,editions.key,editions.title,editions.language,editions.cover_i,editions.isbn';
   const olPtUrl = `https://openlibrary.org/search.json?q=${encoded}&language=por&limit=12&fields=${olFields}`;
-  const gbPtUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&langRestrict=pt&maxResults=12`;
-  const gbGlobalUrl = `https://www.googleapis.com/books/v1/volumes?q=${encoded}&maxResults=8`;
 
-  const olPtPromise = fetchJsonSafe(olPtUrl, { signal, fetchImpl });
-  const gbPtPromise = fetchJsonSafe(gbPtUrl, { signal, fetchImpl });
-  const gbGlobalPromise = fetchJsonSafe(gbGlobalUrl, { signal, fetchImpl });
-
-  if (typeof onPartialResults === 'function') {
-    const streamPt = [];
-    const streamGlobal = [];
-    const streamSources = new Set();
-    let pending = 3;
-    const emitReadingPartial = () => {
-      if (signal?.aborted) return;
-      const enriched = enrichPortugueseBooksWithOriginals(streamPt, streamGlobal);
-      const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
-      const filteredG = streamGlobal.filter(
-        (g) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(g.title || ''))
-      );
-      const pool = enriched.length >= 6 ? enriched : [...enriched, ...filteredG];
-      if (pool.length === 0) return;
-      const dedupedPartial = deduplicateDomainCandidates(pool).map((item) => {
-        const clean = { ...item };
-        delete clean._fromPtQuery;
-        return clean;
-      });
-      const rankedPartial = rankReadingCandidates(dedupedPartial, cleanQuery).slice(0, 18);
-      const srcArr = Array.from(streamSources);
-      onPartialResults({
-        results: rankedPartial,
-        usedSources: srcArr,
-        pendingCount: pending,
-        partial: pending > 0,
-        sourceStatusHint: srcArr.length > 0 ? `Fontes: ${srcArr.join(' · ')}` : '',
-      });
-    };
-
-    olPtPromise
-      .then((val) => {
-        pending = Math.max(0, pending - 1);
-        if (Array.isArray(val?.docs)) {
-          streamSources.add('Open Library');
-          streamPt.push(...parseOpenLibraryDocs(val.docs, { mediaTypeFilter, isPortugueseQuery: true }));
-          emitReadingPartial();
-        }
-      })
-      .catch(() => {
-        pending = Math.max(0, pending - 1);
-      });
-    gbPtPromise
-      .then((val) => {
-        pending = Math.max(0, pending - 1);
-        if (Array.isArray(val?.items)) {
-          streamSources.add('Google Books');
-          streamPt.push(...parseGoogleBooksItems(val.items, { mediaTypeFilter, isPortugueseQuery: true }));
-          emitReadingPartial();
-        }
-      })
-      .catch(() => {
-        pending = Math.max(0, pending - 1);
-      });
-    gbGlobalPromise
-      .then((val) => {
-        pending = Math.max(0, pending - 1);
-        if (Array.isArray(val?.items)) {
-          streamSources.add('Google Books');
-          streamGlobal.push(...parseGoogleBooksItems(val.items, { mediaTypeFilter, isPortugueseQuery: false }));
-          emitReadingPartial();
-        }
-      })
-      .catch(() => {
-        pending = Math.max(0, pending - 1);
-      });
+  const ptData = await fetchJsonSafe(olPtUrl, { signal, fetchImpl, timeoutMs });
+  if (!Array.isArray(ptData?.docs)) {
+    return { ok: false, error: 'Open Library resposta inválida', results: [] };
   }
 
-  const [olPtRes, gbPtRes, gbGlobalRes] = await Promise.allSettled([
-    olPtPromise,
-    gbPtPromise,
-    gbGlobalPromise,
-  ]);
+  const ptDocs = parseOpenLibraryDocs(ptData.docs, {
+    mediaTypeFilter,
+    isPortugueseQuery: true,
+  });
 
-  const ptCandidates = [];
-  const globalCandidates = [];
-  const usedSources = [];
-  let primaryFailed = 0;
-
-  if (olPtRes.status === 'fulfilled' && Array.isArray(olPtRes.value?.docs)) {
-    usedSources.push('Open Library');
-    ptCandidates.push(
-      ...parseOpenLibraryDocs(olPtRes.value.docs, {
-        mediaTypeFilter,
-        isPortugueseQuery: true,
-      })
-    );
-  } else {
-    primaryFailed += 1;
+  if (ptDocs.length >= 3) {
+    return { ok: true, results: ptDocs };
   }
 
-  if (gbPtRes.status === 'fulfilled' && Array.isArray(gbPtRes.value?.items)) {
-    usedSources.push('Google Books');
-    ptCandidates.push(
-      ...parseGoogleBooksItems(gbPtRes.value.items, {
-        mediaTypeFilter,
-        isPortugueseQuery: true,
-      })
-    );
-  } else {
-    primaryFailed += 1;
-  }
-
-  if (gbGlobalRes.status === 'fulfilled' && Array.isArray(gbGlobalRes.value?.items)) {
-    if (!usedSources.includes('Google Books')) usedSources.push('Google Books');
-    globalCandidates.push(
-      ...parseGoogleBooksItems(gbGlobalRes.value.items, {
+  let globalDocs = [];
+  try {
+    const olGlobalUrl = `https://openlibrary.org/search.json?q=${encoded}&limit=8`;
+    const globalData = await fetchJsonSafe(olGlobalUrl, { signal, fetchImpl, timeoutMs });
+    if (Array.isArray(globalData?.docs)) {
+      globalDocs = parseOpenLibraryDocs(globalData.docs, {
         mediaTypeFilter,
         isPortugueseQuery: false,
-      })
-    );
+      });
+    }
+  } catch {
+    // Fallback silencioso caso busca global na Open Library falhe
   }
 
-  // Se houver poucos resultados PT, faz fallback secundário na Open Library sem restrição de idioma
-  if (ptCandidates.length < 3) {
-    try {
-      const olGlobalUrl = `https://openlibrary.org/search.json?q=${encoded}&limit=8`;
-      const olGlobalData = await fetchJsonSafe(olGlobalUrl, { signal, fetchImpl });
-      if (Array.isArray(olGlobalData?.docs)) {
-        if (!usedSources.includes('Open Library')) usedSources.push('Open Library');
-        globalCandidates.push(
-          ...parseOpenLibraryDocs(olGlobalData.docs, {
-            mediaTypeFilter,
-            isPortugueseQuery: false,
-          })
-        );
+  const enrichedPt = enrichPortugueseBooksWithOriginals(ptDocs, globalDocs);
+  const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
+  const filteredGlobals = globalDocs.filter(
+    (g) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(g.title || ''))
+  );
+  const combined =
+    enrichedPt.length >= 6 ? enrichedPt : [...enrichedPt, ...filteredGlobals];
+
+  return {
+    ok: true,
+    results: deduplicateDomainCandidates(combined),
+  };
+}
+
+/**
+ * Busca ordenada para Leitura & Acadêmico via Provider Registry:
+ * Ordem padrão: Google Books (langRestrict=pt, foco Brasil no ranking) -> Open Library.
+ */
+export async function searchReadingWorks(
+  query,
+  {
+    signal,
+    fetchImpl,
+    mediaTypeFilter = 'all',
+    onPartialResults = null,
+    skipCache = undefined,
+    storage = null,
+    nowFn = Date.now,
+    idbFactory = null,
+    providers = null,
+    accessToken = '',
+    supabaseClient = null,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
+) {
+  const cleanQuery = String(query || '').trim();
+  if (!cleanQuery) {
+    return { ok: true, results: [], offline: false, partialFailure: false, usedSources: [] };
+  }
+  if (isBrowserOffline()) {
+    return { ok: false, results: [], offline: true, partialFailure: false, usedSources: [] };
+  }
+
+  // Quando chamador injeta mock de rede sem pedir cache explicitamente, evita contaminar entre buscas isoladas
+  const effectiveSkipCache =
+    skipCache !== undefined
+      ? Boolean(skipCache)
+      : Boolean(typeof fetchImpl === 'function' && fetchImpl !== fetch && !idbFactory);
+
+  const finalizeReadingList = (list = []) => {
+    const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
+    const cleaned = (Array.isArray(list) ? list : [])
+      .filter((item) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(item?.title || '')))
+      .map((item) => {
+        const copy = { ...item };
+        delete copy._fromPtQuery;
+        return copy;
+      });
+    return rankReadingCandidates(deduplicateDomainCandidates(cleaned), cleanQuery).slice(0, 18);
+  };
+
+  const chainOutcome = await executeDomainProviderChain({
+    domain: 'reading',
+    query: cleanQuery,
+    mediaTypeFilter,
+    providers,
+    signal,
+    skipCache: effectiveSkipCache,
+    nowFn,
+    storage,
+    idbFactory,
+    gapFillFields: ['coverUrl', 'totalPages', 'originalTitle'],
+    supplementBelowCount: 3,
+    shouldSupplementResults: (current) => {
+      const list = Array.isArray(current) ? current : [];
+      if (list.length < 3) return true;
+      const ptCount = list.filter(
+        (item) => item?._fromPtQuery || isPortugueseCode(item?.language)
+      ).length;
+      return ptCount < 3;
+    },
+    onPartialResults:
+      typeof onPartialResults === 'function'
+        ? (partial) => {
+            const finalized = finalizeReadingList(partial.results || []);
+            if (finalized.length === 0) return;
+            onPartialResults({
+              ...partial,
+              results: finalized,
+              sourceStatusHint:
+                (partial.usedSources || []).length > 0
+                  ? `Fontes: ${partial.usedSources.join(' · ')}`
+                  : '',
+            });
+          }
+        : null,
+    executeProvider: async (provider, { signal: provSignal, timeoutMs: provTimeout }) => {
+      const commonOpts = {
+        signal: provSignal,
+        fetchImpl,
+        timeoutMs: provTimeout,
+      };
+      if (provider.id === 'googleBooks') {
+        return searchReadingViaGoogleBooks(cleanQuery, mediaTypeFilter, {
+          ...commonOpts,
+          accessToken,
+          supabaseClient,
+          storage,
+          forceProxy,
+          nowFn,
+          ...(isDev !== undefined ? { isDev } : {}),
+        });
       }
-    } catch {
-      // Fallback silencioso
+      if (provider.id === 'openlibrary') {
+        return searchReadingViaOpenLibrary(cleanQuery, mediaTypeFilter, commonOpts);
+      }
+      return { ok: false, error: `Provedor de leitura desconhecido: ${provider.id}`, results: [] };
+    },
+  });
+
+  const ptPool = (chainOutcome.results || []).filter(
+    (item) => item?._fromPtQuery || isPortugueseCode(item?.language)
+  );
+  const globalPool = (chainOutcome.results || []).filter(
+    (item) => !item?._fromPtQuery && !isPortugueseCode(item?.language)
+  );
+  const enrichedAcrossSources = enrichPortugueseBooksWithOriginals(
+    ptPool.length > 0 ? ptPool : chainOutcome.results || [],
+    globalPool
+  );
+  const ranked = finalizeReadingList(
+    ptPool.length >= 6 ? enrichedAcrossSources : [...enrichedAcrossSources, ...globalPool]
+  );
+  const usedSources = Array.from(new Set(chainOutcome.usedSources || []));
+
+  return {
+    ok: chainOutcome.ok,
+    results: ranked,
+    offline: false,
+    partialFailure: !chainOutcome.ok && ranked.length === 0,
+    usedSources,
+    attempts: chainOutcome.attempts,
+    primarySourceId: chainOutcome.primarySourceId,
+    sourceStatusHint: usedSources.length > 0 ? `Fontes: ${usedSources.join(' · ')}` : '',
+  };
+}
+
+/**
+ * Busca livro por ISBN-10 ou ISBN-13 (valida dígito verificador + BrasilAPI proxy com fallback Open Library/Google Books).
+ */
+export async function fetchBookByIsbn(
+  rawIsbn,
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    nowFn = Date.now,
+    forceProxy = null,
+    isDev = undefined,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+  } = {}
+) {
+  const validation = parseAndValidateIsbn(rawIsbn);
+  if (!validation.valid) {
+    return {
+      ok: false,
+      invalidIsbn: true,
+      notFound: false,
+      isbn: validation.normalized,
+      format: validation.format,
+      error: validation.error,
+      results: [],
+      candidate: null,
+      usedSources: [],
+    };
+  }
+
+  if (isBrowserOffline()) {
+    return {
+      ok: false,
+      offline: true,
+      invalidIsbn: false,
+      notFound: false,
+      isbn: validation.normalized,
+      error: 'Sem conexão com a internet no momento.',
+      results: [],
+      candidate: null,
+      usedSources: [],
+    };
+  }
+
+  const cleanIsbn = validation.normalized;
+  const brasilOut = await fetchBrasilApiIsbnViaProxyOrDirect(cleanIsbn, {
+    signal,
+    fetchImpl,
+    timeoutMs,
+    nowFn,
+    forceProxy,
+    ...(isDev !== undefined ? { isDev } : {}),
+  });
+
+  if (brasilOut.ok && brasilOut.data) {
+    let candidate = normalizeBrasilApiIsbnResponse(brasilOut.data, cleanIsbn);
+    if (candidate) {
+      const usedSources = ['BrasilAPI'];
+      const needsGapFill =
+        !candidate.creator || !candidate.coverUrl || !candidate.totalPages || !candidate.releaseYear;
+      if (needsGapFill) {
+        let enricher = null;
+        try {
+          const olData = await fetchJsonSafe(
+            `https://openlibrary.org/search.json?isbn=${encodeURIComponent(cleanIsbn)}&limit=3`,
+            { signal, fetchImpl, timeoutMs }
+          );
+          const olList = parseOpenLibraryDocs(olData?.docs || [], {
+            mediaTypeFilter: 'book',
+            isPortugueseQuery: true,
+          });
+          if (olList[0]) {
+            enricher = olList[0];
+            usedSources.push('Open Library');
+          }
+        } catch {
+          // Segue sem interromper resultado já obtido da BrasilAPI
+        }
+        if ((!enricher || !enricher.coverUrl || !enricher.creator) && !signal?.aborted) {
+          try {
+            const gbOut = await fetchGoogleBooksViaProxyOrDirect(
+              { q: `isbn:${cleanIsbn}`, maxResults: '3' },
+              {
+                signal,
+                fetchImpl,
+                timeoutMs,
+                nowFn,
+                accessToken,
+                supabaseClient,
+                storage,
+                forceProxy,
+                ...(isDev !== undefined ? { isDev } : {}),
+              }
+            );
+            const gbList =
+              gbOut.ok && Array.isArray(gbOut.data?.items)
+                ? parseGoogleBooksItems(gbOut.data.items, {
+                    mediaTypeFilter: 'book',
+                    isPortugueseQuery: true,
+                  })
+                : [];
+            if (gbList[0]) {
+              enricher = {
+                ...gbList[0],
+                ...(enricher || {}),
+                creator: enricher?.creator || gbList[0].creator,
+                coverUrl: enricher?.coverUrl || gbList[0].coverUrl,
+                totalPages: enricher?.totalPages || gbList[0].totalPages,
+                releaseYear: enricher?.releaseYear || gbList[0].releaseYear,
+                synopsis: enricher?.synopsis || gbList[0].synopsis,
+              };
+              usedSources.push('Google Books');
+            }
+          } catch {
+            // Segue com os dados já disponíveis
+          }
+        }
+        if (enricher) {
+          const nextCreator = candidate.creator || enricher.creator || '';
+          const nextCover = candidate.coverUrl || enricher.coverUrl || null;
+          candidate = {
+            ...candidate,
+            creator: nextCreator,
+            author: nextCreator,
+            director: nextCreator,
+            coverUrl: nextCover,
+            coverSources: Array.from(
+              new Set([
+                ...(nextCover ? [nextCover] : []),
+                ...(Array.isArray(candidate.coverSources) ? candidate.coverSources : []),
+                ...(Array.isArray(enricher.coverSources) ? enricher.coverSources : []),
+              ].filter(Boolean))
+            ),
+            totalPages: candidate.totalPages || enricher.totalPages || null,
+            releaseYear: candidate.releaseYear || enricher.releaseYear || null,
+            synopsis: candidate.synopsis || enricher.synopsis || '',
+            mergedSources: Array.from(
+              new Set([...(candidate.mergedSources || []), ...usedSources.slice(1)])
+            ),
+          };
+        }
+      }
+
+      return {
+        ok: true,
+        invalidIsbn: false,
+        notFound: false,
+        isbn: cleanIsbn,
+        format: validation.format,
+        candidate,
+        results: [candidate],
+        usedSources,
+        sourceStatusHint:
+          usedSources.length > 1
+            ? `${candidate.sourceBadge} + ${usedSources.slice(1).join(' · ')}`
+            : candidate.sourceBadge,
+      };
     }
   }
 
-  const enrichedPt = enrichPortugueseBooksWithOriginals(ptCandidates, globalCandidates);
-  const queryIsLatin = !NON_LATIN_SCRIPT_REGEX.test(cleanQuery);
-  const filteredGlobals = globalCandidates.filter(
-    (g) => !(queryIsLatin && NON_LATIN_SCRIPT_REGEX.test(g.title || ''))
-  );
+  // Se não achou na BrasilAPI, tenta busca direta pelo código isbn: no Google Books (proxy opcional -> público) e Open Library
+  try {
+    const gbOut = await fetchGoogleBooksViaProxyOrDirect(
+      { q: `isbn:${cleanIsbn}`, maxResults: '3' },
+      {
+        signal,
+        fetchImpl,
+        timeoutMs,
+        nowFn,
+        accessToken,
+        supabaseClient,
+        storage,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      }
+    );
+    const gbCandidates =
+      gbOut.ok && Array.isArray(gbOut.data?.items)
+        ? parseGoogleBooksItems(gbOut.data.items, {
+            mediaTypeFilter: 'book',
+            isPortugueseQuery: true,
+          })
+        : [];
+    if (gbCandidates[0]) {
+      const cand = { ...gbCandidates[0], isbnOrDoi: gbCandidates[0].isbnOrDoi || cleanIsbn };
+      return {
+        ok: true,
+        invalidIsbn: false,
+        notFound: false,
+        isbn: cleanIsbn,
+        format: validation.format,
+        candidate: cand,
+        results: [cand],
+        usedSources: ['Google Books'],
+        sourceStatusHint: 'Google Books (ISBN)',
+      };
+    }
+  } catch {
+    // Tenta Open Library abaixo
+  }
 
-  // Só mistura globais na lista principal se tivermos poucos resultados em PT; caso contrário, mantém o foco em PT
-  const combinedPool =
-    enrichedPt.length >= 6 ? enrichedPt : [...enrichedPt, ...filteredGlobals];
-
-  const deduped = deduplicateDomainCandidates(combinedPool).map((item) => {
-    const clean = { ...item };
-    delete clean._fromPtQuery;
-    return clean;
-  });
-
-  const ranked = rankReadingCandidates(deduped, cleanQuery).slice(0, 18);
+  try {
+    const olData = await fetchJsonSafe(
+      `https://openlibrary.org/search.json?isbn=${encodeURIComponent(cleanIsbn)}&limit=3`,
+      { signal, fetchImpl, timeoutMs }
+    );
+    const olCandidates = parseOpenLibraryDocs(olData?.docs || [], {
+      mediaTypeFilter: 'book',
+      isPortugueseQuery: true,
+    });
+    if (olCandidates[0]) {
+      const cand = { ...olCandidates[0], isbnOrDoi: olCandidates[0].isbnOrDoi || cleanIsbn };
+      return {
+        ok: true,
+        invalidIsbn: false,
+        notFound: false,
+        isbn: cleanIsbn,
+        format: validation.format,
+        candidate: cand,
+        results: [cand],
+        usedSources: ['Open Library'],
+        sourceStatusHint: 'Open Library (ISBN)',
+      };
+    }
+  } catch {
+    // Segue para notFound claro
+  }
 
   return {
-    ok: primaryFailed < 2 || ranked.length > 0,
-    results: ranked,
-    offline: false,
-    partialFailure: primaryFailed > 0 && ranked.length === 0,
-    usedSources: Array.from(new Set(usedSources)),
-    sourceStatusHint:
-      usedSources.length > 0 ? `Fontes: ${Array.from(new Set(usedSources)).join(' · ')}` : '',
+    ok: false,
+    invalidIsbn: false,
+    notFound: true,
+    isbn: cleanIsbn,
+    format: validation.format,
+    error: `ISBN ${cleanIsbn} não encontrado na BrasilAPI (CBL, Mercado Editorial, Open Library, Google Books). Você pode cadastrar este livro manualmente.`,
+    results: [],
+    candidate: null,
+    usedSources: [],
   };
 }
 
@@ -903,17 +1268,28 @@ function extractYearFromDescription(desc = '') {
   return m ? Number(m[1]) : null;
 }
 
+const WIKIDATA_NON_GAME_DESC_RE =
+  /\b(film|filme|movie|cinema|pel[íi]cula|television\s+series|tv\s+series|s[ée]rie\s+de\s+televis[ãa]o|web\s+series|animated\s+series|anime\s+series|soundtrack|trilha\s+sonora|novel|romance|livro|book|comic\s+book|banda|musical\s+group)\b/i;
+
 function isLikelyGameEntity(entity, searchDesc = '') {
   const instanceIds = extractWikidataClaimIds(entity, 'P31');
+  if (instanceIds.some((id) => WIKIDATA_NON_GAME_QIDS.has(id))) {
+    return false;
+  }
   if (instanceIds.some((id) => WIKIDATA_GAME_INSTANCE_QIDS.has(id))) {
     return true;
+  }
+  // Somente aceita por descrição quando não há P31 declarada e a descrição é explicitamente de jogo (nunca filme/série)
+  if (instanceIds.length > 0) {
+    return false;
   }
   const descPt = String(entity?.descriptions?.pt?.value || '');
   const descEn = String(entity?.descriptions?.en?.value || '');
   const combined = `${searchDesc} ${descPt} ${descEn}`;
-  return /video\s?game|videojogo|jogo eletr[ôo]nico|jogo de v[íi]deo|remake|remaster|expans[ãa]o|dlc|rpg/i.test(
-    combined
-  );
+  if (WIKIDATA_NON_GAME_DESC_RE.test(combined)) {
+    return false;
+  }
+  return /video\s?game|videojogo|jogo\s+eletr[ôo]nico|jogo\s+de\s+v[íi]deo/i.test(combined);
 }
 
 function buildWikidataGameCandidate(
@@ -936,6 +1312,9 @@ function buildWikidataGameCandidate(
   const synopsis = descPt || String(fallbackSearch?.description || '').trim() || descEn;
 
   const instanceQids = extractWikidataClaimIds(entity, 'P31');
+  if (instanceQids.some((id) => WIKIDATA_NON_GAME_QIDS.has(id))) {
+    return null;
+  }
   const basedOnQids = extractWikidataClaimIds(entity, 'P144');
   const platformQids = extractWikidataClaimIds(entity, 'P400');
   const devQids = extractWikidataClaimIds(entity, 'P178');
@@ -972,11 +1351,16 @@ function buildWikidataGameCandidate(
     .join(', ');
 
   const coverUrl = extractWikidataImageUrl(entity);
+  const safeWorkType = isDlc
+    ? 'dlc'
+    : resolvedType === 'modpack'
+      ? 'modpack'
+      : 'game';
 
   return {
     id: `wd-${qid}`,
     domain: 'games',
-    workType: isDlc ? 'dlc' : resolvedType,
+    workType: safeWorkType,
     title,
     creator: developers,
     director: developers,
@@ -986,6 +1370,7 @@ function buildWikidataGameCandidate(
     synopsis,
     // NUNCA assumir PC / Steam como padrão para Wikidata!
     platforms: mappedPlatforms,
+    originalPlatforms: mappedPlatforms.length === 1 ? [mappedPlatforms[0]] : [],
     platform: mappedPlatforms[0] || '',
     platformDisplayLabel: mappedPlatforms[0] || GAME_PLATFORM_UNSET_LABEL,
     editionType,
@@ -995,6 +1380,7 @@ function buildWikidataGameCandidate(
     buildOrCharacter: '',
     genres: [],
     ids: { wikidata: qid },
+    source: 'wikidata',
     sourceBadge: 'Wikidata',
     mergedSources: ['Wikidata'],
   };
@@ -1028,15 +1414,16 @@ export function rankGamesCandidates(candidates = [], query = '', mediaTypeFilter
       score += 60;
     }
 
-    // Prioriza edições principais (Original e Remake) com plataformas e ano reais
-    if (item.editionType === 'Original') score += 45;
+    if (item.editionType === 'Jogo' || item.editionType === 'Original') score += 45;
     else if (item.editionType === 'Remake') score += 40;
     else if (item.editionType === 'Remaster') score += 30;
+    else if (item.editionType === 'Coletânea') score += 25;
 
     if (Array.isArray(item.platforms) && item.platforms.length > 0) score += 50;
     if (item.releaseYear) score += 35;
     if (item.coverUrl) score += 25;
     if (item.creator) score += 15;
+    if (item.campaignTimeHours > 0 || item.rawgPlaytimeHours > 0) score += 10;
 
     return score;
   };
@@ -1044,421 +1431,614 @@ export function rankGamesCandidates(candidates = [], query = '', mediaTypeFilter
   return [...candidates].sort((a, b) => {
     const diff = scoreItem(b) - scoreItem(a);
     if (diff !== 0) return diff;
-    // Em empate (ex: Original 2005 vs Remake 2018), Original mais antigo vem primeiro
     const yA = Number(a.releaseYear) || 9999;
     const yB = Number(b.releaseYear) || 9999;
     return yA - yB;
   });
 }
 
+function isRelevantGameCandidate(item, query) {
+  const normQ = normalizeText(query);
+  if (!normQ) return true;
+  const normTitle = normalizeText(item?.title || '');
+  const normCreator = normalizeText(item?.creator || '');
+  if (!normTitle) return false;
+  if (normTitle.includes(normQ) || normQ.includes(normTitle)) return true;
+  if (normCreator && normCreator.includes(normQ)) return true;
+  const tokens = normQ.split(' ').filter((w) => w.length >= 2);
+  if (tokens.length === 0) return true;
+  return tokens.some((tok) => normTitle.includes(tok));
+}
+
+function buildIgdbGameCandidate(igdbGame, resolvedType = 'game') {
+  const parsed = parseIgdbGameMetadata(igdbGame);
+  if (!parsed) return null;
+  const isDlc = parsed.editionType === 'DLC';
+  const creator = parsed.developers.slice(0, 2).join(', ');
+  const safeWorkType = isDlc
+    ? 'dlc'
+    : resolvedType === 'modpack'
+      ? 'modpack'
+      : 'game';
+
+  return {
+    id: `igdb-${parsed.igdbId || normalizeText(parsed.title)}`,
+    domain: 'games',
+    workType: safeWorkType,
+    title: parsed.title,
+    creator,
+    director: creator,
+    studio: parsed.publishers[0] || creator || '',
+    releaseYear: parsed.releaseYear,
+    coverUrl: parsed.coverUrl,
+    coverSources: parsed.coverUrl ? [parsed.coverUrl] : [],
+    synopsis: parsed.synopsis,
+    platforms: parsed.platforms,
+    originalPlatforms: parsed.originalPlatforms,
+    platform: parsed.originalPlatforms[0] || parsed.platforms[0] || '',
+    platformDisplayLabel:
+      parsed.originalPlatforms[0] || parsed.platforms[0] || GAME_PLATFORM_UNSET_LABEL,
+    editionType: parsed.editionType,
+    parentGame: parsed.parentGame,
+    versionParent: parsed.versionParent,
+    franchiseName: parsed.franchiseName,
+    igdbFranchises: parsed.franchises,
+    igdbCollections: parsed.collections,
+    campaignTimeHours: parsed.campaignTimeHours,
+    campaignTimeSource: parsed.campaignTimeSource,
+    completion100Hours: parsed.completion100Hours,
+    completion100Source: parsed.completion100Source,
+    hoursPlayed: 0,
+    completionType: 'História Principal',
+    storeOrLauncher: '',
+    buildOrCharacter: '',
+    genres: [],
+    ids: {
+      igdb: parsed.igdbId,
+      ...(parsed.parentGame?.id ? { igdbParent: parsed.parentGame.id } : {}),
+      ...(parsed.versionParent?.id ? { igdbVersionParent: parsed.versionParent.id } : {}),
+    },
+    source: 'igdb',
+    sourceBadge: 'IGDB',
+    mergedSources: ['IGDB'],
+  };
+}
+
+function buildRawgGameCandidate(rawgGame, { resolvedType = 'game', isAddition = false } = {}) {
+  const parsed = parseRawgGameMetadata(rawgGame);
+  if (!parsed || !parsed.title) return null;
+
+  const editionType = detectGameEditionType({
+    title: parsed.title,
+    description: String(rawgGame.description_raw || rawgGame.slug || ''),
+    workType: isAddition ? 'dlc' : resolvedType,
+    isAddition,
+  });
+
+  const coverUrl = normalizeHttpsUrl(rawgGame.background_image);
+  const releaseYear = parsed.released ? Number(String(parsed.released).slice(0, 4)) || null : null;
+  const creator = parsed.developers.slice(0, 2).join(', ');
+  const genres = Array.isArray(rawgGame.genres)
+    ? rawgGame.genres.map((g) => String(g?.name || '').trim()).filter(Boolean).slice(0, 3)
+    : [];
+  const safeWorkType =
+    editionType === 'DLC'
+      ? 'dlc'
+      : resolvedType === 'modpack'
+        ? 'modpack'
+        : 'game';
+
+  return {
+    id: `rawg-${parsed.rawgId || normalizeText(parsed.title)}`,
+    domain: 'games',
+    workType: safeWorkType,
+    title: parsed.title,
+    creator,
+    director: creator,
+    studio: parsed.publishers[0] || creator || '',
+    releaseYear,
+    coverUrl,
+    coverSources: coverUrl ? [coverUrl] : [],
+    synopsis: String(rawgGame.description_raw || '').trim(),
+    platforms: parsed.platforms,
+    originalPlatforms: parsed.platforms.length === 1 ? [parsed.platforms[0]] : [],
+    platform: parsed.platforms[0] || '',
+    platformDisplayLabel: parsed.platforms[0] || GAME_PLATFORM_UNSET_LABEL,
+    editionType,
+    rawgId: parsed.rawgId,
+    rawgPlaytimeHours: parsed.rawgPlaytimeHours,
+    rawgPlaytimeSource: parsed.rawgPlaytimeSource,
+    campaignTimeHours: parsed.rawgPlaytimeHours,
+    campaignTimeSource: parsed.rawgPlaytimeSource,
+    completion100Hours: null,
+    completion100Source: null,
+    franchiseName: '',
+    hoursPlayed: 0,
+    completionType: 'História Principal',
+    storeOrLauncher: '',
+    buildOrCharacter: '',
+    genres,
+    ids: { rawg: parsed.rawgId },
+    source: 'rawg',
+    sourceBadge: 'RAWG',
+    mergedSources: ['RAWG'],
+  };
+}
+
+async function searchGamesViaIgdb(cleanQuery, resolvedType, opts = {}) {
+  const out = await fetchIgdbViaProxy(
+    'games',
+    { search: cleanQuery, limit: '12' },
+    opts
+  );
+  if (out.notConfigured) return { ok: false, missingKey: true, results: [] };
+  if (out.timedOut) return { ok: false, timedOut: true, results: [] };
+  if (!out.ok) return { ok: false, error: out.error || `HTTP ${out.status}`, results: [] };
+
+  const rawGames = Array.isArray(out.data?.results)
+    ? out.data.results
+    : Array.isArray(out.data)
+      ? out.data
+      : [];
+  const results = rawGames
+    .map((g) => buildIgdbGameCandidate(g, resolvedType))
+    .filter(Boolean);
+
+  return { ok: true, results };
+}
+
+async function searchGamesViaRawg(cleanQuery, resolvedType, opts = {}) {
+  const out = await fetchRawgViaProxy(
+    'games',
+    { search: cleanQuery, page_size: '10', search_precise: 'true' },
+    opts
+  );
+  if (out.notConfigured) return { ok: false, missingKey: true, results: [] };
+  if (!out.ok) return { ok: false, error: `RAWG HTTP ${out.status || 502}`, results: [] };
+
+  const rawList = Array.isArray(out.data?.results) ? out.data.results : [];
+  const results = rawList
+    .map((r) => buildRawgGameCandidate(r, { resolvedType }))
+    .filter(Boolean);
+
+  // Na RAWG, usa additions/game-series no melhor match para identificar expansões/DLCs e jogos da série
+  const top = rawList[0];
+  if (top?.id && (Number(top.additions_count) > 0 || Number(top.game_series_count) > 0)) {
+    const subTasks = [];
+    if (Number(top.additions_count) > 0) {
+      subTasks.push(
+        fetchRawgViaProxy(`games/${top.id}/additions`, { page_size: '5' }, opts)
+          .then((res) => ({ kind: 'additions', res }))
+          .catch(() => null)
+      );
+    }
+    if (Number(top.game_series_count) > 0) {
+      subTasks.push(
+        fetchRawgViaProxy(`games/${top.id}/game-series`, { page_size: '5' }, opts)
+          .then((res) => ({ kind: 'series', res }))
+          .catch(() => null)
+      );
+    }
+    if (subTasks.length > 0) {
+      const subResults = await Promise.allSettled(subTasks);
+      for (const settled of subResults) {
+        if (settled.status !== 'fulfilled' || !settled.value?.res?.ok) continue;
+        const { kind, res } = settled.value;
+        const subList = Array.isArray(res.data?.results) ? res.data.results : [];
+        for (const sub of subList) {
+          const built = buildRawgGameCandidate(sub, {
+            resolvedType,
+            isAddition: kind === 'additions',
+          });
+          if (built) results.push(built);
+        }
+      }
+    }
+  }
+
+  return { ok: true, results };
+}
+
+async function searchGamesViaSteam(cleanQuery, resolvedType, opts = {}) {
+  const out = await fetchSteamViaProxyOrDirect({ term: cleanQuery }, opts);
+  if (out.timedOut) return { ok: false, timedOut: true, results: [] };
+  if (!out.ok) return { ok: false, error: `Steam HTTP ${out.status || 502}`, results: [] };
+
+  const items = Array.isArray(out.data?.items) ? out.data.items : [];
+  const results = items.slice(0, 12).map((item) => {
+    const appId = item.id ? String(item.id).trim() : '';
+    const title = String(item.name || '').trim();
+    const coverUrl = appId
+      ? `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appId}/library_600x900.jpg`
+      : normalizeHttpsUrl(item.tiny_image);
+    const platforms = [];
+    if (item?.platforms?.windows || item?.platforms?.mac || item?.platforms?.linux || appId) {
+      platforms.push('PC');
+    }
+    const editionType = detectGameEditionType({ title, workType: resolvedType });
+    const safeWorkType =
+      editionType === 'DLC'
+        ? 'dlc'
+        : resolvedType === 'modpack'
+          ? 'modpack'
+          : 'game';
+
+    return {
+      id: `steam-${appId || normalizeText(title)}`,
+      domain: 'games',
+      workType: safeWorkType,
+      title,
+      creator: '',
+      director: '',
+      studio: '',
+      releaseYear: null,
+      coverUrl,
+      coverSources: [coverUrl, normalizeHttpsUrl(item.tiny_image)].filter(Boolean),
+      synopsis: '',
+      platforms,
+      originalPlatforms: platforms.length === 1 ? [platforms[0]] : [],
+      platform: platforms[0] || '',
+      platformDisplayLabel: platforms[0] || GAME_PLATFORM_UNSET_LABEL,
+      editionType,
+      hoursPlayed: 0,
+      completionType: 'História Principal',
+      storeOrLauncher: appId ? 'Steam' : '',
+      buildOrCharacter: '',
+      genres: [],
+      ids: { ...(appId ? { steam: appId } : {}) },
+      source: 'steam',
+      sourceBadge: 'Steam Store',
+      mergedSources: ['Steam Store'],
+    };
+  }).filter((item) => item.title);
+
+  // Enriquece o principal resultado via appdetails se ainda faltar desenvolvedora/ano (sem falhar busca)
+  if (results[0]?.ids?.steam) {
+    try {
+      const detailOut = await fetchSteamViaProxyOrDirect(
+        { appid: results[0].ids.steam },
+        opts
+      );
+      const appData = detailOut?.ok
+        ? detailOut.data?.[String(results[0].ids.steam)]?.data
+        : null;
+      if (appData) {
+        const devs = Array.isArray(appData.developers)
+          ? appData.developers.slice(0, 2).join(', ')
+          : '';
+        const yearMatch = String(appData.release_date?.date || '').match(/\b(19\d\d|20\d\d)\b/);
+        const releaseYear = yearMatch ? Number(yearMatch[1]) : results[0].releaseYear;
+        const isDlcApp = String(appData.type || '').toLowerCase() === 'dlc';
+        results[0] = {
+          ...results[0],
+          creator: results[0].creator || devs,
+          director: results[0].director || devs,
+          studio: Array.isArray(appData.publishers) ? appData.publishers[0] || devs : devs,
+          releaseYear,
+          workType: isDlcApp ? 'dlc' : results[0].workType,
+          editionType: isDlcApp
+            ? detectGameEditionType({
+                title: results[0].title,
+                workType: 'dlc',
+                isAddition: true,
+              })
+            : results[0].editionType,
+          synopsis: results[0].synopsis || stripHtmlBasic(appData.short_description || ''),
+        };
+      }
+    } catch {
+      // Silencioso: mantém resultado do storesearch
+    }
+  }
+
+  return { ok: true, results };
+}
+
+function stripHtmlBasic(raw = '') {
+  return String(raw || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function searchGamesViaWikidata(cleanQuery, resolvedType, { signal, fetchImpl, timeoutMs } = {}) {
+  const encoded = encodeURIComponent(cleanQuery);
+  const wikidataSearchEnUrl = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encoded}&language=en&uselang=pt&limit=10&format=json&origin=*`;
+  const wdData = await fetchJsonSafe(wikidataSearchEnUrl, { signal, fetchImpl, timeoutMs });
+  if (!Array.isArray(wdData?.search)) {
+    return { ok: false, error: 'Wikidata resposta inválida', results: [] };
+  }
+
+  const searchHits = wdData.search.filter((ent) => {
+    const desc = String(ent.description || '');
+    const label = String(ent.label || '');
+    if (WIKIDATA_NON_GAME_DESC_RE.test(desc) && !/video\s?game|videojogo|jogo\s+eletr[ôo]nico/i.test(desc)) {
+      return false;
+    }
+    return (
+      /jogo|videojogo|video\s?game|rpg|expans[ãa]o|dlc|remake|remaster/i.test(desc) ||
+      normalizeText(label) === normalizeText(cleanQuery)
+    );
+  });
+
+  const hitById = new Map(searchHits.map((h) => [h.id, h]));
+  const primaryQids = searchHits.map((h) => h.id).filter(Boolean).slice(0, 8);
+  if (primaryQids.length === 0) {
+    return { ok: true, results: [] };
+  }
+
+  let entitiesMap = null;
+  try {
+    const entitiesUrl = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${encodeURIComponent(
+      primaryQids.join('|')
+    )}&props=labels|descriptions|claims&languages=pt|en&format=json&origin=*`;
+    const entData = await fetchJsonSafe(entitiesUrl, { signal, fetchImpl, timeoutMs });
+    if (entData?.entities && typeof entData.entities === 'object') {
+      entitiesMap = entData.entities;
+    }
+  } catch {
+    entitiesMap = null;
+  }
+
+  const candidates = [];
+
+  if (entitiesMap) {
+    const gameEntities = [];
+    const derivativeQids = new Set();
+    const allDerivativeTargetQids = new Set();
+    const extraLabelQids = new Set();
+
+    for (const qid of primaryQids) {
+      const ent = entitiesMap[qid];
+      if (!ent) continue;
+      const hit = hitById.get(qid);
+      if (!isLikelyGameEntity(ent, hit?.description || '')) continue;
+      gameEntities.push({ entity: ent, hit });
+
+      const p4969Targets = extractWikidataClaimIds(ent, 'P4969');
+      for (const derivId of p4969Targets) {
+        allDerivativeTargetQids.add(derivId);
+      }
+      for (const relId of [
+        ...p4969Targets,
+        ...extractWikidataClaimIds(ent, 'P144'),
+      ]) {
+        if (!entitiesMap[relId]) derivativeQids.add(relId);
+      }
+      for (const devId of extractWikidataClaimIds(ent, 'P178').slice(0, 2)) {
+        extraLabelQids.add(devId);
+      }
+      for (const platId of extractWikidataClaimIds(ent, 'P400')) {
+        if (!WIKIDATA_PLATFORM_QIDS[platId]) extraLabelQids.add(platId);
+      }
+    }
+
+    if (derivativeQids.size > 0) {
+      try {
+        const derivIds = Array.from(derivativeQids).slice(0, 6);
+        const derivUrl = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${encodeURIComponent(
+          derivIds.join('|')
+        )}&props=labels|descriptions|claims&languages=pt|en&format=json&origin=*`;
+        const derivData = await fetchJsonSafe(derivUrl, { signal, fetchImpl, timeoutMs });
+        if (derivData?.entities && typeof derivData.entities === 'object') {
+          for (const dId of derivIds) {
+            const dEnt = derivData.entities[dId];
+            if (!dEnt || !isLikelyGameEntity(dEnt, '')) continue;
+            gameEntities.push({ entity: dEnt, hit: null });
+            for (const nestedDeriv of extractWikidataClaimIds(dEnt, 'P4969')) {
+              allDerivativeTargetQids.add(nestedDeriv);
+            }
+            for (const devId of extractWikidataClaimIds(dEnt, 'P178').slice(0, 2)) {
+              extraLabelQids.add(devId);
+            }
+            for (const platId of extractWikidataClaimIds(dEnt, 'P400')) {
+              if (!WIKIDATA_PLATFORM_QIDS[platId]) extraLabelQids.add(platId);
+            }
+          }
+        }
+      } catch {
+        // Silencioso
+      }
+    }
+
+    const labelMap = {};
+    if (extraLabelQids.size > 0) {
+      try {
+        const lblIds = Array.from(extraLabelQids).slice(0, 20);
+        const lblUrl = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${encodeURIComponent(
+          lblIds.join('|')
+        )}&props=labels&languages=en|pt&format=json&origin=*`;
+        const lblData = await fetchJsonSafe(lblUrl, { signal, fetchImpl, timeoutMs });
+        if (lblData?.entities && typeof lblData.entities === 'object') {
+          for (const [id, ent] of Object.entries(lblData.entities)) {
+            const lbl = ent?.labels?.en?.value || ent?.labels?.pt?.value || '';
+            if (lbl) labelMap[id] = lbl;
+          }
+        }
+      } catch {
+        // Silencioso
+      }
+    }
+
+    for (const { entity, hit } of gameEntities) {
+      const built = buildWikidataGameCandidate(entity, {
+        fallbackSearch: hit,
+        labelMap,
+        resolvedType,
+        isDerivativeWork: allDerivativeTargetQids.has(entity.id),
+      });
+      if (built) candidates.push(built);
+    }
+  } else {
+    // Fallback estrito quando wbgetentities falha: exige descrição explícita de jogo e rejeita filmes/séries
+    for (const ent of searchHits) {
+      const desc = String(ent.description || '');
+      if (WIKIDATA_NON_GAME_DESC_RE.test(desc)) continue;
+      if (!/video\s?game|videojogo|jogo\s+eletr[ôo]nico|jogo\s+de\s+v[íi]deo/i.test(desc)) {
+        continue;
+      }
+      const title = String(ent.label || '').trim();
+      if (!title) continue;
+      const isDlc = /\b(dlc|expans[ãa]o|expansion)\b/i.test(`${title} ${desc}`);
+      const editionType = detectGameEditionType({
+        title,
+        description: desc,
+        workType: isDlc ? 'dlc' : resolvedType,
+      });
+      candidates.push({
+        id: `wd-${ent.id}`,
+        domain: 'games',
+        workType: isDlc ? 'dlc' : resolvedType === 'modpack' ? 'modpack' : 'game',
+        title,
+        creator: '',
+        director: '',
+        releaseYear: extractYearFromDescription(desc),
+        coverUrl: null,
+        synopsis: desc,
+        platforms: [],
+        originalPlatforms: [],
+        platform: '',
+        platformDisplayLabel: GAME_PLATFORM_UNSET_LABEL,
+        editionType,
+        hoursPlayed: 0,
+        completionType: 'História Principal',
+        storeOrLauncher: '',
+        buildOrCharacter: '',
+        genres: [],
+        ids: { wikidata: ent.id },
+        source: 'wikidata',
+        sourceBadge: 'Wikidata',
+        mergedSources: ['Wikidata'],
+      });
+    }
+  }
+
+  return { ok: true, results: candidates };
+}
+
 /**
- * Busca gratuita para Games (Wikidata enriquecida com plataformas reais + Original/Remake + CheapShark + FreeToGame).
+ * Busca ordenada para Games via Provider Registry:
+ * IGDB (proxy /api/igdb) -> RAWG (/api/rawg/games) -> Steam Store -> Wikidata (último recurso).
+ * CheapShark e FreeToGame removidos por não serem catálogos reais de jogos.
  */
 export async function searchGamesWorks(
   query,
-  { signal, fetchImpl, mediaTypeFilter = 'all', onPartialResults = null } = {}
+  {
+    signal,
+    fetchImpl,
+    mediaTypeFilter = 'all',
+    onPartialResults = null,
+    skipCache = false,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = undefined,
+    nowFn = Date.now,
+    idbFactory = null,
+    providers = null,
+  } = {}
 ) {
   const cleanQuery = String(query || '').trim();
-  if (!cleanQuery) return { ok: true, results: [], offline: false, partialFailure: false, usedSources: [] };
+  if (!cleanQuery) {
+    return { ok: true, results: [], offline: false, partialFailure: false, usedSources: [] };
+  }
   if (isBrowserOffline()) {
     return { ok: false, results: [], offline: true, partialFailure: false, usedSources: [] };
   }
-
-  const encoded = encodeURIComponent(cleanQuery);
-  const cheapSharkUrl = `https://www.cheapshark.com/api/1.0/games?title=${encoded}&limit=10`;
-  const wikidataSearchEnUrl = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encoded}&language=en&uselang=pt&limit=10&format=json&origin=*`;
-  const freeToGameUrl = 'https://www.freetogame.com/api/games';
 
   const resolvedType =
     mediaTypeFilter !== 'all'
       ? normalizeWorkTypeForDomain(mediaTypeFilter, 'games')
       : 'game';
 
-  const csPromise = fetchJsonSafe(cheapSharkUrl, { signal, fetchImpl });
-  const wdPromise = fetchJsonSafe(wikidataSearchEnUrl, { signal, fetchImpl });
-  const ftgPromise = fetchJsonSafe(freeToGameUrl, { signal, fetchImpl });
-
-  if (typeof onPartialResults === 'function') {
-    const streamCandidates = [];
-    const streamSources = new Set();
-    let pending = 3;
-    const emitGamesPartial = () => {
-      if (signal?.aborted || streamCandidates.length === 0) return;
-      const partialDeduped = deduplicateDomainCandidates(streamCandidates);
-      const partialRanked = rankGamesCandidates(partialDeduped, cleanQuery, mediaTypeFilter).slice(0, 18);
-      const srcArr = Array.from(streamSources);
-      onPartialResults({
-        results: partialRanked,
-        usedSources: srcArr,
-        pendingCount: pending,
-        partial: pending > 0,
-        sourceStatusHint: srcArr.length > 0 ? `Fontes: ${srcArr.join(' · ')}` : '',
-      });
-    };
-
-    csPromise
-      .then((val) => {
-        pending = Math.max(0, pending - 1);
-        if (!Array.isArray(val)) return;
-        streamSources.add('CheapShark');
-        for (const g of val) {
-          const title = String(g.external || g.internalName || '').trim();
-          if (!title) continue;
-          const steamId = g.steamAppID ? String(g.steamAppID).trim() : null;
-          const coverUrl = steamId
-            ? `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${steamId}/library_600x900.jpg`
-            : normalizeHttpsUrl(g.thumb);
-          const editionType = detectGameEditionType({ title, workType: resolvedType });
-          streamCandidates.push({
-            id: `cs-${String(g.gameID || title)}`,
-            domain: 'games',
-            workType: editionType === 'DLC/Expansão' ? 'dlc' : resolvedType,
-            title,
-            creator: '',
-            director: '',
-            releaseYear: null,
-            coverUrl,
-            coverSources: [coverUrl, normalizeHttpsUrl(g.thumb)].filter(Boolean),
-            platforms: ['PC'],
-            platform: 'PC',
-            platformDisplayLabel: 'PC',
-            editionType,
-            hoursPlayed: 0,
-            completionType: 'História Principal',
-            storeOrLauncher: steamId ? 'Steam' : '',
-            buildOrCharacter: '',
-            genres: [],
-            ids: {
-              cheapshark: g.gameID || null,
-              ...(steamId ? { steam: steamId } : {}),
-            },
-            sourceBadge: steamId ? 'Steam / CheapShark' : 'CheapShark',
-            mergedSources: ['CheapShark'],
+  const chainOutcome = await executeDomainProviderChain({
+    domain: 'games',
+    query: cleanQuery,
+    mediaTypeFilter,
+    providers,
+    signal,
+    skipCache,
+    nowFn,
+    storage,
+    idbFactory,
+    gapFillFields: ['coverUrl', 'creator', 'releaseYear'],
+    relevanceFilter: (item, q) => isRelevantGameCandidate(item, q),
+    onPartialResults: typeof onPartialResults === 'function'
+      ? (partial) => {
+          const dedupedPartial = deduplicateDomainCandidates(partial.results || []);
+          const rankedPartial = rankGamesCandidates(
+            dedupedPartial,
+            cleanQuery,
+            mediaTypeFilter
+          ).slice(0, 18);
+          onPartialResults({
+            ...partial,
+            results: rankedPartial,
           });
         }
-        emitGamesPartial();
-      })
-      .catch(() => {
-        pending = Math.max(0, pending - 1);
-      });
-
-    ftgPromise
-      .then((val) => {
-        pending = Math.max(0, pending - 1);
-        if (!Array.isArray(val)) return;
-        const qLower = cleanQuery.toLowerCase();
-        const matches = val
-          .filter((g) => String(g?.title || '').toLowerCase().includes(qLower))
-          .slice(0, 6);
-        if (matches.length === 0) return;
-        streamSources.add('FreeToGame');
-        for (const g of matches) {
-          const parsedPlatforms = String(g.platform || '')
-            .split(/[,/]/)
-            .map((p) => normalizePlatformLabel(p))
-            .filter(Boolean);
-          const uniquePlats = Array.from(new Set(parsedPlatforms));
-          streamCandidates.push({
-            id: `ftg-${g.id}`,
-            domain: 'games',
-            workType: resolvedType,
-            title: String(g.title || '').trim(),
-            creator: String(g.developer || g.publisher || '').trim(),
-            director: String(g.developer || g.publisher || '').trim(),
-            releaseYear: g.release_date ? Number(String(g.release_date).slice(0, 4)) || null : null,
-            coverUrl: normalizeHttpsUrl(g.thumbnail),
-            synopsis: String(g.short_description || '').trim(),
-            platforms: uniquePlats,
-            platform: uniquePlats[0] || '',
-            platformDisplayLabel: uniquePlats[0] || GAME_PLATFORM_UNSET_LABEL,
-            editionType: 'Original',
-            hoursPlayed: 0,
-            completionType: 'Multiplayer / Ranked',
-            storeOrLauncher: '',
-            buildOrCharacter: '',
-            genres: g.genre ? [String(g.genre)] : [],
-            ids: { freetogame: g.id },
-            sourceBadge: 'FreeToGame',
-            mergedSources: ['FreeToGame'],
-          });
-        }
-        emitGamesPartial();
-      })
-      .catch(() => {
-        pending = Math.max(0, pending - 1);
-      });
-  }
-
-  const [csRes, wdRes, ftgRes] = await Promise.allSettled([
-    csPromise,
-    wdPromise,
-    ftgPromise,
-  ]);
-
-  const candidates = [];
-  const usedSources = [];
-  let failedCount = 0;
-
-  // 1. Wikidata com enriquecimento de claims (P400 plataformas reais, P577 ano, P31/P4969/P144 Original vs Remake)
-  if (wdRes.status === 'fulfilled' && Array.isArray(wdRes.value?.search)) {
-    usedSources.push('Wikidata');
-    const searchHits = wdRes.value.search.filter((ent) => {
-      const desc = String(ent.description || '');
-      const label = String(ent.label || '');
-      // Aceita hits com descrição de jogo/remake/dlc ou match direto com a query (será verificado por P31)
-      return (
-        /jogo|videojogo|video\s?game|rpg|expans[ãa]o|dlc|remake|remaster/i.test(desc) ||
-        normalizeText(label) === normalizeText(cleanQuery)
-      );
-    });
-
-    const hitById = new Map(searchHits.map((h) => [h.id, h]));
-    const primaryQids = searchHits.map((h) => h.id).filter(Boolean).slice(0, 8);
-
-    let entitiesMap = null;
-    if (primaryQids.length > 0) {
-      try {
-        const entitiesUrl = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${encodeURIComponent(
-          primaryQids.join('|')
-        )}&props=labels|descriptions|claims&languages=pt|en&format=json&origin=*`;
-        const entData = await fetchJsonSafe(entitiesUrl, { signal, fetchImpl });
-        if (entData?.entities && typeof entData.entities === 'object') {
-          entitiesMap = entData.entities;
-        }
-      } catch {
-        entitiesMap = null;
-      }
-    }
-
-    if (entitiesMap) {
-      const gameEntities = [];
-      const derivativeQids = new Set();
-      const allDerivativeTargetQids = new Set();
-      const extraLabelQids = new Set();
-
-      for (const qid of primaryQids) {
-        const ent = entitiesMap[qid];
-        if (!ent) continue;
-        const hit = hitById.get(qid);
-        if (!isLikelyGameEntity(ent, hit?.description || '')) continue;
-        gameEntities.push({ entity: ent, hit });
-
-        // Coleta obras derivadas (P4969) e obra original (P144) para encontrar Original <-> Remake/Remaster
-        const p4969Targets = extractWikidataClaimIds(ent, 'P4969');
-        for (const derivId of p4969Targets) {
-          allDerivativeTargetQids.add(derivId);
-        }
-        for (const relId of [
-          ...p4969Targets,
-          ...extractWikidataClaimIds(ent, 'P144'),
-        ]) {
-          if (!entitiesMap[relId]) derivativeQids.add(relId);
-        }
-        // Coleta QIDs de desenvolvedoras (P178) e plataformas não mapeadas para resolver labels
-        for (const devId of extractWikidataClaimIds(ent, 'P178').slice(0, 2)) {
-          extraLabelQids.add(devId);
-        }
-        for (const platId of extractWikidataClaimIds(ent, 'P400')) {
-          if (!WIKIDATA_PLATFORM_QIDS[platId]) extraLabelQids.add(platId);
-        }
-      }
-
-      // Busca derivados (remakes/remasters) se houver
-      if (derivativeQids.size > 0) {
-        try {
-          const derivIds = Array.from(derivativeQids).slice(0, 6);
-          const derivUrl = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${encodeURIComponent(
-            derivIds.join('|')
-          )}&props=labels|descriptions|claims&languages=pt|en&format=json&origin=*`;
-          const derivData = await fetchJsonSafe(derivUrl, { signal, fetchImpl });
-          if (derivData?.entities && typeof derivData.entities === 'object') {
-            for (const dId of derivIds) {
-              const dEnt = derivData.entities[dId];
-              if (!dEnt || !isLikelyGameEntity(dEnt, '')) continue;
-              gameEntities.push({ entity: dEnt, hit: null });
-              for (const nestedDeriv of extractWikidataClaimIds(dEnt, 'P4969')) {
-                allDerivativeTargetQids.add(nestedDeriv);
-              }
-              for (const devId of extractWikidataClaimIds(dEnt, 'P178').slice(0, 2)) {
-                extraLabelQids.add(devId);
-              }
-              for (const platId of extractWikidataClaimIds(dEnt, 'P400')) {
-                if (!WIKIDATA_PLATFORM_QIDS[platId]) extraLabelQids.add(platId);
-              }
-            }
-          }
-        } catch {
-          // Silencioso
-        }
-      }
-
-      // Resolve labels de desenvolvedoras e plataformas adicionais em 1 chamada leve
-      const labelMap = {};
-      if (extraLabelQids.size > 0) {
-        try {
-          const lblIds = Array.from(extraLabelQids).slice(0, 20);
-          const lblUrl = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${encodeURIComponent(
-            lblIds.join('|')
-          )}&props=labels&languages=en|pt&format=json&origin=*`;
-          const lblData = await fetchJsonSafe(lblUrl, { signal, fetchImpl });
-          if (lblData?.entities && typeof lblData.entities === 'object') {
-            for (const [id, ent] of Object.entries(lblData.entities)) {
-              const lbl = ent?.labels?.en?.value || ent?.labels?.pt?.value || '';
-              if (lbl) labelMap[id] = lbl;
-            }
-          }
-        } catch {
-          // Silencioso
-        }
-      }
-
-      for (const { entity, hit } of gameEntities) {
-        const built = buildWikidataGameCandidate(entity, {
-          fallbackSearch: hit,
-          labelMap,
-          resolvedType,
-          isDerivativeWork: allDerivativeTargetQids.has(entity.id),
-        });
-        if (built) candidates.push(built);
-      }
-    } else {
-      // Fallback gracioso caso wbgetentities falhe: NUNCA assume PC / Steam!
-      for (const ent of searchHits) {
-        const desc = String(ent.description || '');
-        if (!/jogo|videojogo|video\s?game|rpg|expans[ãa]o|dlc|remake|remaster/i.test(desc)) {
-          continue;
-        }
-        const title = String(ent.label || '').trim();
-        if (!title) continue;
-        const isDlc = /\b(dlc|expans[ãa]o|expansion)\b/i.test(`${title} ${desc}`);
-        const editionType = detectGameEditionType({
-          title,
-          description: desc,
-          workType: isDlc ? 'dlc' : resolvedType,
-        });
-        candidates.push({
-          id: `wd-${ent.id}`,
-          domain: 'games',
-          workType: isDlc ? 'dlc' : resolvedType,
-          title,
-          creator: '',
-          director: '',
-          releaseYear: extractYearFromDescription(desc),
-          coverUrl: null,
-          synopsis: desc,
-          platforms: [],
-          platform: '',
-          platformDisplayLabel: GAME_PLATFORM_UNSET_LABEL,
-          editionType,
-          hoursPlayed: 0,
-          completionType: 'História Principal',
-          storeOrLauncher: '',
-          buildOrCharacter: '',
-          genres: [],
-          ids: { wikidata: ent.id },
-          sourceBadge: 'Wikidata',
-          mergedSources: ['Wikidata'],
+      : null,
+    executeProvider: async (provider, { signal: provSignal, timeoutMs: provTimeout }) => {
+      const commonOpts = {
+        signal: provSignal,
+        fetchImpl,
+        timeoutMs: provTimeout,
+        nowFn,
+        forceProxy,
+        ...(isDev !== undefined ? { isDev } : {}),
+      };
+      if (provider.id === 'igdb') {
+        return searchGamesViaIgdb(cleanQuery, resolvedType, {
+          ...commonOpts,
+          accessToken,
+          supabaseClient,
+          storage,
         });
       }
-    }
-  } else {
-    failedCount += 1;
-  }
+      if (provider.id === 'rawg') {
+        return searchGamesViaRawg(cleanQuery, resolvedType, {
+          ...commonOpts,
+          accessToken,
+          supabaseClient,
+          storage,
+        });
+      }
+      if (provider.id === 'steam') {
+        return searchGamesViaSteam(cleanQuery, resolvedType, commonOpts);
+      }
+      if (provider.id === 'wikidata') {
+        return searchGamesViaWikidata(cleanQuery, resolvedType, {
+          signal: provSignal,
+          fetchImpl,
+          timeoutMs: provTimeout,
+        });
+      }
+      return { ok: false, error: `Provedor desconhecido: ${provider.id}`, results: [] };
+    },
+  });
 
-  // 2. CheapShark (jogos PC / Steam reais)
-  if (csRes.status === 'fulfilled' && Array.isArray(csRes.value)) {
-    usedSources.push('CheapShark');
-    for (const g of csRes.value) {
-      const title = String(g.external || '').trim();
-      if (!title) continue;
-      const steamId = g.steamAppID ? String(g.steamAppID).trim() : '';
-      const coverUrl = steamId
-        ? `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${steamId}/library_600x900.jpg`
-        : normalizeHttpsUrl(g.thumb);
-      const editionType = detectGameEditionType({ title, workType: resolvedType });
-      candidates.push({
-        id: `cs-${String(g.gameID || title)}`,
-        domain: 'games',
-        workType: editionType === 'DLC/Expansão' ? 'dlc' : resolvedType,
-        title,
-        creator: '',
-        director: '',
-        releaseYear: null,
-        coverUrl,
-        coverSources: [coverUrl, normalizeHttpsUrl(g.thumb)].filter(Boolean),
-        platforms: ['PC'],
-        platform: 'PC',
-        platformDisplayLabel: 'PC',
-        editionType,
-        hoursPlayed: 0,
-        completionType: 'História Principal',
-        storeOrLauncher: steamId ? 'Steam' : '',
-        buildOrCharacter: '',
-        genres: [],
-        ids: {
-          cheapshark: g.gameID || null,
-          ...(steamId ? { steam: steamId } : {}),
-        },
-        sourceBadge: steamId ? 'Steam / CheapShark' : 'CheapShark',
-        mergedSources: ['CheapShark'],
-      });
-    }
-  } else {
-    failedCount += 1;
-  }
+  // Garante estritamente que nenhum item de Games receba workType de cinema/livro/música
+  const safeResults = (chainOutcome.results || []).map((item) => ({
+    ...item,
+    domain: 'games',
+    workType: ['dlc', 'modpack', 'game'].includes(item.workType) ? item.workType : 'game',
+    editionType: normalizeGameEditionType(item.editionType),
+  }));
 
-  // 3. FreeToGame (extrai plataforma real sem inventar Steam)
-  if (ftgRes.status === 'fulfilled' && Array.isArray(ftgRes.value)) {
-    usedSources.push('FreeToGame');
-    const qLower = cleanQuery.toLowerCase();
-    const matches = ftgRes.value
-      .filter((g) => String(g?.title || '').toLowerCase().includes(qLower))
-      .slice(0, 6);
-    for (const g of matches) {
-      const parsedPlatforms = String(g.platform || '')
-        .split(/[,/]/)
-        .map((p) => normalizePlatformLabel(p))
-        .filter(Boolean);
-      const uniquePlats = Array.from(new Set(parsedPlatforms));
-      candidates.push({
-        id: `ftg-${g.id}`,
-        domain: 'games',
-        workType: resolvedType,
-        title: String(g.title || '').trim(),
-        creator: String(g.developer || g.publisher || '').trim(),
-        director: String(g.developer || g.publisher || '').trim(),
-        releaseYear: g.release_date ? Number(String(g.release_date).slice(0, 4)) || null : null,
-        coverUrl: normalizeHttpsUrl(g.thumbnail),
-        synopsis: String(g.short_description || '').trim(),
-        platforms: uniquePlats,
-        platform: uniquePlats[0] || '',
-        platformDisplayLabel: uniquePlats[0] || GAME_PLATFORM_UNSET_LABEL,
-        editionType: 'Original',
-        hoursPlayed: 0,
-        completionType: 'Multiplayer / Ranked',
-        storeOrLauncher: '',
-        buildOrCharacter: '',
-        genres: g.genre ? [String(g.genre)] : [],
-        ids: { freetogame: g.id },
-        sourceBadge: 'FreeToGame',
-        mergedSources: ['FreeToGame'],
-      });
-    }
-  } else {
-    failedCount += 1;
-  }
-
-  const deduped = deduplicateDomainCandidates(candidates);
+  const deduped = deduplicateDomainCandidates(safeResults);
   const ranked = rankGamesCandidates(deduped, cleanQuery, mediaTypeFilter).slice(0, 18);
+  const usedSources = Array.from(new Set(chainOutcome.usedSources || []));
 
   return {
-    ok: failedCount < 3,
+    ok: chainOutcome.ok,
     results: ranked,
     offline: false,
-    partialFailure: failedCount > 0 && failedCount < 3 && ranked.length === 0,
-    usedSources: Array.from(new Set(usedSources)),
+    partialFailure: false,
+    usedSources,
+    attempts: chainOutcome.attempts,
+    primarySourceId: chainOutcome.primarySourceId,
     sourceStatusHint:
-      usedSources.length > 0 ? `Fontes: ${Array.from(new Set(usedSources)).join(' · ')}` : '',
+      usedSources.length > 0 ? `Fonte: ${usedSources.join(' · ')}` : '',
   };
 }
 

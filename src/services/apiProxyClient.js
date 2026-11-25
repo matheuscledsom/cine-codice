@@ -447,10 +447,12 @@ export async function fetchLastfmViaProxy(
   }
 }
 
-const ALLOWED_RAWG_PROXY_RE = /^games(?:\/[a-zA-Z0-9-]+)?$/;
+const ALLOWED_RAWG_PROXY_RE =
+  /^games(?:\/[a-zA-Z0-9-]+(?:\/(?:additions|game-series|parent-games))?)?$/;
 
 /**
- * Executa chamada RAWG EXCLUSIVAMENTE via `/api/rawg/games` ou `/api/rawg/games/{id}`
+ * Executa chamada RAWG EXCLUSIVAMENTE via `/api/rawg/games`, `/api/rawg/games/{id}`
+ * ou subrotas `/additions`, `/game-series`, `/parent-games`
  * (secret RAWG_API_KEY apenas no Cloudflare). Nunca usa chaves VITE_ no cliente.
  * Degrada sem quebrar quando não configurado ou sem sessão.
  */
@@ -569,6 +571,483 @@ export async function fetchRawgViaProxy(
   }
 }
 
+const ALLOWED_IGDB_PROXY_RE = /^(?:games(?:\/\d+)?|franchises(?:\/\d+)?|collections\/\d+)$/;
+
+/**
+ * Executa chamada IGDB EXCLUSIVAMENTE via `/api/igdb/*` (credenciais Twitch apenas no servidor Cloudflare).
+ * Nunca envia Client-ID/Secret no cliente e nunca faz chamada direta ao domínio api.igdb.com (sem CORS).
+ */
+export async function fetchIgdbViaProxy(
+  rawPath = 'games',
+  params = {},
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = true,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+  } = {}
+) {
+  const cleanPath = String(rawPath || '').trim().replace(/^\/+/, '');
+  if (!cleanPath || cleanPath.includes('..') || !ALLOWED_IGDB_PROXY_RE.test(cleanPath)) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 403,
+      notConfigured: false,
+      timedOut: false,
+      data: null,
+    };
+  }
+
+  if (!shouldUseApiProxy({ forceProxy, isDev })) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: null,
+      notConfigured: true,
+      timedOut: false,
+      data: null,
+    };
+  }
+
+  const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });
+  if (!token) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 401,
+      notConfigured: true,
+      timedOut: false,
+      data: null,
+    };
+  }
+
+  const cleanParams = buildQueryParams(params, { stripSecrets: true });
+  const qs = cleanParams.toString();
+  const proxyUrl = `/api/igdb/${cleanPath}${qs ? `?${qs}` : ''}`;
+
+  try {
+    const res = await apiRequest(proxyUrl, {
+      provider: 'igdb',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+    if (status === 503 || status === 404 || contentType.includes('text/html')) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: true,
+        timedOut: false,
+        data: null,
+      };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: false,
+        timedOut: false,
+        data: null,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    return {
+      ok: Boolean(data && typeof data === 'object'),
+      res,
+      via: 'proxy',
+      status,
+      notConfigured: false,
+      timedOut: false,
+      data,
+    };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    const isTimeout = err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT';
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: err?.status ?? null,
+      notConfigured: err?.status === 503,
+      timedOut: isTimeout,
+      data: null,
+      error: err?.message || '',
+    };
+  }
+}
+
+export const STEAM_DIRECT_STORE_BASE = 'https://store.steampowered.com/api';
+
+/**
+ * Consulta Steam Store via `/api/steam` (evitando bloqueio CORS no navegador),
+ * com fallback direto apenas em DEV ou quando o endpoint proxy não estiver montado (404/HTML).
+ */
+export async function fetchSteamViaProxyOrDirect(
+  params = {},
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = true,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+  } = {}
+) {
+  const cleanParams = buildQueryParams(params, { stripSecrets: true });
+  const qs = cleanParams.toString();
+
+  if (shouldUseApiProxy({ forceProxy, isDev })) {
+    const proxyUrl = `/api/steam${qs ? `?${qs}` : ''}`;
+    try {
+      const res = await apiRequest(proxyUrl, {
+        provider: 'steam',
+        headers: { Accept: 'application/json' },
+        signal,
+        fetchImpl,
+        timeoutMs,
+        nowFn,
+        dedup,
+        maxRetries: 0,
+      });
+      const status = Number(res?.status) || 0;
+      const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+      if (status !== 404 && !contentType.includes('text/html')) {
+        if (!res.ok) {
+          return { ok: false, via: 'proxy', status, data: null };
+        }
+        const data = await res.json().catch(() => null);
+        return { ok: Boolean(data && typeof data === 'object'), via: 'proxy', status, data };
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError' || signal?.aborted) {
+        throw err;
+      }
+      if (err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT') {
+        return { ok: false, via: 'proxy', status: null, timedOut: true, data: null };
+      }
+    }
+  }
+
+  const appid = cleanParams.get('appid');
+  const term = cleanParams.get('term') || cleanParams.get('search') || '';
+  const directUrl = appid
+    ? `${STEAM_DIRECT_STORE_BASE}/appdetails?appids=${encodeURIComponent(appid)}&l=portuguese&cc=br`
+    : `${STEAM_DIRECT_STORE_BASE}/storesearch/?term=${encodeURIComponent(term)}&l=portuguese&cc=br`;
+
+  const res = await apiRequest(directUrl, {
+    provider: 'steam',
+    headers: { Accept: 'application/json' },
+    signal,
+    fetchImpl,
+    timeoutMs,
+    nowFn,
+    dedup,
+    maxRetries: 0,
+  });
+  if (!res.ok) {
+    return { ok: false, via: 'direct', status: res.status, data: null };
+  }
+  const data = await res.json().catch(() => null);
+  return { ok: Boolean(data && typeof data === 'object'), via: 'direct', status: res.status, data };
+}
+
+/**
+ * Consulta ISBN na BrasilAPI (CBL, Mercado Editorial, Open Library, Google Books)
+ * exclusivamente via proxy Cloudflare `/api/isbn/{isbn}` (sem chamadas diretas do navegador
+ * para `brasilapi.com.br`, preservando CSP mínimo).
+ */
+export async function fetchBrasilApiIsbnViaProxyOrDirect(
+  cleanIsbn,
+  {
+    providers = '',
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = true,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+  } = {}
+) {
+  const normalized = String(cleanIsbn || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^0-9X]/g, '');
+  if (!normalized) {
+    return { ok: false, via: 'none', status: 400, invalidIsbn: true, data: null };
+  }
+
+  const provParam = String(providers || '').trim();
+  const qs = provParam ? `?providers=${encodeURIComponent(provParam)}` : '';
+
+  if (forceProxy === false) {
+    return { ok: false, via: 'none', status: 503, notConfigured: true, data: null };
+  }
+
+  const proxyUrl = `/api/isbn/${encodeURIComponent(normalized)}${qs}`;
+  try {
+    const res = await apiRequest(proxyUrl, {
+      provider: 'brasilapi',
+      headers: { Accept: 'application/json' },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+    const isProxyMounted = !(status === 404 && !contentType.includes('application/json'));
+    if (!isProxyMounted || contentType.includes('text/html')) {
+      return {
+        ok: false,
+        via: 'proxy',
+        status: isDev ? 503 : status || 502,
+        notConfigured: Boolean(isDev),
+        data: null,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    if (status === 404) {
+      return { ok: false, via: 'proxy', status: 404, notFound: true, data };
+    }
+    if (status === 400) {
+      return { ok: false, via: 'proxy', status: 400, invalidIsbn: true, data };
+    }
+    if (!res.ok) {
+      return { ok: false, via: 'proxy', status, data };
+    }
+    return { ok: Boolean(data && typeof data === 'object'), via: 'proxy', status, data };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    const timedOut = err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT';
+    return {
+      ok: false,
+      via: 'proxy',
+      status: err?.status ?? null,
+      timedOut,
+      data: null,
+    };
+  }
+}
+
+export const GOOGLE_BOOKS_DIRECT_BASE = 'https://www.googleapis.com/books/v1/volumes';
+
+/**
+ * Consulta Google Books via proxy autenticado `/api/googlebooks` (usando secret opcional
+ * `GOOGLE_BOOKS_API_KEY` no Cloudflare). Se o usuário não estiver autenticado ou a chave não
+ * existir no servidor (503), cai silenciosamente para a API pública sem erro visível.
+ */
+export async function fetchGoogleBooksViaProxyOrDirect(
+  params = {},
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = true,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+    allowDirectFallback = true,
+  } = {}
+) {
+  const cleanParams = buildQueryParams(params, { stripSecrets: true });
+  const qs = cleanParams.toString();
+  if (!cleanParams.get('q')) {
+    return { ok: false, via: 'none', status: 400, data: null, proxyNotConfigured: false };
+  }
+
+  let proxyNotConfigured = false;
+  if (shouldUseApiProxy({ forceProxy, isDev })) {
+    const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });
+    if (token) {
+      const proxyUrl = `/api/googlebooks${qs ? `?${qs}` : ''}`;
+      try {
+        const res = await apiRequest(proxyUrl, {
+          provider: 'googleBooks',
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          signal,
+          fetchImpl,
+          timeoutMs,
+          nowFn,
+          dedup,
+          maxRetries: 0,
+        });
+        const status = Number(res?.status) || 0;
+        const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+        const isProxyMounted = !(status === 404 && !contentType.includes('application/json'));
+        if (isProxyMounted && !contentType.includes('text/html')) {
+          if (status === 503) {
+            proxyNotConfigured = true;
+            if (!allowDirectFallback) {
+              return {
+                ok: false,
+                via: 'proxy',
+                status: 503,
+                notConfigured: true,
+                proxyNotConfigured: true,
+                data: null,
+              };
+            }
+          } else if (status === 401 || status === 403) {
+            if (!allowDirectFallback) {
+              return {
+                ok: false,
+                via: 'proxy',
+                status,
+                notConfigured: false,
+                proxyNotConfigured: false,
+                data: null,
+              };
+            }
+          } else if (res.ok) {
+            const data = await res.json().catch(() => null);
+            return {
+              ok: Boolean(data && typeof data === 'object'),
+              via: 'proxy',
+              status,
+              notConfigured: false,
+              proxyNotConfigured: false,
+              data,
+            };
+          } else if (!allowDirectFallback) {
+            return {
+              ok: false,
+              via: 'proxy',
+              status,
+              notConfigured: false,
+              proxyNotConfigured: false,
+              data: null,
+            };
+          }
+        }
+      } catch (err) {
+        if (err?.name === 'AbortError' || signal?.aborted) {
+          throw err;
+        }
+        if (err?.status === 503) {
+          proxyNotConfigured = true;
+        }
+        if (!allowDirectFallback) {
+          const timedOut = err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT';
+          return {
+            ok: false,
+            via: 'proxy',
+            status: err?.status ?? null,
+            notConfigured: err?.status === 503,
+            proxyNotConfigured,
+            timedOut,
+            data: null,
+          };
+        }
+      }
+    } else if (!allowDirectFallback) {
+      return {
+        ok: false,
+        via: 'none',
+        status: 401,
+        notConfigured: true,
+        proxyNotConfigured: true,
+        data: null,
+      };
+    }
+  }
+
+  if (!allowDirectFallback) {
+    return {
+      ok: false,
+      via: 'none',
+      status: null,
+      notConfigured: true,
+      proxyNotConfigured: true,
+      data: null,
+    };
+  }
+
+  const directUrl = `${GOOGLE_BOOKS_DIRECT_BASE}?${qs}`;
+  try {
+    const res = await apiRequest(directUrl, {
+      provider: 'googleBooks',
+      headers: { Accept: 'application/json' },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    if (!res.ok) {
+      return {
+        ok: false,
+        via: 'direct',
+        status,
+        notConfigured: false,
+        proxyNotConfigured,
+        data: null,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    return {
+      ok: Boolean(data && typeof data === 'object'),
+      via: 'direct',
+      status: status || 200,
+      notConfigured: false,
+      proxyNotConfigured,
+      data,
+    };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    const timedOut = err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT';
+    return {
+      ok: false,
+      via: 'direct',
+      status: err?.status ?? null,
+      notConfigured: false,
+      proxyNotConfigured,
+      timedOut,
+      data: null,
+    };
+  }
+}
+
 /**
  * Consulta `GET /api/status` (autenticado) para saber quais provedores
  * possuem chaves configuradas no servidor Cloudflare (apenas booleanos).
@@ -587,6 +1066,8 @@ export async function fetchProxyStatus({
     omdb: { configured: false },
     lastfm: { configured: false },
     rawg: { configured: false },
+    igdb: { configured: false },
+    googleBooks: { configured: false },
   };
 
   if (!shouldUseApiProxy({ forceProxy, isDev })) {
@@ -666,6 +1147,8 @@ export async function fetchProxyStatus({
         omdb: { configured: Boolean(json.providers?.omdb?.configured) },
         lastfm: { configured: Boolean(json.providers?.lastfm?.configured) },
         rawg: { configured: Boolean(json.providers?.rawg?.configured) },
+        igdb: { configured: Boolean(json.providers?.igdb?.configured) },
+        googleBooks: { configured: Boolean(json.providers?.googleBooks?.configured) },
       },
     };
   } catch {

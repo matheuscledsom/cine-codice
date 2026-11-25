@@ -1,18 +1,28 @@
 /**
- * Profundidade Real de Games (v2.5.0 Fase C).
+ * Profundidade Real de Games (v2.5.0 Fase C + v2.6.0 Fase 1).
  *
  * Regras:
- * - Os novos campos ficam SOMENTE na ficha da obra em "Mais detalhes" (folha rápida de catalogar segue enxuta).
- * - "Tempo médio de campanha" vindo do RAWG é a média dos usuários do RAWG, NÃO do HowLongToBeat:
- *   a fonte é sempre rotulada explicitamente ("RAWG (média dos usuários do RAWG)").
- * - "Tempo 100%" só exibe valor automático se houver fonte explícita; caso contrário permanece editável pelo usuário
- *   e nunca é inventado a partir do tempo de campanha.
- * - Franquia em Games: vínculo manual com sugestão (nunca altera a obra automaticamente sem confirmação).
+ * - Os campos detalhados ficam SOMENTE na ficha da obra (folha rápida de catalogar segue enxuta).
+ * - "Tempo médio" sempre exibe a fonte real (`IGDB (tempo médio para zerar)` ou `RAWG (média dos usuários do RAWG)`).
+ * - "Tempo 100%" só exibe valor automático se houver fonte explícita (ex.: IGDB `completely`);
+ *   no RAWG permanece editável pelo usuário e nunca é inventado.
+ * - Modelo `achievements`: `{ source, unlocked, total, updated_at }` com marcação manual para consoles offline.
  */
 
-import { inferDomainFromWork } from '../config/domainConfig.js';
+import {
+  GAME_EDITION_TYPES,
+  inferDomainFromWork,
+  normalizeGameEditionType,
+} from '../config/domainConfig.js';
 
 export const RAWG_CAMPAIGN_TIME_SOURCE_LABEL = 'RAWG (média dos usuários do RAWG)';
+export const IGDB_CAMPAIGN_TIME_SOURCE_LABEL = 'IGDB (tempo médio para zerar)';
+export const IGDB_COMPLETION_100_SOURCE_LABEL = 'IGDB';
+export const GAME_ATTRIBUTION_LINKS = {
+  igdb: { label: 'IGDB.com', url: 'https://www.igdb.com' },
+  rawg: { label: 'RAWG', url: 'https://rawg.io' },
+  steam: { label: 'Steam Store', url: 'https://store.steampowered.com' },
+};
 
 const EDITION_SUFFIX_RE =
   /\b(remake|remastered|definitive\s+edition|goty|game\s+of\s+the\s+year|complete\s+edition|director'?s\s+cut|hd|anniversary\s+edition|ultimate\s+edition|royal|golden|expanded)\b/gi;
@@ -30,25 +40,296 @@ function normalizeGameKey(raw) {
     .trim();
 }
 
+export function normalizePlatformName(raw) {
+  const clean = String(raw || '').trim();
+  if (!clean) return '';
+  const low = clean.toLowerCase();
+  if (/playstation\s*5|\bps5\b/.test(low)) return 'PS5';
+  if (/playstation\s*4|\bps4\b/.test(low)) return 'PS4';
+  if (/playstation\s*3|\bps3\b/.test(low)) return 'PS3';
+  if (/playstation\s*2|\bps2\b/.test(low)) return 'PS2';
+  if (/playstation\s*portable|\bpsp\b/.test(low)) return 'PSP';
+  if (/playstation\s*vita|\bps\s*vita\b|\bvita\b/.test(low)) return 'PS Vita';
+  if (/playstation(\s*1)?|\bps1\b|\bpsx\b/.test(low)) return 'PS1';
+  if (/nintendo\s*switch|\bswitch\b/.test(low)) return 'Switch';
+  if (/super\s*nintendo|super\s*famicom|\bsnes\b/.test(low)) return 'SNES';
+  if (/game\s*boy\s*advance|\bgba\b/.test(low)) return 'GBA';
+  if (/nintendo\s*3ds|\b3ds\b/.test(low)) return '3DS';
+  if (/nintendo\s*ds|\bnds\b|\bds\b/.test(low)) return 'DS';
+  if (
+    /\b(microsoft\s*windows|windows|pc|mac\s?os|macintosh|os\s?x|linux|steam\s?os|web\s*browser|browser)\b/.test(
+      low
+    )
+  ) {
+    return 'PC';
+  }
+  if (/\b(android|ios|iphone|ipad|mobile)\b/.test(low)) return 'Mobile';
+  if (/xbox\s*series/.test(low)) return 'Xbox Series X/S';
+  if (/xbox\s*one/.test(low)) return 'Xbox One';
+  if (/xbox\s*360/.test(low)) return 'Xbox 360';
+  if (/\bxbox\b/.test(low)) return 'Xbox';
+  if (/gamecube/.test(low)) return 'GameCube';
+  if (/wii\s*u/.test(low)) return 'Wii U';
+  if (/\bwii\b/.test(low)) return 'Wii';
+  if (/nintendo\s*64|\bn64\b/.test(low)) return 'N64';
+  if (/\bnes\b|nintendo\s*entertainment\s*system|famicom/.test(low)) return 'NES';
+  if (/genesis|mega\s*drive/.test(low)) return 'Mega Drive';
+  if (/dreamcast/.test(low)) return 'Dreamcast';
+  return clean;
+}
+
 export function extractGameFranchiseHintFromTitle(rawTitle = '') {
   let clean = String(rawTitle || '').trim();
   if (!clean) return '';
 
-  // Remove sufixos entre parênteses como (2018) ou (PS5)
   clean = clean.replace(/\s*\([^)]*\)\s*/g, ' ').trim();
 
-  // Remove subtítulo após ":" ou " - " ou " – "
   if (clean.includes(':')) {
     clean = clean.split(':')[0].trim();
   } else if (/\s[-–—]\s/.test(clean)) {
     clean = clean.split(/\s[-–—]\s/)[0].trim();
   }
 
-  // Remove sufixos de edição e numerais de sequência no fim
   clean = clean.replace(EDITION_SUFFIX_RE, '').replace(/\s+/g, ' ').trim();
   clean = clean.replace(TRAILING_NUMERAL_RE, '').trim();
 
   return clean.length >= 3 ? clean : '';
+}
+
+/**
+ * Converte tipo de jogo da IGDB (`game_type` v4: id ou string) + título conservador
+ * para uma das 6 categorias canônicas: Jogo, Remake, Remaster, Port, Coletânea, DLC.
+ * Desconhecido = "Jogo", sem chute.
+ */
+export function resolveIgdbEditionType(igdbGame = {}) {
+  const gt = igdbGame?.game_type;
+  const gtId =
+    typeof gt === 'number'
+      ? gt
+      : gt && typeof gt === 'object' && Number.isFinite(Number(gt.id))
+        ? Number(gt.id)
+        : Number.isFinite(Number(igdbGame?.category))
+          ? Number(igdbGame.category)
+          : null;
+  const gtLabel = String(
+    typeof gt === 'string' ? gt : gt?.type || ''
+  )
+    .trim()
+    .toLowerCase();
+
+  if (gtId === 8 || gtLabel === 'remake') return 'Remake';
+  if (gtId === 9 || gtLabel === 'remaster') return 'Remaster';
+  if (gtId === 11 || gtLabel === 'port') return 'Port';
+  if (gtId === 3 || gtLabel === 'bundle') return 'Coletânea';
+  if (
+    [1, 2, 4, 6, 7, 13].includes(gtId) ||
+    ['dlc_addon', 'dlc', 'expansion', 'standalone_expansion', 'episode', 'season', 'pack'].includes(
+      gtLabel
+    )
+  ) {
+    return 'DLC';
+  }
+
+  const title = String(igdbGame?.name || '').trim();
+  if (gtId === 10 || gtLabel === 'expanded_game') {
+    if (/\b(collection|colet[âa]nea|trilogy|anthology|bundle)\b/i.test(title)) {
+      return 'Coletânea';
+    }
+    if (/\b(remaster|remastered|hd)\b/i.test(title)) {
+      return 'Remaster';
+    }
+    return 'Jogo';
+  }
+
+  if (gtId === 0 || gtLabel === 'main_game' || gtLabel === 'main game') {
+    // Mesmo se main_game, respeita palavras explícitas de Remake/Remaster/Coletânea quando houver version_parent
+    if (igdbGame?.version_parent) {
+      if (/\bremake\b/i.test(title)) return 'Remake';
+      if (/\bremaster(ed)?\b/i.test(title)) return 'Remaster';
+      if (/\b(collection|colet[âa]nea|trilogy|bundle)\b/i.test(title)) return 'Coletânea';
+    }
+    return 'Jogo';
+  }
+
+  if (/\bremake\b/i.test(title)) return 'Remake';
+  if (/\bremaster(ed)?\b/i.test(title)) return 'Remaster';
+  if (/\b(collection|colet[âa]nea|trilogy|anthology|bundle)\b/i.test(title)) return 'Coletânea';
+  if (/\b(dlc|expansion|expans[ãa]o|season pass)\b/i.test(title)) return 'DLC';
+
+  return GAME_EDITION_TYPES[0];
+}
+
+function unixSecondsToYear(sec) {
+  const num = Number(sec);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  const yr = new Date(num * 1000).getUTCFullYear();
+  return yr >= 1970 && yr <= 2099 ? yr : null;
+}
+
+function extractIgdbOriginalPlatforms(igdbGame = {}, allPlatforms = []) {
+  const rds = Array.isArray(igdbGame?.release_dates) ? igdbGame.release_dates : [];
+  const datedEntries = rds
+    .map((rd) => {
+      const platName = normalizePlatformName(rd?.platform?.name || rd?.platform?.abbreviation || '');
+      const dateNum = Number(rd?.date);
+      const yearNum = Number(rd?.y) || (Number.isFinite(dateNum) && dateNum > 0 ? unixSecondsToYear(dateNum) : null);
+      if (!platName) return null;
+      return {
+        platName,
+        dateNum: Number.isFinite(dateNum) && dateNum > 0 ? dateNum : null,
+        yearNum: yearNum && yearNum >= 1970 ? yearNum : null,
+      };
+    })
+    .filter(Boolean);
+
+  if (datedEntries.length > 0) {
+    const withExactDate = datedEntries.filter((e) => e.dateNum !== null);
+    if (withExactDate.length > 0) {
+      const minDate = Math.min(...withExactDate.map((e) => e.dateNum));
+      // Considera plataformas lançadas na mesma janela inicial (até 7 dias do lançamento original)
+      const originals = Array.from(
+        new Set(
+          withExactDate
+            .filter((e) => Math.abs(e.dateNum - minDate) <= 7 * 86400)
+            .map((e) => e.platName)
+        )
+      );
+      if (originals.length > 0) return originals;
+    }
+
+    const withYear = datedEntries.filter((e) => e.yearNum !== null);
+    if (withYear.length > 0) {
+      const minYear = Math.min(...withYear.map((e) => e.yearNum));
+      const originals = Array.from(
+        new Set(withYear.filter((e) => e.yearNum === minYear).map((e) => e.platName))
+      );
+      if (originals.length > 0) return originals;
+    }
+  }
+
+  if (allPlatforms.length === 1) {
+    return [allPlatforms[0]];
+  }
+  return [];
+}
+
+/**
+ * Converte resposta da IGDB API v4 para metadados estruturados e transparentes.
+ */
+export function parseIgdbGameMetadata(igdbGame = null) {
+  if (!igdbGame || typeof igdbGame !== 'object') return null;
+
+  const igdbId = Number(igdbGame.id) > 0 ? Math.floor(Number(igdbGame.id)) : null;
+  const title = String(igdbGame.name || '').trim();
+  if (!title) return null;
+
+  const slug = String(igdbGame.slug || '').trim() || null;
+  const imageId = String(igdbGame?.cover?.image_id || '').trim();
+  const coverUrl = imageId
+    ? `https://images.igdb.com/igdb/image/upload/t_cover_big/${imageId}.jpg`
+    : null;
+
+  const platforms = Array.from(
+    new Set(
+      (Array.isArray(igdbGame.platforms) ? igdbGame.platforms : [])
+        .map((p) => normalizePlatformName(p?.name || p?.abbreviation || ''))
+        .filter(Boolean)
+    )
+  );
+  const originalPlatforms = extractIgdbOriginalPlatforms(igdbGame, platforms);
+
+  const companies = Array.isArray(igdbGame.involved_companies)
+    ? igdbGame.involved_companies
+    : [];
+  const developers = Array.from(
+    new Set(
+      companies
+        .filter((c) => c?.developer === true && c?.company?.name)
+        .map((c) => String(c.company.name).trim())
+        .filter(Boolean)
+    )
+  );
+  const publishers = Array.from(
+    new Set(
+      companies
+        .filter((c) => c?.publisher === true && c?.company?.name)
+        .map((c) => String(c.company.name).trim())
+        .filter(Boolean)
+    )
+  );
+
+  const releaseYear = unixSecondsToYear(igdbGame.first_release_date);
+  const editionType = normalizeGameEditionType(resolveIgdbEditionType(igdbGame));
+
+  const parentGame =
+    igdbGame.parent_game && typeof igdbGame.parent_game === 'object'
+      ? {
+          id: Number(igdbGame.parent_game.id) || null,
+          name: String(igdbGame.parent_game.name || '').trim(),
+          releaseYear: unixSecondsToYear(igdbGame.parent_game.first_release_date),
+        }
+      : Number(igdbGame.parent_game) > 0
+        ? { id: Number(igdbGame.parent_game), name: '', releaseYear: null }
+        : null;
+
+  const versionParent =
+    igdbGame.version_parent && typeof igdbGame.version_parent === 'object'
+      ? {
+          id: Number(igdbGame.version_parent.id) || null,
+          name: String(igdbGame.version_parent.name || '').trim(),
+          releaseYear: unixSecondsToYear(igdbGame.version_parent.first_release_date),
+        }
+      : Number(igdbGame.version_parent) > 0
+        ? { id: Number(igdbGame.version_parent), name: '', releaseYear: null }
+        : null;
+
+  const franchises = Array.isArray(igdbGame.franchises)
+    ? igdbGame.franchises
+        .filter((f) => f && f.name)
+        .map((f) => ({ id: Number(f.id) || null, name: String(f.name).trim() }))
+    : [];
+  const collections = Array.isArray(igdbGame.collections)
+    ? igdbGame.collections
+        .filter((c) => c && c.name)
+        .map((c) => ({ id: Number(c.id) || null, name: String(c.name).trim() }))
+    : [];
+  const franchiseName = franchises[0]?.name || collections[0]?.name || '';
+
+  const ttb = igdbGame.time_to_beat || null;
+  const normallySec = Number(ttb?.normally);
+  const completelySec = Number(ttb?.completely);
+
+  const campaignTimeHours =
+    Number.isFinite(normallySec) && normallySec > 0
+      ? Math.round((normallySec / 3600) * 10) / 10
+      : null;
+  const completion100Hours =
+    Number.isFinite(completelySec) && completelySec > 0
+      ? Math.round((completelySec / 3600) * 10) / 10
+      : null;
+
+  return {
+    igdbId,
+    slug,
+    title,
+    synopsis: String(igdbGame.summary || '').trim(),
+    coverUrl,
+    developers,
+    publishers,
+    releaseYear,
+    platforms,
+    originalPlatforms,
+    editionType,
+    parentGame,
+    versionParent,
+    franchises,
+    collections,
+    franchiseName,
+    campaignTimeHours,
+    campaignTimeSource: campaignTimeHours !== null ? IGDB_CAMPAIGN_TIME_SOURCE_LABEL : null,
+    completion100Hours,
+    completion100Source: completion100Hours !== null ? IGDB_COMPLETION_100_SOURCE_LABEL : null,
+  };
 }
 
 /**
@@ -72,9 +353,13 @@ export function parseRawgGameMetadata(rawgGame = null) {
       : null;
 
   const platforms = Array.isArray(rawgGame.platforms)
-    ? rawgGame.platforms
-        .map((p) => String(p?.platform?.name || p?.name || '').trim())
-        .filter(Boolean)
+    ? Array.from(
+        new Set(
+          rawgGame.platforms
+            .map((p) => normalizePlatformName(p?.platform?.name || p?.name || ''))
+            .filter(Boolean)
+        )
+      )
     : [];
 
   const developers = Array.isArray(rawgGame.developers)
@@ -93,7 +378,6 @@ export function parseRawgGameMetadata(rawgGame = null) {
     title,
     rawgPlaytimeHours,
     rawgPlaytimeSource: rawgPlaytimeHours !== null ? RAWG_CAMPAIGN_TIME_SOURCE_LABEL : null,
-    // RAWG não informa tempo 100%: jamais inventar estimativa
     completion100Hours: null,
     completion100Source: null,
     metacritic,
@@ -106,10 +390,31 @@ export function parseRawgGameMetadata(rawgGame = null) {
 }
 
 /**
- * Formata "Tempo médio de campanha" com rotulagem obrigatória da fonte.
+ * Formata "Tempo médio de campanha" com rotulagem obrigatória da fonte (IGDB, RAWG ou manual).
  */
 export function formatGameCampaignTime(work = {}) {
   if (!work || typeof work !== 'object') return null;
+
+  const igdbOrCampaignHours = Number(
+    work.campaignTimeHours ??
+      work.progress_data?.campaignTimeHours ??
+      work.igdbTimeToBeatHours ??
+      work.progress_data?.igdbTimeToBeatHours
+  );
+  if (Number.isFinite(igdbOrCampaignHours) && igdbOrCampaignHours > 0) {
+    const cleanHours = Math.round(igdbOrCampaignHours * 10) / 10;
+    const sourceLabel =
+      String(
+        work.campaignTimeSource || work.progress_data?.campaignTimeSource || ''
+      ).trim() || IGDB_CAMPAIGN_TIME_SOURCE_LABEL;
+    return {
+      hours: cleanHours,
+      label: `${cleanHours} h`,
+      sourceLabel,
+      isFromIgdb: /igdb/i.test(sourceLabel),
+      isFromRawg: /rawg/i.test(sourceLabel),
+    };
+  }
 
   const rawgHours = Number(work.rawgPlaytimeHours ?? work.progress_data?.rawgPlaytimeHours);
   if (Number.isFinite(rawgHours) && rawgHours > 0) {
@@ -121,6 +426,7 @@ export function formatGameCampaignTime(work = {}) {
       hours: cleanHours,
       label: `${cleanHours} h`,
       sourceLabel,
+      isFromIgdb: false,
       isFromRawg: true,
     };
   }
@@ -132,6 +438,7 @@ export function formatGameCampaignTime(work = {}) {
       hours: cleanHours,
       label: `${cleanHours} h`,
       sourceLabel: 'Informado manualmente',
+      isFromIgdb: false,
       isFromRawg: false,
     };
   }
@@ -140,7 +447,7 @@ export function formatGameCampaignTime(work = {}) {
 }
 
 /**
- * Formata "Tempo 100%": só exibe fonte externa se existir; senão informa que é editável manualmente.
+ * Formata "Tempo 100%": exibe fonte externa se existir (ex.: IGDB); senão informa que é editável manualmente.
  */
 export function formatGameCompletion100Time(work = {}) {
   if (!work || typeof work !== 'object') {
@@ -182,8 +489,58 @@ export function formatGameCompletion100Time(work = {}) {
 }
 
 /**
+ * Normaliza o modelo de troféus/conquistas `{ source, unlocked, total, updated_at }`.
+ * Mantém marcação manual para consoles offline e prepara o contrato para sincronização na v2.7.0.
+ */
+export function normalizeAchievementsModel(raw = null) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const hasUnlocked =
+    raw.unlocked !== null &&
+    raw.unlocked !== undefined &&
+    raw.unlocked !== '' &&
+    Number.isFinite(Number(raw.unlocked));
+  const hasTotal =
+    raw.total !== null &&
+    raw.total !== undefined &&
+    raw.total !== '' &&
+    Number.isFinite(Number(raw.total));
+
+  if (!hasUnlocked && !hasTotal) return null;
+
+  const total = hasTotal && Number(raw.total) > 0 ? Math.floor(Number(raw.total)) : null;
+  let unlocked = hasUnlocked ? Math.max(0, Math.floor(Number(raw.unlocked))) : 0;
+  if (total !== null && unlocked > total) {
+    unlocked = total;
+  }
+
+  return {
+    source: String(raw.source || 'manual').trim() || 'manual',
+    unlocked,
+    total,
+    updated_at: raw.updated_at || new Date().toISOString(),
+  };
+}
+
+export function formatGameAchievementsSummary(achievements = null) {
+  const norm = normalizeAchievementsModel(achievements);
+  if (!norm) return null;
+  const pct =
+    norm.total && norm.total > 0
+      ? Math.min(100, Math.round((norm.unlocked / norm.total) * 100))
+      : null;
+  return {
+    ...norm,
+    pct,
+    label:
+      norm.total && norm.total > 0
+        ? `${norm.unlocked} / ${norm.total}${pct !== null ? ` (${pct}%)` : ''}`
+        : `${norm.unlocked} obtidos`,
+  };
+}
+
+/**
  * Sugestão de vínculo manual de franquia para Games (sem alterar nada automaticamente).
- * Cruza o título do jogo com franquias e outros jogos já presentes no catálogo local.
  */
 export function suggestGameFranchiseLink(work = {}, allItems = []) {
   if (!work || typeof work !== 'object') {
@@ -207,7 +564,6 @@ export function suggestGameFranchiseLink(work = {}, allItems = []) {
       inferDomainFromWork(entry) === 'games'
   );
 
-  // Tenta primeiro casar com uma franquia já cadastrada no catálogo do usuário
   let matchedExistingFranchise = '';
   const relatedGames = [];
 
@@ -245,4 +601,43 @@ export function suggestGameFranchiseLink(work = {}, allItems = []) {
     relatedGames,
     isSuggestionOnly: true,
   };
+}
+
+/**
+ * Extrai campos de profundidade e edicao de um candidato de busca de Games para compor o rascunho.
+ */
+export function extractGameDepthDraftFields(candidate = {}) {
+  if (!candidate || typeof candidate !== 'object') return {};
+  const depth = {};
+  const igdbId = Number(candidate.igdbId ?? candidate.ids?.igdb);
+  if (Number.isFinite(igdbId) && igdbId > 0) depth.igdbId = Math.floor(igdbId);
+
+  const rawgId = Number(candidate.rawgId ?? candidate.ids?.rawg);
+  if (Number.isFinite(rawgId) && rawgId > 0) depth.rawgId = Math.floor(rawgId);
+
+  if (Array.isArray(candidate.originalPlatforms) && candidate.originalPlatforms.length > 0) {
+    depth.originalPlatforms = candidate.originalPlatforms;
+  }
+  if (candidate.editionType) {
+    depth.editionType = normalizeGameEditionType(candidate.editionType);
+  }
+  if (Number(candidate.campaignTimeHours) > 0) {
+    depth.campaignTimeHours = Math.round(Number(candidate.campaignTimeHours) * 10) / 10;
+    depth.campaignTimeSource =
+      String(candidate.campaignTimeSource || '').trim() || IGDB_CAMPAIGN_TIME_SOURCE_LABEL;
+  }
+  if (Number(candidate.rawgPlaytimeHours) > 0) {
+    depth.rawgPlaytimeHours = Math.round(Number(candidate.rawgPlaytimeHours) * 10) / 10;
+    depth.rawgPlaytimeSource =
+      String(candidate.rawgPlaytimeSource || '').trim() || RAWG_CAMPAIGN_TIME_SOURCE_LABEL;
+  }
+  if (Number(candidate.completion100Hours) > 0) {
+    depth.completion100Hours = Math.round(Number(candidate.completion100Hours) * 10) / 10;
+    depth.completion100Source =
+      String(candidate.completion100Source || '').trim() || IGDB_COMPLETION_100_SOURCE_LABEL;
+  }
+  if (candidate.parentGame) depth.parentGame = candidate.parentGame;
+  if (candidate.versionParent) depth.versionParent = candidate.versionParent;
+  if (candidate.franchiseName) depth.franchiseName = String(candidate.franchiseName).trim();
+  return depth;
 }
