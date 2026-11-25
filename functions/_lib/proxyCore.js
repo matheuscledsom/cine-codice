@@ -13,13 +13,17 @@ export const TMDB_UPSTREAM_BASE = 'https://api.themoviedb.org/3';
 export const OMDB_UPSTREAM_BASE = 'https://www.omdbapi.com/';
 export const LASTFM_UPSTREAM_BASE = 'https://ws.audioscrobbler.com/2.0/';
 export const RAWG_UPSTREAM_BASE = 'https://api.rawg.io/api';
+export const IGDB_UPSTREAM_BASE = 'https://api.igdb.com/v4';
+export const TWITCH_OAUTH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token';
+export const STEAM_STORE_UPSTREAM_BASE = 'https://store.steampowered.com/api';
 
 export const SEARCH_CACHE_TTL_SECONDS = 600; // 10 minutos
 export const DETAIL_CACHE_TTL_SECONDS = 86400; // 24 horas
 
-const SECRET_PARAM_RE = /^(api_?key|apikey|access_token|token|key|sk|api_sig)$/i;
+const SECRET_PARAM_RE = /^(api_?key|apikey|access_token|token|key|sk|api_sig|client_secret)$/i;
 const SAFE_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const SAFE_RAWG_ID_RE = /^[a-zA-Z0-9-]+$/;
+const ALLOWED_RAWG_GAME_SUBPATHS = new Set(['additions', 'game-series', 'parent-games']);
 const NUMERIC_ID_RE = /^\d+$/;
 const TMDB_KEYWORDS_PARAM_RE = /^\d+(?:[,|]\d+)*$/;
 const ALLOWED_TMDB_SEARCH_TARGETS = new Set(['movie', 'tv', 'multi', 'collection']);
@@ -106,6 +110,8 @@ export function readServerEnvConfig(env = {}) {
   const omdbApiKey = String(env?.OMDB_API_KEY || '').trim();
   const lastfmApiKey = String(env?.LASTFM_API_KEY || '').trim();
   const rawgApiKey = String(env?.RAWG_API_KEY || '').trim();
+  const twitchClientId = String(env?.TWITCH_CLIENT_ID || '').trim();
+  const twitchClientSecret = String(env?.TWITCH_CLIENT_SECRET || '').trim();
 
   return {
     supabaseUrl,
@@ -114,13 +120,41 @@ export function readServerEnvConfig(env = {}) {
     omdbApiKey,
     lastfmApiKey,
     rawgApiKey,
+    twitchClientId,
+    twitchClientSecret,
     providers: {
       tmdb: { configured: Boolean(tmdbApiKey) },
       omdb: { configured: Boolean(omdbApiKey) },
       lastfm: { configured: Boolean(lastfmApiKey) },
       rawg: { configured: Boolean(rawgApiKey) },
+      igdb: { configured: Boolean(twitchClientId && twitchClientSecret) },
     },
   };
+}
+
+export function isAllowedSameOriginRequest(request) {
+  try {
+    const secFetchSite = String(request?.headers?.get?.('Sec-Fetch-Site') || '')
+      .trim()
+      .toLowerCase();
+    if (secFetchSite === 'cross-site') {
+      return false;
+    }
+    const originHeader = String(request?.headers?.get?.('Origin') || '').trim();
+    if (!originHeader) return true;
+    const reqUrl = new URL(request.url);
+    const originUrl = new URL(originHeader);
+    if (originUrl.origin === reqUrl.origin) return true;
+    if (
+      (originUrl.hostname === 'localhost' || originUrl.hostname === '127.0.0.1') &&
+      (reqUrl.hostname === 'localhost' || reqUrl.hostname === '127.0.0.1')
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 export function maskSensitiveValues(rawText, secrets = []) {
@@ -463,7 +497,7 @@ export function validateRawgPath(rawPathname = '', paramsPath = null) {
     return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
   }
 
-  const [head, second] = segments;
+  const [head, second, third] = segments;
   if (head === 'games' && segments.length === 1) {
     return {
       allowed: true,
@@ -482,12 +516,31 @@ export function validateRawgPath(rawPathname = '', paramsPath = null) {
     };
   }
 
+  if (
+    head === 'games' &&
+    segments.length === 3 &&
+    SAFE_RAWG_ID_RE.test(second) &&
+    ALLOWED_RAWG_GAME_SUBPATHS.has(third)
+  ) {
+    return {
+      allowed: true,
+      kind: 'detail',
+      ttlSeconds: DETAIL_CACHE_TTL_SECONDS,
+      cleanPath: `games/${second}/${third}`,
+    };
+  }
+
   return { allowed: false, kind: null, ttlSeconds: 0, cleanPath: '' };
 }
 
 export function buildSanitizedRawgUrls(cleanPath, incomingSearchParams, rawgApiKey) {
   const sanitized = new URLSearchParams();
-  if (cleanPath === 'games' && incomingSearchParams) {
+  const allowsSearchParams =
+    cleanPath === 'games' ||
+    cleanPath.endsWith('/additions') ||
+    cleanPath.endsWith('/game-series') ||
+    cleanPath.endsWith('/parent-games');
+  if (allowsSearchParams && incomingSearchParams) {
     const collected = [];
     for (const [rawKey, rawVal] of incomingSearchParams.entries()) {
       if (SECRET_PARAM_RE.test(rawKey)) continue;

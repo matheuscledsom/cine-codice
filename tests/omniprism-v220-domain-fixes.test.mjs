@@ -183,18 +183,15 @@ describe('OmniPrism v2.2.0 — Correções de Música, Games, Leitura PT-BR e M�
     assert.equal(back.trackRating10, 9.5);
   });
 
-  it('(b) Games: nunca inventa PC/Steam na Wikidata, extrai plataformas reais, separa Original vs Remake e persiste nota 0–11', async () => {
+  it('(b) Games: nunca inventa PC/Steam na Wikidata, extrai plataformas reais, separa Jogo vs Remake e persiste nota 0–11', async () => {
     assert.deepEqual(GAME_PLATFORMS, [
       'PS1', 'PS2', 'PS3', 'PS4', 'PS5', 'PSP', 'SNES', 'GBA', 'DS', '3DS', 'Switch', 'PC', 'Mobile',
     ]);
-    assert.deepEqual(GAME_EDITION_TYPES, ['Original', 'Remake', 'Remaster', 'Port', 'DLC/Expansão']);
+    assert.deepEqual(GAME_EDITION_TYPES, ['Jogo', 'Remake', 'Remaster', 'Port', 'Coletânea', 'DLC']);
 
     const mockSotcFetch = async (url) => {
-      if (url.includes('cheapshark.com')) {
-        return { ok: true, async json() { return []; } };
-      }
-      if (url.includes('freetogame.com')) {
-        return { ok: true, async json() { return []; } };
+      if (url.includes('/api/igdb') || url.includes('/api/rawg') || url.includes('/api/steam')) {
+        return { ok: false, status: 503, async json() { return { error: 'unconfigured' }; } };
       }
       if (url.includes('action=wbsearchentities')) {
         return {
@@ -209,7 +206,7 @@ describe('OmniPrism v2.2.0 — Correções de Música, Games, Leitura PT-BR e M�
                 },
                 {
                   id: 'Q999999',
-                  label: 'Mystery Console Game',
+                  label: 'Shadow Mystery Console Game',
                   description: 'jogo eletrônico sem plataforma cadastrada',
                 },
               ],
@@ -240,7 +237,7 @@ describe('OmniPrism v2.2.0 — Correções de Música, Games, Leitura PT-BR e M�
                 },
                 Q999999: {
                   id: 'Q999999',
-                  labels: { en: { value: 'Mystery Console Game' } },
+                  labels: { en: { value: 'Shadow Mystery Console Game' } },
                   descriptions: { pt: { value: 'jogo eletrônico' } },
                   claims: {
                     P31: [{ mainsnak: { datavalue: { value: { id: 'Q7889' } } } }],
@@ -295,14 +292,14 @@ describe('OmniPrism v2.2.0 — Correções de Música, Games, Leitura PT-BR e M�
     assert.equal(gamesRes.ok, true);
 
     const original = gamesRes.results.find(
-      (g) => g.title === 'Shadow of the Colossus' && g.editionType === 'Original'
+      (g) => g.title === 'Shadow of the Colossus' && g.editionType === 'Jogo'
     );
     const remake = gamesRes.results.find(
       (g) => g.title === 'Shadow of the Colossus' && g.editionType === 'Remake'
     );
-    const noPlatform = gamesRes.results.find((g) => g.title === 'Mystery Console Game');
+    const noPlatform = gamesRes.results.find((g) => g.title === 'Shadow Mystery Console Game');
 
-    assert.ok(original, 'Deve retornar o jogo Original (2005)');
+    assert.ok(original, 'Deve retornar o jogo base (2005)');
     assert.equal(original.releaseYear, 2005);
     assert.deepEqual(original.platforms, ['PS2', 'PS3']);
     assert.equal(original.platform, 'PS2');
@@ -358,7 +355,7 @@ describe('OmniPrism v2.2.0 — Correções de Música, Games, Leitura PT-BR e M�
     };
 
     const row = mapLocalWorkToCatalogRow(origWork, 'user-v220');
-    assert.equal(row.progress_data.edition_type, 'Original');
+    assert.equal(row.progress_data.edition_type, 'Jogo');
     assert.equal(row.progress_data.game_rating_11, 11);
     assert.equal(
       row.progress_data.masterpiece_justification,
@@ -367,7 +364,7 @@ describe('OmniPrism v2.2.0 — Correções de Música, Games, Leitura PT-BR e M�
     const back = mapCatalogRowToLocalWork(row);
     assert.equal(back.platform, 'PS2');
     assert.equal(back.gameRating11, 11);
-    assert.equal(back.editionType, 'Original');
+    assert.equal(back.editionType, 'Jogo');
 
     const { mergedWorks } = mergeWorksByUpdatedAt([origWork], [remakeWork]);
     assert.equal(mergedWorks.length, 2, 'Original e Remake devem coexistir separadamente no catálogo');

@@ -126,6 +126,28 @@ export const PROVIDER_LIMITS = Object.freeze({
     dailyLimit: null,
     autoStopRatio: null,
   }),
+  igdb: Object.freeze({
+    id: 'igdb',
+    label: 'IGDB',
+    maxRequestsPerSec: 4,
+    secWindowMs: 1000,
+    maxRequests: 40,
+    windowMs: 10_000,
+    minIntervalMs: 250,
+    respectRateLimitHeaders: false,
+    dailyLimit: null,
+    autoStopRatio: null,
+  }),
+  steam: Object.freeze({
+    id: 'steam',
+    label: 'Steam Store',
+    maxRequests: 20,
+    windowMs: 10_000,
+    minIntervalMs: 60,
+    respectRateLimitHeaders: false,
+    dailyLimit: null,
+    autoStopRatio: null,
+  }),
 });
 
 export const CACHE_DB_NAME = 'cine_codice_api_cache_v1';

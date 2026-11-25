@@ -3,8 +3,10 @@ import {
   domainConfig,
   inferDomainFromWork,
   normalizeCinemaStatus,
+  normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
+import { normalizeAchievementsModel } from '../lib/gameDepth.js';
 import { migrateFavoriteGenresToObjects } from '../lib/genreCatalog.js';
 import { applyCanonicalIdsToWork } from '../lib/idBridge.js';
 import { classifyLegacyRatingSource, normalizeViewerFocusList } from '../lib/migrations.js';
@@ -290,7 +292,15 @@ export function buildCodiceDatabase({
       platforms: Array.isArray(rawItem.platforms)
         ? Array.from(new Set(rawItem.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
         : [],
-      editionType: String(rawItem.editionType || (domain === 'games' ? 'Original' : '')).trim(),
+      originalPlatforms: Array.isArray(rawItem.originalPlatforms)
+        ? Array.from(
+            new Set(rawItem.originalPlatforms.map((p) => String(p || '').trim()).filter(Boolean))
+          )
+        : [],
+      editionType:
+        domain === 'games'
+          ? normalizeGameEditionType(rawItem.editionType)
+          : String(rawItem.editionType || '').trim(),
       gameRating11:
         rawItem.gameRating11 !== null &&
         rawItem.gameRating11 !== undefined &&
@@ -324,7 +334,19 @@ export function buildCodiceDatabase({
       completionType: String(rawItem.completionType || '').trim(),
       storeOrLauncher: String(rawItem.storeOrLauncher || '').trim(),
       buildOrCharacter: String(rawItem.buildOrCharacter || '').trim(),
-      rawgId: Number(rawItem.rawgId) > 0 ? Math.floor(Number(rawItem.rawgId)) : null,
+      igdbId:
+        Number(rawItem.igdbId ?? rawItem.ids?.igdb) > 0
+          ? Math.floor(Number(rawItem.igdbId ?? rawItem.ids?.igdb))
+          : null,
+      rawgId:
+        Number(rawItem.rawgId ?? rawItem.ids?.rawg) > 0
+          ? Math.floor(Number(rawItem.rawgId ?? rawItem.ids?.rawg))
+          : null,
+      campaignTimeHours:
+        Number(rawItem.campaignTimeHours) > 0
+          ? Math.round(Number(rawItem.campaignTimeHours) * 10) / 10
+          : null,
+      campaignTimeSource: String(rawItem.campaignTimeSource || '').trim() || null,
       rawgPlaytimeHours:
         Number(rawItem.rawgPlaytimeHours) > 0
           ? Math.round(Number(rawItem.rawgPlaytimeHours) * 10) / 10
@@ -339,6 +361,9 @@ export function buildCodiceDatabase({
           ? Math.round(Number(rawItem.completion100Hours) * 10) / 10
           : null,
       completion100Source: String(rawItem.completion100Source || '').trim() || null,
+      parentGame: rawItem.parentGame ?? null,
+      versionParent: rawItem.versionParent ?? null,
+      achievements: normalizeAchievementsModel(rawItem.achievements),
       // Música
       albumName: String(rawItem.albumName || '').trim(),
       excludeFromDiscography: Boolean(
@@ -909,8 +934,27 @@ export function generateCatalogMarkdown(db) {
   const { items } = hydrateAppSnapshotFromDatabase(db);
   const lines = ['# OmniPrism — Catálogo Pessoal', ''];
   items.forEach((item) => {
+    const itemDomain = inferDomainFromWork(item);
+    const typeLabel =
+      itemDomain === 'games'
+        ? normalizeGameEditionType(item.editionType)
+        : itemDomain === 'reading'
+          ? item.workType === 'manga'
+            ? 'Mangá'
+            : item.workType === 'academic'
+              ? 'Artigo'
+              : 'Livro'
+          : itemDomain === 'music'
+            ? item.workType === 'track'
+              ? 'Faixa'
+              : 'Álbum'
+            : item.workType === 'anime'
+              ? 'Anime'
+              : item.workType === 'series'
+                ? 'Série'
+                : 'Filme';
     const meta = [
-      item.workType === 'anime' ? 'Anime' : item.workType === 'series' ? 'Série' : 'Filme',
+      typeLabel,
       item.releaseYear || null,
       item.director || item.studio || null,
       typeof item.rating === 'number' ? `Nota ${item.rating}/100` : null,

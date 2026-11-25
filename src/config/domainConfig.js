@@ -312,23 +312,66 @@ export const GAME_PLATFORMS = [
   'Mobile',
 ];
 
+export const EXTENDED_GAME_PLATFORMS = [
+  ...GAME_PLATFORMS,
+  'PS Vita',
+  'Xbox Series X/S',
+  'Xbox One',
+  'Xbox 360',
+  'Xbox',
+  'Wii U',
+  'Wii',
+  'GameCube',
+  'N64',
+  'NES',
+  'Mega Drive',
+  'Dreamcast',
+];
+
 export const GAME_EDITION_TYPES = [
-  'Original',
+  'Jogo',
   'Remake',
   'Remaster',
   'Port',
-  'DLC/Expansão',
+  'Coletânea',
+  'DLC',
 ];
+
+export function normalizeGameEditionType(raw = '') {
+  const clean = String(raw || '').trim();
+  if (!clean) return GAME_EDITION_TYPES[0];
+  const low = clean
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (low === 'remake') return 'Remake';
+  if (low === 'remaster' || low === 'remastered') return 'Remaster';
+  if (low === 'port') return 'Port';
+  if (low === 'coletanea' || low === 'bundle' || low === 'collection') return 'Coletânea';
+  if (
+    low === 'dlc' ||
+    low === 'dlc/expansao' ||
+    low === 'dlc / expansao' ||
+    low === 'expansion' ||
+    low === 'addon' ||
+    low === 'add-on'
+  ) {
+    return 'DLC';
+  }
+  return 'Jogo';
+}
 
 export const GAME_COMPLETION_TYPES = [
   'História Principal',
+  'Zerado',
   '100% / Platina',
   'Multiplayer / Ranked',
-  'Emulação',
+  'Sem fim convencional',
 ];
 
 export const GAME_STORES_LAUNCHERS = [
   'Mídia Física / Console',
+  'Local / Offline',
   'PlayStation Store',
   'Nintendo eShop',
   'Steam',

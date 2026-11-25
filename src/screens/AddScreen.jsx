@@ -24,6 +24,7 @@ import { StarRatingPicker } from '../components/StarRatingPicker';
 import { WorkTypeSelector } from '../components/WorkTypeSelector';
 import {
   BOOK_FORMATS,
+  EXTENDED_GAME_PLATFORMS,
   GAME_COMPLETION_TYPES,
   GAME_EDITION_TYPES,
   GAME_PLATFORMS,
@@ -37,8 +38,10 @@ import {
   getStatusConfigForDomain,
   getWorkTypeLabel,
   normalizeDomainId,
+  normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig';
+import { GAME_ATTRIBUTION_LINKS, extractGameDepthDraftFields } from '../lib/gameDepth';
 import {
   CINEMA_API_SOURCES,
   CINEMA_SOURCE_PRESETS,
@@ -668,8 +671,10 @@ export function AddScreen({
       const genres = Array.isArray(candidate?.genres) ? candidate.genres.slice(0, 4) : [];
       const resolvedEdition =
         candDomain === 'games'
-          ? String(cardOverride.editionType || candidate?.editionType || 'Original').trim()
+          ? normalizeGameEditionType(cardOverride.editionType || candidate?.editionType)
           : '';
+      const gameDepthFields =
+        candDomain === 'games' ? extractGameDepthDraftFields(candidate) : {};
       // Folha rápida enxuta (v2.4.0 Fase 4.1): sem status nem plataforma pré-selecionados
       const baseDomainDraft = {
         id: draftId,
@@ -707,6 +712,7 @@ export function AddScreen({
         isbnOrDoi: String(candidate?.isbnOrDoi || '').trim(),
         bookFormat: candidate?.bookFormat || '',
         favoriteScene: String(candidate?.favoriteScene || '').trim(),
+        ...gameDepthFields,
         platform: '',
         platforms: Array.isArray(candidate?.platforms) ? candidate.platforms : [],
         editionType: resolvedEdition,
@@ -1036,7 +1042,7 @@ export function AddScreen({
     effectiveDomain === 'reading'
       ? 'Open Library · Google Books'
       : effectiveDomain === 'games'
-        ? 'CheapShark · FreeToGame · Wikidata'
+        ? 'IGDB · RAWG · Steam · Wikidata'
         : effectiveDomain === 'music'
           ? 'iTunes · MusicBrainz'
           : '';
@@ -1553,6 +1559,29 @@ export function AddScreen({
               );
             })}
           </div>
+
+          {effectiveDomain === 'games' && results.length > 0 && (
+            <p className="pt-1 text-right text-[10px] text-subtle">
+              Fontes de Games:{' '}
+              <a
+                href={GAME_ATTRIBUTION_LINKS.igdb.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-ink"
+              >
+                {GAME_ATTRIBUTION_LINKS.igdb.label}
+              </a>{' '}
+              ·{' '}
+              <a
+                href={GAME_ATTRIBUTION_LINKS.rawg.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-ink"
+              >
+                {GAME_ATTRIBUTION_LINKS.rawg.label}
+              </a>
+            </p>
+          )}
         </section>
       )}
 
@@ -1708,15 +1737,25 @@ export function AddScreen({
               </div>
             </div>
 
-            {/* Games em andamento: "Onde você está jogando?" com plataformas da API + "Outra plataforma" */}
+            {/* Games em andamento: "Onde você está jogando?" (original destacada) + Tipo de Edição + Origem */}
             {draftLeanFields.askGamePlatform && (
               <div className="space-y-2.5 border-t border-line pt-3">
                 <p className="text-xs font-semibold text-ink">
                   Onde você está jogando?
                 </p>
                 <div className="flex flex-wrap gap-1.5">
-                  {(Array.isArray(draftItem.platforms) ? draftItem.platforms : []).map((plat) => {
+                  {Array.from(
+                    new Set([
+                      ...(Array.isArray(draftItem.platforms) ? draftItem.platforms : []),
+                      ...(Array.isArray(draftItem.originalPlatforms)
+                        ? draftItem.originalPlatforms
+                        : []),
+                    ])
+                  ).map((plat) => {
                     const active = draftItem.platform === plat && !otherPlatformOpen;
+                    const isOriginal =
+                      Array.isArray(draftItem.originalPlatforms) &&
+                      draftItem.originalPlatforms.includes(plat);
                     return (
                       <button
                         key={plat}
@@ -1730,13 +1769,20 @@ export function AddScreen({
                             platform: curr.platform === plat ? '' : plat,
                           }));
                         }}
-                        className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium transition-colors ${
+                        className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border px-3 text-xs font-medium transition-colors ${
                           active
                             ? 'border-accent bg-accent text-accent-ink'
-                            : 'border-line bg-app text-muted hover:text-ink'
+                            : isOriginal
+                              ? 'border-accent/60 bg-app text-ink hover:border-accent'
+                              : 'border-line bg-app text-muted hover:text-ink'
                         }`}
                       >
-                        {plat}
+                        <span>{plat}</span>
+                        {isOriginal && (
+                          <span className="rounded-[3px] border border-current/30 px-1 py-0.5 text-[9px] uppercase tracking-wide">
+                            Original
+                          </span>
+                        )}
                       </button>
                     );
                   })}
@@ -1768,7 +1814,7 @@ export function AddScreen({
                       className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
                     />
                     <div className="flex flex-wrap gap-1.5">
-                      {GAME_PLATFORMS.filter(
+                      {EXTENDED_GAME_PLATFORMS.filter(
                         (p) => !(draftItem.platforms || []).includes(p)
                       ).map((plat) => (
                         <button
@@ -1790,6 +1836,86 @@ export function AddScreen({
                     </div>
                   </div>
                 )}
+
+                {draftLeanFields.askGameEdition && (
+                  <div className="space-y-1.5 pt-1">
+                    <p className="text-[11px] font-medium text-muted">Tipo de edição</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {GAME_EDITION_TYPES.map((ed) => {
+                        const isSelected = normalizeGameEditionType(draftItem.editionType) === ed;
+                        return (
+                          <button
+                            key={ed}
+                            type="button"
+                            aria-pressed={isSelected}
+                            onClick={() =>
+                              setDraftItem((curr) => ({ ...curr, editionType: ed }))
+                            }
+                            className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium transition-colors ${
+                              isSelected
+                                ? 'border-accent bg-accent text-accent-ink'
+                                : 'border-line bg-app text-muted hover:text-ink'
+                            }`}
+                          >
+                            {ed}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <label className="block pt-1">
+                  <span className="mb-1 block text-[11px] font-medium text-muted">
+                    Origem / Loja (opcional)
+                  </span>
+                  <select
+                    value={draftItem.storeOrLauncher || ''}
+                    onChange={(e) =>
+                      setDraftItem((curr) => ({ ...curr, storeOrLauncher: e.target.value }))
+                    }
+                    className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                  >
+                    <option value="">Não informar</option>
+                    {GAME_STORES_LAUNCHERS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
+
+            {/* Games zerados: Tipo de conclusão */}
+            {draftLeanFields.askGameCompletionType && (
+              <div className="space-y-1.5 border-t border-line pt-3">
+                <p className="text-xs font-semibold text-ink">Tipo de conclusão</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {GAME_COMPLETION_TYPES.map((ctype) => {
+                    const active = draftItem.completionType === ctype;
+                    return (
+                      <button
+                        key={ctype}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() =>
+                          setDraftItem((curr) => ({
+                            ...curr,
+                            completionType: curr.completionType === ctype ? '' : ctype,
+                          }))
+                        }
+                        className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium transition-colors ${
+                          active
+                            ? 'border-accent bg-accent text-accent-ink'
+                            : 'border-line bg-app text-muted hover:text-ink'
+                        }`}
+                      >
+                        {ctype}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
 

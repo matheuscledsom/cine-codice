@@ -18,8 +18,10 @@ import {
   domainConfig,
   inferDomainFromWork,
   normalizeCinemaStatus,
+  normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig';
+import { normalizeAchievementsModel } from '../lib/gameDepth';
 import { initialItems } from '../data/mockData';
 import { applyCanonicalIdsToWork } from '../lib/idBridge';
 import { classifyLegacyRatingSource } from '../lib/migrations';
@@ -195,7 +197,19 @@ function normalizeItem(rawItem, spectatorDna = null) {
     platforms: Array.isArray(rawItem.platforms)
       ? Array.from(new Set(rawItem.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
       : [],
-    editionType: String(rawItem.editionType || (domain === 'games' ? 'Original' : '')).trim(),
+    originalPlatforms: Array.isArray(rawItem.originalPlatforms ?? rawItem.progress_data?.originalPlatforms)
+      ? Array.from(
+          new Set(
+            (rawItem.originalPlatforms ?? rawItem.progress_data?.originalPlatforms)
+              .map((p) => String(p || '').trim())
+              .filter(Boolean)
+          )
+        )
+      : [],
+    editionType:
+      domain === 'games'
+        ? normalizeGameEditionType(rawItem.editionType)
+        : String(rawItem.editionType || '').trim(),
     gameRating11,
     masterpieceJustification: String(rawItem.masterpieceJustification || '').trim().slice(0, 400),
     hoursPlayed: Math.max(0, Number(rawItem.hoursPlayed) || 0),
@@ -323,10 +337,21 @@ function normalizeItem(rawItem, spectatorDna = null) {
     excludeFromDiscography: Boolean(
       rawItem.excludeFromDiscography ?? rawItem.progress_data?.excludeFromDiscography
     ),
-    rawgId:
-      Number(rawItem.rawgId ?? rawItem.progress_data?.rawgId) > 0
-        ? Math.floor(Number(rawItem.rawgId ?? rawItem.progress_data?.rawgId))
+    igdbId:
+      Number(rawItem.igdbId ?? rawItem.ids?.igdb ?? rawItem.progress_data?.igdbId) > 0
+        ? Math.floor(Number(rawItem.igdbId ?? rawItem.ids?.igdb ?? rawItem.progress_data?.igdbId))
         : null,
+    rawgId:
+      Number(rawItem.rawgId ?? rawItem.ids?.rawg ?? rawItem.progress_data?.rawgId) > 0
+        ? Math.floor(Number(rawItem.rawgId ?? rawItem.ids?.rawg ?? rawItem.progress_data?.rawgId))
+        : null,
+    campaignTimeHours:
+      Number(rawItem.campaignTimeHours ?? rawItem.progress_data?.campaignTimeHours) > 0
+        ? Math.round(Number(rawItem.campaignTimeHours ?? rawItem.progress_data?.campaignTimeHours) * 10) / 10
+        : null,
+    campaignTimeSource:
+      String(rawItem.campaignTimeSource ?? rawItem.progress_data?.campaignTimeSource ?? '').trim() ||
+      null,
     rawgPlaytimeHours:
       Number(rawItem.rawgPlaytimeHours ?? rawItem.progress_data?.rawgPlaytimeHours) > 0
         ? Math.round(Number(rawItem.rawgPlaytimeHours ?? rawItem.progress_data?.rawgPlaytimeHours) * 10) / 10
@@ -345,6 +370,11 @@ function normalizeItem(rawItem, spectatorDna = null) {
     completion100Source:
       String(rawItem.completion100Source ?? rawItem.progress_data?.completion100Source ?? '').trim() ||
       null,
+    parentGame: rawItem.parentGame ?? rawItem.progress_data?.parentGame ?? null,
+    versionParent: rawItem.versionParent ?? rawItem.progress_data?.versionParent ?? null,
+    achievements: normalizeAchievementsModel(
+      rawItem.achievements ?? rawItem.progress_data?.achievements
+    ),
     externalRatings,
     reviewCriteria,
     verdict: rating !== null ? (rawItem.verdict || getVerdictForScore(rating)) : (rawItem.verdict || null),

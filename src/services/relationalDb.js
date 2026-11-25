@@ -16,8 +16,10 @@
 import {
   inferDomainFromWork,
   normalizeDomainId,
+  normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
+import { normalizeAchievementsModel } from '../lib/gameDepth.js';
 import { stripApiKeysFromUrl } from '../api/httpClient.js';
 import {
   CACHE_TTL_MS,
@@ -313,10 +315,20 @@ export function normalizeRelationalWorkRecord(work = {}) {
     excludeFromDiscography: Boolean(
       work.excludeFromDiscography ?? work.progress_data?.excludeFromDiscography
     ),
-    rawgId:
-      Number(work.rawgId ?? work.progress_data?.rawgId) > 0
-        ? Math.floor(Number(work.rawgId ?? work.progress_data?.rawgId))
+    igdbId:
+      Number(work.igdbId ?? work.ids?.igdb ?? work.progress_data?.igdbId) > 0
+        ? Math.floor(Number(work.igdbId ?? work.ids?.igdb ?? work.progress_data?.igdbId))
         : null,
+    rawgId:
+      Number(work.rawgId ?? work.ids?.rawg ?? work.progress_data?.rawgId) > 0
+        ? Math.floor(Number(work.rawgId ?? work.ids?.rawg ?? work.progress_data?.rawgId))
+        : null,
+    campaignTimeHours:
+      Number(work.campaignTimeHours ?? work.progress_data?.campaignTimeHours) > 0
+        ? Math.round(Number(work.campaignTimeHours ?? work.progress_data?.campaignTimeHours) * 10) / 10
+        : null,
+    campaignTimeSource:
+      String(work.campaignTimeSource ?? work.progress_data?.campaignTimeSource ?? '').trim() || null,
     rawgPlaytimeHours:
       Number(work.rawgPlaytimeHours ?? work.progress_data?.rawgPlaytimeHours) > 0
         ? Math.round(Number(work.rawgPlaytimeHours ?? work.progress_data?.rawgPlaytimeHours) * 10) / 10
@@ -333,6 +345,9 @@ export function normalizeRelationalWorkRecord(work = {}) {
         : null,
     completion100Source:
       String(work.completion100Source ?? work.progress_data?.completion100Source ?? '').trim() || null,
+    parentGame: work.parentGame ?? work.progress_data?.parentGame ?? null,
+    versionParent: work.versionParent ?? work.progress_data?.versionParent ?? null,
+    achievements: normalizeAchievementsModel(work.achievements ?? work.progress_data?.achievements),
     franchiseName: String(work.franchiseName || '').trim(),
     overview,
     synopsis: overview,
@@ -360,7 +375,19 @@ export function normalizeRelationalWorkRecord(work = {}) {
     platforms: Array.isArray(work.platforms)
       ? Array.from(new Set(work.platforms.map((p) => String(p || '').trim()).filter(Boolean)))
       : [],
-    editionType: String(work.editionType || (domain === 'games' ? 'Original' : '')).trim(),
+    originalPlatforms: Array.isArray(work.originalPlatforms ?? work.progress_data?.originalPlatforms)
+      ? Array.from(
+          new Set(
+            (work.originalPlatforms ?? work.progress_data?.originalPlatforms)
+              .map((p) => String(p || '').trim())
+              .filter(Boolean)
+          )
+        )
+      : [],
+    editionType:
+      domain === 'games'
+        ? normalizeGameEditionType(work.editionType)
+        : String(work.editionType || '').trim(),
     gameRating11:
       work.gameRating11 !== null &&
       work.gameRating11 !== undefined &&
