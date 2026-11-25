@@ -16,10 +16,19 @@ import {
 import { useToast } from './context/ToastContext';
 import { GraphicFilters } from './design/GraphicFilters';
 import { useAiConfig } from './hooks/useAiConfig';
-import { readRawBacklogStorageState, useBacklog } from './hooks/useBacklog';
+import {
+  clearLocalDeletedIds,
+  readLocalDeletedIds,
+  readRawBacklogStorageState,
+  useBacklog,
+} from './hooks/useBacklog';
 import { useReadingStreak } from './hooks/useReadingStreak';
 import { useSocialProfile } from './hooks/useSocialProfile';
 import { useTheme } from './hooks/useTheme';
+import {
+  applyPwaUpdateSafely,
+  checkForPwaUpdate,
+} from './lib/pwaUpdateChecker';
 import {
   CURRENT_MIGRATION_VERSION,
   MIGRATION_VERSION_KEY,
@@ -244,6 +253,8 @@ export function App() {
   const [aboutCreditsOpen, setAboutCreditsOpen] = useState(false);
   const [cloudModalOpen, setCloudModalOpen] = useState(false);
   const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
+  const [pwaRemoteVersion, setPwaRemoteVersion] = useState('');
+  const [pwaCheckState, setPwaCheckState] = useState('idle'); // 'idle' | 'checking' | 'up_to_date' | 'update_available' | 'error'
   const [cloudSyncState, setCloudSyncState] = useState(() => ({
     configured: getSupabaseConfig().isConfigured,
     authenticated: false,
@@ -1220,10 +1231,44 @@ export function App() {
     return result;
   };
 
+  const handleCheckPwaUpdate = useCallback(async () => {
+    setPwaCheckState('checking');
+    const result = await checkForPwaUpdate();
+    if (result.updateAvailable) {
+      setPwaRemoteVersion(result.remoteInfo?.version || '');
+      setPwaUpdateAvailable(true);
+      setPwaCheckState('update_available');
+      showToast({
+        message: result.message || 'Nova versão disponível.',
+        type: 'info',
+        duration: 6000,
+      });
+    } else if (result.status === 'error') {
+      setPwaCheckState('error');
+      showToast({
+        message: result.message || 'Não foi possível verificar atualizações agora.',
+        type: 'error',
+      });
+    } else {
+      setPwaCheckState('up_to_date');
+      showToast({
+        message: 'App atualizado',
+        type: 'success',
+      });
+    }
+    return result;
+  }, [showToast]);
+
+  const handleApplyPwaUpdate = useCallback(async () => {
+    setPwaUpdateAvailable(false);
+    await applyPwaUpdateSafely();
+  }, []);
+
   const handleApplyRestoreSnapshot = useCallback(
-    async (incomingSnapshot, modeArg = 'merge') => {
+    async (incomingSnapshot, modeArg = 'merge', _previewMeta = null, options = {}) => {
       if (!incomingSnapshot) return;
       const currentEvals = await getAllEpisodeEvaluations().catch(() => []);
+      const localDeletedIds = readLocalDeletedIds();
       const restored = await restoreSnapshotWithSafety({
         currentWorkspace: {
           items,
@@ -1236,11 +1281,17 @@ export function App() {
         },
         incomingSnapshot,
         mode: modeArg,
+        deletedIds: localDeletedIds,
+        includeDeleted: Boolean(options?.includeDeleted),
         saveSnapshotFn: saveAutoSnapshot,
       });
 
       if (!restored?.ok || !restored.workspace) return;
       const nextWs = restored.workspace;
+
+      if (restored.mode === 'replace' || options?.includeDeleted) {
+        clearLocalDeletedIds((nextWs.items || []).map((w) => w?.id).filter(Boolean));
+      }
 
       replaceWorkspaceData({
         items: nextWs.items || [],
@@ -1260,12 +1311,20 @@ export function App() {
       ) {
         await importEpisodeEvaluations(nextWs.episodeEvaluations).catch(() => {});
       }
+      const summaryText = restored.summary?.label ? ` (${restored.summary.label})` : '';
       showToast({
         message:
           restored.mode === 'replace'
-            ? `Catálogo restaurado (${(nextWs.items || []).length} obras)`
-            : `Backup mesclado com snapshot prévio (${(nextWs.items || []).length} obras no catálogo)`,
+            ? `Catálogo substituído com auto-snapshot prévio (${(nextWs.items || []).length} obras).`
+            : `Backup mesclado com proteção temporal${summaryText}.`,
         type: 'success',
+        duration: 7000,
+        action: restored.snapshotSaved
+          ? {
+              label: 'Restaurar snapshot',
+              onClick: () => setBackupModalOpen(true),
+            }
+          : undefined,
       });
     },
     [
@@ -2133,6 +2192,10 @@ export function App() {
                   onOpenAboutCredits={() => setAboutCreditsOpen(true)}
                   cloudState={cloudSyncState}
                   onOpenCloudModal={() => setCloudModalOpen(true)}
+                  pwaCheckState={pwaCheckState}
+                  pwaRemoteVersion={pwaRemoteVersion}
+                  onCheckPwaUpdate={handleCheckPwaUpdate}
+                  onApplyPwaUpdate={handleApplyPwaUpdate}
                 />
               )}
             </Suspense>
@@ -2367,10 +2430,8 @@ export function App() {
 
         <PwaUpdateBanner
           visible={pwaUpdateAvailable}
-          onUpdate={() => {
-            setPwaUpdateAvailable(false);
-            window.__codiceApplySwUpdate?.();
-          }}
+          remoteVersion={pwaRemoteVersion}
+          onUpdate={handleApplyPwaUpdate}
           onDismiss={() => setPwaUpdateAvailable(false)}
         />
       </div>

@@ -15,6 +15,9 @@ export const VERSIONING_RULES = {
     'Grandes atualizações (major) recebem um novo codinome oficial (ex.: Lumière 1.0.0, Méliès 2.0.0).',
 };
 
+export const APP_BUILD_VERSION = '2.6.0';
+export const APP_BUILD_LABEL = 'v2.6.0';
+
 export const CODICE_RELEASE = {
   version: '2.4.0',
   codename: '',

@@ -436,7 +436,8 @@ export function normalizeRelationalWorkRecord(work = {}) {
       !Array.isArray(work.trackRatings)
         ? work.trackRatings
         : {},
-    updatedAt: work.updatedAt || work.createdAt || new Date().toISOString(),
+    updatedAt: work.updatedAt || work.updated_at || work.createdAt || new Date().toISOString(),
+    updated_at: work.updatedAt || work.updated_at || work.createdAt || new Date().toISOString(),
   };
 }
 

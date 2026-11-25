@@ -36,6 +36,8 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
     },
     onRegisteredSW(_swUrl, registration) {
       if (!registration) return;
+      window.__codiceSwRegistration = registration;
+      window.__codiceApplySwUpdate = () => updateSW(true);
 
       const checkForUpdate = () => {
         registration.update().catch(() => {});

@@ -37,8 +37,11 @@ import {
 import { normalizeExternalRatings } from '../lib/ratings';
 import { safeSetLocalStorageJson } from '../lib/storagePersistence';
 import {
+  clearLocalDeletedIds,
   exportSignedBackupPayload,
   loadEmergencyMirror,
+  readLocalDeletedIds,
+  recordLocalDeletedIds,
   recordBackupExportTimestamp,
 } from '../services/backupEngine';
 import {
@@ -71,6 +74,7 @@ import {
 
 const STORAGE_KEY = domainConfig.storageKey;
 const SESSIONS_STORAGE_KEY = 'cine_codice_watch_sessions_v1';
+export { clearLocalDeletedIds, readLocalDeletedIds, recordLocalDeletedIds };
 
 function normalizeRating(value) {
   if (value === '' || value === null || value === undefined) return null;
@@ -418,7 +422,8 @@ function normalizeItem(rawItem, spectatorDna = null) {
     isWishlist: Boolean(rawItem.isWishlist),
     inBacklog: rawItem.inBacklog !== undefined ? Boolean(rawItem.inBacklog) : true,
     createdAt: rawItem.createdAt || nowIso,
-    updatedAt: rawItem.updatedAt || nowIso,
+    updatedAt: rawItem.updatedAt || rawItem.updated_at || nowIso,
+    updated_at: rawItem.updatedAt || rawItem.updated_at || nowIso,
   };
 
   normalized.progress = calculateWorkProgress(normalized);
@@ -723,6 +728,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
             inBacklog: true,
             createdAt: nowIso,
             updatedAt: nowIso,
+            updated_at: nowIso,
           },
           spectatorDna
         ),
@@ -731,6 +737,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
         spectatorDna
       );
 
+      clearLocalDeletedIds([prepared.id]);
       const normalizedTitle = prepared.title.trim().toLowerCase();
       if (prepared.manualCoverDataUrl) {
         saveManualCoverInIdb(prepared.id, prepared.manualCoverDataUrl).catch(() => {});
@@ -752,6 +759,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
                   id: item.id,
                   createdAt: item.createdAt,
                   updatedAt: nowIso,
+                  updated_at: nowIso,
                   inBacklog: true,
                 }
               : item
@@ -777,6 +785,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
                 inBacklog: true,
                 createdAt: rec.createdAt || nowIso,
                 updatedAt: nowIso,
+                updated_at: nowIso,
               },
               spectatorDna
             ),
@@ -808,14 +817,17 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
           const cleanUpdates = { ...updates };
           delete cleanUpdates.preserveUpdatedAt;
 
+          const nextUpdatedAt = preserveUpdatedAt
+            ? item.updatedAt || item.updated_at || nowIso
+            : cleanUpdates.updatedAt || cleanUpdates.updated_at || nowIso;
+
           let merged = normalizeItem(
             {
               ...item,
               ...cleanUpdates,
               status: nextStatus,
-              updatedAt: preserveUpdatedAt
-                ? item.updatedAt || nowIso
-                : cleanUpdates.updatedAt || nowIso,
+              updatedAt: nextUpdatedAt,
+              updated_at: nextUpdatedAt,
             },
             spectatorDna
           );
@@ -861,6 +873,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
   );
 
   const removeItem = useCallback((id) => {
+    recordLocalDeletedIds([id]);
     setItems((prev) => prev.filter((item) => item.id !== id));
     setReadingSessions((prev) => prev.filter((session) => session.workId !== id));
   }, []);
@@ -873,7 +886,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
       setItems((prev) =>
         prev.map((item) => {
           if (!idSet.has(String(item.id))) return item;
-          let merged = { ...item, updatedAt: nowIso };
+          let merged = { ...item, updatedAt: nowIso, updated_at: nowIso };
           if (updates.status) {
             const st = normalizeCinemaStatus(updates.status);
             merged.status = st;
@@ -902,6 +915,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
       if (idSet.size === 0) return { removedItems: [], removedSessions: [] };
       const removedItems = items.filter((item) => idSet.has(String(item.id)));
       const removedSessions = readingSessions.filter((s) => idSet.has(String(s.workId)));
+      recordLocalDeletedIds(Array.from(idSet));
       setItems((prev) => prev.filter((item) => !idSet.has(String(item.id))));
       setReadingSessions((prev) => prev.filter((s) => !idSet.has(String(s.workId))));
       return { removedItems, removedSessions };
@@ -911,12 +925,16 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
 
   const restoreRemovedItems = useCallback(
     ({ removedItems = [], removedSessions = [] } = {}) => {
+      const nowIso = new Date().toISOString();
       if (Array.isArray(removedItems) && removedItems.length > 0) {
+        clearLocalDeletedIds(removedItems.map((i) => i?.id).filter(Boolean));
         setItems((prev) => {
           const existingIds = new Set(prev.map((i) => String(i.id)));
           const restored = removedItems
             .filter((i) => !existingIds.has(String(i.id)))
-            .map((i) => normalizeItem(i, spectatorDna));
+            .map((i) =>
+              normalizeItem({ ...i, updatedAt: nowIso, updated_at: nowIso }, spectatorDna)
+            );
           return [...restored, ...prev];
         });
       }
@@ -964,6 +982,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
   const deleteCollection = useCallback((collectionId) => {
     if (!collectionId) return;
     const targetId = String(collectionId);
+    const nowIso = new Date().toISOString();
     setCollections((prev) => prev.filter((col) => col.id !== targetId));
     setItems((prev) =>
       prev.map((item) =>
@@ -971,7 +990,8 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
           ? {
               ...item,
               collectionIds: item.collectionIds.filter((id) => id !== targetId),
-              updatedAt: new Date().toISOString(),
+              updatedAt: nowIso,
+              updated_at: nowIso,
             }
           : item
       )
@@ -980,13 +1000,15 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
 
   const toggleWorkCollection = useCallback((workId, collectionId) => {
     if (!workId || !collectionId) return;
+    const nowIso = new Date().toISOString();
     setItems((prev) =>
       prev.map((item) =>
         item.id === workId
           ? {
               ...item,
               collectionIds: toggleWorkInCollection(item.collectionIds, collectionId),
-              updatedAt: new Date().toISOString(),
+              updatedAt: nowIso,
+              updated_at: nowIso,
             }
           : item
       )
@@ -1013,8 +1035,18 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
       notes: String(session.notes || ''),
       createdAt: nowIso,
       updatedAt: nowIso,
+      updated_at: nowIso,
     };
     setReadingSessions((prev) => [record, ...prev].slice(0, 500));
+    if (record.workId) {
+      setItems((prev) =>
+        prev.map((item) =>
+          String(item.id) === record.workId
+            ? { ...item, updatedAt: nowIso, updated_at: nowIso }
+            : item
+        )
+      );
+    }
     return record;
   }, []);
 

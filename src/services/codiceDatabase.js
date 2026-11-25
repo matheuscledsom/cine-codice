@@ -245,7 +245,12 @@ export function buildCodiceDatabase({
       rawItem.id || deterministicUuid(`work:${idx}:${rawItem.title || ''}`)
     );
     const createdAt = rawItem.createdAt || fallbackNow;
-    const updatedAt = rawItem.updatedAt || createdAt;
+    const explicitUpdatedAt =
+      rawItem._missingUpdatedAt === true
+        ? null
+        : rawItem.updatedAt || rawItem.updated_at || null;
+    const updatedAt = explicitUpdatedAt || createdAt;
+    const missingSourceUpdatedAt = !explicitUpdatedAt;
     const domain = inferDomainFromWork(rawItem);
     const workType = normalizeWorkTypeForDomain(rawItem.workType || rawItem.mediaType, domain);
     const status = normalizeCinemaStatus(rawItem.status);
@@ -509,6 +514,8 @@ export function buildCodiceDatabase({
         : [],
       createdAt,
       updatedAt,
+      updated_at: explicitUpdatedAt || null,
+      ...(missingSourceUpdatedAt ? { _missingUpdatedAt: true } : {}),
     };
 
     works.push(workRow);
@@ -825,6 +832,8 @@ export function hydrateAppSnapshotFromDatabase(db) {
 
     return applyCanonicalIdsToWork({
       ...work,
+      updated_at: work._missingUpdatedAt ? null : work.updated_at || work.updatedAt || null,
+      ...(work._missingUpdatedAt ? { _missingUpdatedAt: true } : {}),
       coverUrl: work.coverUrl || manualCover || null,
       manualCoverDataUrl: manualCover,
       director: work.director || directorNames || '',
