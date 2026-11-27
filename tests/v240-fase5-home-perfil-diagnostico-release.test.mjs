@@ -187,7 +187,7 @@ describe('OMNIPRISM v2.4.0 — Fase 5.2: Perfil, Novidades da Versao e Configura
       storageSummary: stEst,
       errorLog: log,
     });
-    assert.match(report, /v2\.7\.1/);
+    assert.match(report, /v2\.7\.2/);
     assert.match(report, /Schema IndexedDB: v2/);
     assert.match(report, /Cinema 1 \| Leitura 1 \| Games 1 \| Música 1/);
     assert.match(report, /50\/50/);
@@ -221,17 +221,17 @@ describe('OMNIPRISM v2.4.0 — Fase 5.2: Perfil, Novidades da Versao e Configura
   });
 });
 
-describe('OMNIPRISM v2.4.0 — Fase 5.3: Fechamento de Versao 2.7.1', () => {
-  it('sincroniza package.json, package-lock.json, versioning.js, CHANGELOG.md e docs/PROGRESSO.md para 2.7.1', () => {
+describe('OMNIPRISM v2.4.0 — Fase 5.3: Fechamento de Versao 2.7.2', () => {
+  it('sincroniza package.json, package-lock.json, versioning.js, CHANGELOG.md e docs/PROGRESSO.md para 2.7.2', () => {
     const pkg = JSON.parse(readSrc('package.json'));
     const lock = JSON.parse(readSrc('package-lock.json'));
-    assert.equal(pkg.version, '2.7.1');
-    assert.equal(lock.version, '2.7.1');
-    assert.equal(lock.packages?.['']?.version, '2.7.1');
+    assert.equal(pkg.version, '2.7.2');
+    assert.equal(lock.version, '2.7.2');
+    assert.equal(lock.packages?.['']?.version, '2.7.2');
 
-    assert.equal(CODICE_RELEASE.version, '2.7.1');
-    assert.equal(CODICE_RELEASE.label, 'v2.7.1');
-    assert.equal(RELEASE_HISTORY[0].version, '2.7.1');
+    assert.equal(CODICE_RELEASE.version, '2.7.2');
+    assert.equal(CODICE_RELEASE.label, 'v2.7.2');
+    assert.equal(RELEASE_HISTORY[0].version, '2.7.2');
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '2.3.3'));
 
     const changelog = readSrc('CHANGELOG.md');

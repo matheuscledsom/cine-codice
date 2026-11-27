@@ -17,6 +17,10 @@ npm run version:major -- --name="Odin"
 
 ---
 
+## [v2.7.2] — 2026-11
+
+**Resumo:** Correção de carregamento de capas no Service Worker (CSP + Workbox): liberação explícita em `connect-src` (`public/_headers`) de todos os hosts de capa interceptados pelo Workbox (`images.igdb.com`, `media.rawg.io`, `shared.fastly.steamstatic.com`, `cdn.akamai.steamstatic.com`, `cdn.cloudflare.steamstatic.com`, `image.tmdb.org`, `s4.anilist.co`, `img.anili.st`, `cdn.myanimelist.net`, `static.tvmaze.com`, `m.media-amazon.com`, `img.omdbapi.com`, `commons.wikimedia.org`, `upload.wikimedia.org`, `books.google.com`, `books.googleusercontent.com`, `covers.openlibrary.org`, `*.mzstatic.com`); separação do `CacheFirst` do Supabase em `vite.config.js` restrito exclusivamente a `/storage/v1/object/public/covers/*` para nunca cachear `/rest/v1/*` nem `/auth/v1/*`; preservação de URLs protocol-relative (`//...`) no sync e em `CoverImage.jsx`; e correção do rótulo de tipo/domínio nos cartazes editoriais gerados (`JOGO`, `LIVRO`, `MANGÁ`, `ÁLBUM`, `FILME`).
+
 ## [v2.7.1] — 2026-11
 
 **Resumo:** OmniPrism v2.7.1 ("Conexão Confiável"): auto-configuração pública do Supabase via `/api/config` (`{ supabaseUrl, supabaseAnonKey }`, nunca chaves secretas) com entrada manual recolhida em Avançado; login persistente sem espelhar refresh token no IndexedDB (com `navigator.storage.persist()`, reinscrição automática de `onAuthStateChange`, renovação silenciosa ao retornar ao foco e avisos claros em caso de sessão expirada); sincronização bidirecional entre PC e celular independente do Realtime com fila offline persistente, retry exponencial, tombstones via `deleted_at` com fallback automático pré-SQL, proteção contra timestamps inventados em obras legadas e resumo + snapshot automático na 1ª conexão de um segundo aparelho; capas resilientes com estado de autenticação na chave de cache da busca, aviso claro quando deslogado, correção do `coverUrl` duplicado em `useBacklog.js`, retry automático no `CoverImage.jsx` e hosts de capa listados explicitamente em `img-src` e no Workbox; e versão unificada em fonte única (`src/config/appVersion.js`).

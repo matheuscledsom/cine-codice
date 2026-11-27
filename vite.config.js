@@ -9,6 +9,14 @@ export const PWA_IMAGE_CACHE_BUDGET_MB = 80;
 export const PWA_IMAGE_CACHE_MAX_ENTRIES = 320;
 export const APP_BUILD_VERSION = OMNIPRISM_VERSION;
 
+// Somente hosts de capas externas (todos presentes também em connect-src no CSP para o Service Worker)
+export const PWA_EXTERNAL_COVER_URL_PATTERN =
+  /^https:\/\/(image\.tmdb\.org|s4\.anilist\.co|img\.anili\.st|cdn\.myanimelist\.net|static\.tvmaze\.com|m\.media-amazon\.com|img\.omdbapi\.com|commons\.wikimedia\.org|upload\.wikimedia\.org|books\.google\.com|books\.googleusercontent\.com|covers\.openlibrary\.org|images\.igdb\.com|media\.rawg\.io|shared\.fastly\.steamstatic\.com|cdn\.akamai\.steamstatic\.com|cdn\.cloudflare\.steamstatic\.com|coverartarchive\.org|(?:[a-z0-9-]+\.)*archive\.org|(?:[a-z0-9-]+\.)*mzstatic\.com)\/.*/i;
+
+// Somente objetos públicos do bucket `covers` no Supabase Storage — NUNCA /rest/v1 ou /auth/v1
+export const PWA_SUPABASE_COVER_URL_PATTERN =
+  /^https:\/\/[a-z0-9-]+\.supabase\.co\/storage\/v1\/object\/public\/covers\/.*/i;
+
 function resolveGitCommitShort() {
   try {
     return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
@@ -82,12 +90,27 @@ export default defineConfig({
         globIgnores: ['**/version.json'],
         runtimeCaching: [
           {
-            urlPattern: /^https:\/\/(image\.tmdb\.org|s4\.anilist\.co|img\.anili\.st|cdn\.myanimelist\.net|static\.tvmaze\.com|m\.media-amazon\.com|img\.omdbapi\.com|commons\.wikimedia\.org|upload\.wikimedia\.org|books\.google\.com|books\.googleusercontent\.com|covers\.openlibrary\.org|images\.igdb\.com|media\.rawg\.io|shared\.fastly\.steamstatic\.com|coverartarchive\.org|(?:[a-z0-9-]+\.)?archive\.org|(?:[a-z0-9-]+\.)?mzstatic\.com|[a-z0-9-]+\.supabase\.co)\/.*/i,
+            urlPattern: PWA_EXTERNAL_COVER_URL_PATTERN,
             handler: 'CacheFirst',
             options: {
               cacheName: 'cine-codice-posters-lru-80mb',
               expiration: {
                 maxEntries: PWA_IMAGE_CACHE_MAX_ENTRIES,
+                maxAgeSeconds: 60 * 60 * 24 * 30,
+                purgeOnQuotaError: true,
+              },
+              cacheableResponse: {
+                statuses: [0, 200],
+              },
+            },
+          },
+          {
+            urlPattern: PWA_SUPABASE_COVER_URL_PATTERN,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'omniprism-supabase-covers-lru-40mb',
+              expiration: {
+                maxEntries: 160,
                 maxAgeSeconds: 60 * 60 * 24 * 30,
                 purgeOnQuotaError: true,
               },

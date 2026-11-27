@@ -27,7 +27,7 @@ export const CODICE_RELEASE = {
   releaseType: 'patch',
   date: '2026-11',
   summary:
-    'OmniPrism v2.7.1 ("Conexão Confiável"): auto-configuração do Supabase via /api/config sem digitar chaves nos aparelhos, sessão persistente com renovação silenciosa e avisos claros, sincronização bidirecional entre PC e celular com fila offline, retry exponencial, tombstones (deleted_at) com modo compatível pré-SQL, resumo e snapshot automático na 1ª conexão, capas resilientes com cache segmentado por autenticação + retry no CoverImage e versão unificada em fonte única.',
+    'OmniPrism v2.7.2: libera explicitamente todos os hosts de capa interceptados pelo Service Worker em connect-src (CSP), restringe o CacheFirst do Supabase no Workbox apenas ao bucket público covers (impedindo cache indevido de /rest/v1 e /auth/v1), preserva URLs protocol-relative no sync e exibe o rótulo correto do domínio nos cartazes editoriais de fallback.',
 };
 
 export const RELEASE_HISTORY = [
@@ -38,6 +38,21 @@ export const RELEASE_HISTORY = [
     releaseType: 'patch',
     date: '2026-11',
     summary: CODICE_RELEASE.summary,
+    highlights: [
+      'Service Worker e CSP alinhados: todos os hosts de capa interceptados pelo Workbox (IGDB, RAWG, Steam, TMDB, AniList, MAL, OpenLibrary, Google Books, Wikimedia, iTunes/mzstatic) foram liberados explicitamente em connect-src sem curingas amplos.',
+      'Sync protegido contra cache obsoleto: o Workbox não intercepta mais /rest/v1/* nem /auth/v1/* do Supabase, cacheando apenas objetos públicos em /storage/v1/object/public/covers/*.',
+      'Preservação de URLs de capa protocol-relative (//...) durante o sync e restauração de coverSources quando o array vier vazio.',
+      'Cartazes editoriais de fallback agora exibem o tipo real da obra (JOGO, LIVRO, MANGÁ, ÁLBUM, FILME etc.).',
+    ],
+  },
+  {
+    version: '2.7.1',
+    codename: '',
+    label: 'v2.7.1',
+    releaseType: 'patch',
+    date: '2026-11',
+    summary:
+      'OmniPrism v2.7.1 ("Conexão Confiável"): auto-configuração do Supabase via /api/config sem digitar chaves nos aparelhos, sessão persistente com renovação silenciosa e avisos claros, sincronização bidirecional entre PC e celular com fila offline, retry exponencial, tombstones (deleted_at) com modo compatível pré-SQL, resumo e snapshot automático na 1ª conexão, capas resilientes com cache segmentado por autenticação + retry no CoverImage e versão unificada em fonte única.',
     highlights: [
       'Auto-configuração pública do Supabase via /api/config (apenas { supabaseUrl, supabaseAnonKey }, nunca chaves privilegiadas), salva localmente para uso offline, com entrada manual recolhida em Avançado.',
       'Sessão persistente com reinscrição automática de onAuthStateChange, tolerância offline, renovação silenciosa ao voltar ao foco e avisos claros em português se a sessão expirar.',

@@ -115,10 +115,26 @@ export function generateEditorialPosterSvg({
     })
     .join('\n  ');
 
+  const TYPE_TAGS = {
+    movie: 'FILME',
+    series: 'SÉRIE',
+    anime: 'ANIME',
+    game: 'JOGO',
+    dlc: 'DLC',
+    modpack: 'MODPACK',
+    book: 'LIVRO',
+    manga: 'MANGÁ',
+    academic: 'ACADÊMICO',
+    technical: 'TÉCNICO',
+    album: 'ÁLBUM',
+    track: 'FAIXA',
+    ep_single: 'EP / SINGLE',
+    live_show: 'AO VIVO',
+    concert: 'SHOW',
+    discography: 'DISCOGRAFIA',
+  };
   const safeCreator = escapeSvgText(String(creator || '').slice(0, 26));
-  const typeTag = escapeSvgText(
-    workType === 'anime' ? 'ANIME' : workType === 'series' ? 'SÉRIE' : 'FILME'
-  );
+  const typeTag = escapeSvgText(TYPE_TAGS[String(workType || '').toLowerCase()] || 'OBRA');
   const yearLabel = releaseYear ? escapeSvgText(String(releaseYear)) : '';
   const patternMarkup = buildCinemaPattern(patternKind, accent, fg);
 

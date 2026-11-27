@@ -51,7 +51,8 @@ export function sanitizeHttpsCoverUrl(rawUrl) {
   const trimmed = rawUrl.trim();
   if (!trimmed) return null;
   if (trimmed.startsWith('data:image/')) return trimmed;
-  return trimmed
+  const withProtocol = trimmed.startsWith('//') ? `https:${trimmed}` : trimmed;
+  return withProtocol
     .replace(/^http:\/\//i, 'https://')
     .replace(/&edge=curl/gi, '')
     .replace(/\?edge=curl&?/gi, '?')
