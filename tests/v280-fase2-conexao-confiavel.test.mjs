@@ -830,13 +830,13 @@ describe('OMNIPRISM v2.7.1 (Fase 2) — 4. Capas, Cache por Auth, useBacklog, Co
 });
 
 describe('OMNIPRISM v2.7.1 (Fase 2) — 5. Versão única e política de sessão em SEGURANCA.md', () => {
-  it('mantém versão 2.7.1 unificada em todos os pontos oficiais', () => {
+  it('mantém versão 2.7.2 unificada em todos os pontos oficiais', () => {
     const pkg = JSON.parse(readText('package.json'));
     const lock = JSON.parse(readText('package-lock.json'));
     const manifest = buildVersionManifestInfo();
 
-    assert.equal(OMNIPRISM_VERSION, '2.7.1');
-    assert.equal(OMNIPRISM_VERSION_LABEL, 'v2.7.1');
+    assert.equal(OMNIPRISM_VERSION, '2.7.2');
+    assert.equal(OMNIPRISM_VERSION_LABEL, 'v2.7.2');
     assert.equal(pkg.version, OMNIPRISM_VERSION);
     assert.equal(lock.version, OMNIPRISM_VERSION);
     assert.equal(lock.packages?.['']?.version, OMNIPRISM_VERSION);

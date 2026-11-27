@@ -1033,17 +1033,17 @@ describe('OmniPrism v2.3.3 — 4. Segurança dos dados (sync não destrutivo e b
 });
 
 describe('OmniPrism v2.3.3 — 5. Versão oficial', () => {
-  it('mantém versão atual (2.7.1) sem Lumière e preserva histórico 2.3.3 em package.json, versioning.js e CHANGELOG.md', () => {
+  it('mantém versão atual (2.7.2) sem Lumière e preserva histórico 2.3.3 em package.json, versioning.js e CHANGELOG.md', () => {
     const pkg = JSON.parse(readText('package.json'));
     assert.equal(pkg.name, 'omniprism');
-    assert.equal(pkg.version, '2.7.1');
+    assert.equal(pkg.version, '2.7.2');
 
-    assert.equal(CODICE_RELEASE.version, '2.7.1');
-    assert.equal(CODICE_RELEASE.label, 'v2.7.1');
+    assert.equal(CODICE_RELEASE.version, '2.7.2');
+    assert.equal(CODICE_RELEASE.label, 'v2.7.2');
     assert.equal(CODICE_RELEASE.label.includes('Lumière'), false);
     assert.equal(CODICE_RELEASE.codename, '');
-    assert.equal(RELEASE_HISTORY[0].version, '2.7.1');
-    assert.equal(RELEASE_HISTORY[0].label, 'v2.7.1');
+    assert.equal(RELEASE_HISTORY[0].version, '2.7.2');
+    assert.equal(RELEASE_HISTORY[0].label, 'v2.7.2');
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '2.3.3' && r.label === 'v2.3.3'));
 
     const changelog = readText('CHANGELOG.md');
