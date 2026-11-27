@@ -6,6 +6,7 @@ import {
   normalizeGameEditionType,
   normalizeWorkTypeForDomain,
 } from '../config/domainConfig.js';
+import { recordLocalError } from '../lib/errorLogger.js';
 import { normalizeAchievementsModel } from '../lib/gameDepth.js';
 import { normalizeExternalRatings } from '../lib/ratings.js';
 import {
@@ -27,10 +28,61 @@ export const PENDING_DELETES_STORAGE_KEY = 'omniprism_cloud_pending_deletes_v1';
 export const CLOUD_TOMBSTONES_STORAGE_KEY = 'omniprism_cloud_tombstones_v1';
 export const SYNC_QUEUE_STORAGE_KEY = 'omniprism_cloud_sync_queue_v1';
 
+export const ALLOWED_CLOUD_DOMAINS = Object.freeze(['cinema', 'reading', 'games', 'music']);
+
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const DOMAIN_ALIASES = new Map([
+  ['cinema', 'cinema'],
+  ['movie', 'cinema'],
+  ['movies', 'cinema'],
+  ['film', 'cinema'],
+  ['filmes', 'cinema'],
+  ['series', 'cinema'],
+  ['séries', 'cinema'],
+  ['tv', 'cinema'],
+  ['anime', 'cinema'],
+  ['animes', 'cinema'],
+  ['reading', 'reading'],
+  ['book', 'reading'],
+  ['books', 'reading'],
+  ['livro', 'reading'],
+  ['livros', 'reading'],
+  ['leitura', 'reading'],
+  ['manga', 'reading'],
+  ['mangá', 'reading'],
+  ['mangas', 'reading'],
+  ['mangás', 'reading'],
+  ['hq', 'reading'],
+  ['comic', 'reading'],
+  ['comics', 'reading'],
+  ['academic', 'reading'],
+  ['technical', 'reading'],
+  ['paper', 'reading'],
+  ['games', 'games'],
+  ['game', 'games'],
+  ['jogo', 'games'],
+  ['jogos', 'games'],
+  ['videogame', 'games'],
+  ['dlc', 'games'],
+  ['modpack', 'games'],
+  ['music', 'music'],
+  ['musica', 'music'],
+  ['música', 'music'],
+  ['sound', 'music'],
+  ['album', 'music'],
+  ['álbum', 'music'],
+  ['track', 'music'],
+  ['faixa', 'music'],
+  ['ep', 'music'],
+  ['ep_single', 'music'],
+  ['single', 'music'],
+  ['discography', 'music'],
+]);
+
 // Se a coluna external_rating no Supabase for numérica em vez de jsonb, ajusta automaticamente
+// (no upload real para `public.catalog_works`, `prepareCatalogRowForCloudUpload` já envia inteiro 0..100 ou null)
 let externalRatingNumericFallback = false;
 // Se a coluna deleted_at ainda não existir no Supabase (antes de rodar o SQL aditivo), opera em modo compatível
 let deletedAtColumnUnsupported = false;
@@ -42,6 +94,50 @@ export function resetSyncRuntimeFlagsForTests() {
 
 export function getTombstoneSyncMode() {
   return deletedAtColumnUnsupported ? 'compat_hard_delete' : 'soft_delete';
+}
+
+export function isValidUuid(raw) {
+  return UUID_REGEX.test(String(raw || '').trim());
+}
+
+export function sanitizeCloudDomain(work = {}) {
+  const rawDomain = String(work?.domain || '').trim().toLowerCase();
+  if (rawDomain && DOMAIN_ALIASES.has(rawDomain)) {
+    return DOMAIN_ALIASES.get(rawDomain);
+  }
+  const rawType = String(work?.workType || work?.mediaType || work?.media_type || '')
+    .trim()
+    .toLowerCase();
+  if (rawType && DOMAIN_ALIASES.has(rawType)) {
+    return DOMAIN_ALIASES.get(rawType);
+  }
+  const inferred = inferDomainFromWork(work);
+  return ALLOWED_CLOUD_DOMAINS.includes(inferred) ? inferred : 'cinema';
+}
+
+export function sanitizeCloudInt0To100(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw === 'object') {
+    if (raw.consensus !== undefined) return sanitizeCloudInt0To100(raw.consensus);
+    return null;
+  }
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return null;
+  return Math.max(0, Math.min(100, Math.round(num)));
+}
+
+export function sanitizeCloudFavoriteRank(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const num = Number(raw);
+  if (!Number.isInteger(num) || num < 1 || num > 4) return null;
+  return num;
+}
+
+export function sanitizeCloudIsoTimestamp(raw, fallback = EPOCH_ZERO_ISO) {
+  if (!raw) return fallback;
+  const ms = Date.parse(String(raw));
+  if (!Number.isFinite(ms)) return fallback;
+  return new Date(ms).toISOString();
 }
 
 function deterministicCloudUuid(seedText) {
@@ -125,14 +221,22 @@ export function computeConsensusExternalRating(externalRatings) {
   return Math.round(scores.reduce((acc, n) => acc + n, 0) / scores.length);
 }
 
-function serializeExternalRatingForRow(externalRatings, numericOnly = false) {
+function serializeExternalRatingForRow(
+  externalRatings,
+  numericOnly = false,
+  fallbackNumeric = null
+) {
   const normalized = normalizeExternalRatings(externalRatings);
   const consensus = computeConsensusExternalRating(normalized);
   const hasAny = Object.values(normalized).some(Boolean);
-  if (!hasAny) return null;
-  if (numericOnly) return consensus;
+  if (!hasAny) {
+    return numericOnly ? sanitizeCloudInt0To100(fallbackNumeric) : null;
+  }
+  if (numericOnly) {
+    return sanitizeCloudInt0To100(consensus ?? fallbackNumeric);
+  }
   return {
-    consensus,
+    consensus: sanitizeCloudInt0To100(consensus),
     ...normalized,
   };
 }
@@ -225,16 +329,14 @@ export function mapLocalWorkToCatalogRow(
     deletedAt = null,
   } = {}
 ) {
-  const cloudId = toCloudWorkId(work.cloudId || work.id);
-  const domain = inferDomainFromWork(work);
+  const rawIdentity = String(work.cloudId || work.id || work.ids?.id || '').trim();
+  const cloudId = rawIdentity ? toCloudWorkId(rawIdentity) : '';
+  const domain = sanitizeCloudDomain(work);
   const mediaType = normalizeWorkTypeForDomain(work.workType || work.mediaType, domain);
   const status = normalizeCinemaStatus(work.status);
   const releaseYear = Number(work.releaseYear);
-  const rankNum = Number(work.favoriteRank);
-  const ratingVal =
-    work.rating === null || work.rating === undefined || work.rating === ''
-      ? null
-      : Math.max(0, Math.min(100, Math.round(Number(work.rating))));
+  const favoriteRankVal = sanitizeCloudFavoriteRank(work.favoriteRank ?? work.favorite_rank);
+  const ratingVal = sanitizeCloudInt0To100(work.rating);
 
   const cleanCoverUrl = normalizeHttpUrl(work.coverUrl);
   const cleanBackdropUrl = normalizeHttpUrl(work.backdropUrl);
@@ -292,9 +394,15 @@ export function mapLocalWorkToCatalogRow(
       : {};
   const trackCount = Number(work.trackCount) > 0 ? Math.round(Number(work.trackCount)) : null;
 
-  // Nunca inventa "agora" para obra sem data: preserva Epoch 0 para nunca vencer edição datada
-  const resolvedUpdatedAt = work.updatedAt || work.updated_at || EPOCH_ZERO_ISO;
-  const resolvedCreatedAt = work.createdAt || work.updatedAt || work.updated_at || EPOCH_ZERO_ISO;
+  // Nunca inventa "agora" para obra sem data: garante ISO válido preservando Epoch 0
+  const resolvedUpdatedAt = sanitizeCloudIsoTimestamp(
+    work.updatedAt || work.updated_at,
+    EPOCH_ZERO_ISO
+  );
+  const resolvedCreatedAt = sanitizeCloudIsoTimestamp(
+    work.createdAt || work.created_at || work.updatedAt || work.updated_at,
+    EPOCH_ZERO_ISO
+  );
 
   const row = {
     id: cloudId,
@@ -306,10 +414,11 @@ export function mapLocalWorkToCatalogRow(
     release_year:
       Number.isFinite(releaseYear) && releaseYear > 1800 ? Math.round(releaseYear) : null,
     status,
-    rating: Number.isFinite(ratingVal) ? ratingVal : null,
+    rating: ratingVal,
     external_rating: serializeExternalRatingForRow(
       cleanExternalRatings,
-      numericExternalRating
+      numericExternalRating,
+      work.external_rating ?? work.externalScore ?? null
     ),
     external_ids: buildExternalIdsPayload(work),
     cover_url: cleanCoverUrl,
@@ -465,8 +574,7 @@ export function mapLocalWorkToCatalogRow(
       backdropCheckedAt: Number(work.backdropCheckedAt) || null,
     },
     franchise_key: buildFranchiseKey(work),
-    favorite_rank:
-      Number.isInteger(rankNum) && rankNum >= 1 && rankNum <= 4 ? rankNum : null,
+    favorite_rank: favoriteRankVal,
     favorite_quote_or_scene:
       String(work.favoriteScene || '').trim().slice(0, 200) || null,
     personal_notes: String(work.notes || ''),
@@ -480,6 +588,128 @@ export function mapLocalWorkToCatalogRow(
 
   return row;
 }
+
+/**
+ * Valida uma linha antes do envio ao Supabase contra as constraints reais de `public.catalog_works`.
+ */
+export function validateCatalogRowForCloud(row = {}) {
+  const errors = [];
+  if (!row || typeof row !== 'object') {
+    return { ok: false, errors: ['registro inválido'], reason: 'registro inválido' };
+  }
+  if (!isValidUuid(row.id)) {
+    errors.push('id inválido (fora do formato UUID)');
+  }
+  if (!String(row.user_id || '').trim()) {
+    errors.push('usuário não identificado');
+  }
+  if (!ALLOWED_CLOUD_DOMAINS.includes(row.domain)) {
+    errors.push('domínio não aceito');
+  }
+  if (
+    row.rating !== null &&
+    row.rating !== undefined &&
+    (!Number.isInteger(row.rating) || row.rating < 0 || row.rating > 100)
+  ) {
+    errors.push('nota fora da faixa (0 a 100)');
+  }
+  if (
+    row.external_rating !== null &&
+    row.external_rating !== undefined &&
+    (!Number.isInteger(row.external_rating) ||
+      row.external_rating < 0 ||
+      row.external_rating > 100)
+  ) {
+    errors.push('nota externa fora da faixa (0 a 100)');
+  }
+  if (
+    row.favorite_rank !== null &&
+    row.favorite_rank !== undefined &&
+    (!Number.isInteger(row.favorite_rank) || row.favorite_rank < 1 || row.favorite_rank > 4)
+  ) {
+    errors.push('posição no Top 4 inválida (1 a 4)');
+  }
+  if (!row.created_at || Number.isNaN(Date.parse(String(row.created_at)))) {
+    errors.push('data de criação inválida');
+  }
+  if (!row.updated_at || Number.isNaN(Date.parse(String(row.updated_at)))) {
+    errors.push('data de atualização inválida');
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    reason: errors.join('; '),
+  };
+}
+
+/**
+ * Saneia e valida uma obra para envio ao Supabase (`public.catalog_works`):
+ * - `domain` restrito a `cinema | reading | games | music` (`reading` para livros/mangás);
+ * - `rating` e `external_rating` inteiros `0..100` ou `null`;
+ * - `favorite_rank` inteiro `1..4` ou `null`;
+ * - `id` em UUID válido (para todos os domínios, inclusive obras manuais);
+ * - `created_at` e `updated_at` sempre em ISO válido.
+ */
+export function prepareCatalogRowForCloudUpload(
+  work = {},
+  userId,
+  { includeDeletedAt = !deletedAtColumnUnsupported, deletedAt = null } = {}
+) {
+  if (!work || typeof work !== 'object') {
+    return { ok: false, row: null, errors: ['registro inválido'], reason: 'registro inválido' };
+  }
+
+  // Se houver um cloudId explícito que NÃO é UUID e não há id local para derivar, rejeita com erro visível
+  const explicitCloudId = String(work.cloudId || '').trim();
+  const explicitLocalId = String(work.id || work.ids?.id || '').trim();
+  if (!explicitCloudId && !explicitLocalId) {
+    return {
+      ok: false,
+      row: null,
+      errors: ['id inválido (fora do formato UUID)'],
+      reason: 'id inválido (fora do formato UUID)',
+    };
+  }
+  if (explicitCloudId && !isValidUuid(explicitCloudId) && !explicitLocalId) {
+    return {
+      ok: false,
+      row: null,
+      errors: ['id inválido (fora do formato UUID)'],
+      reason: 'id inválido (fora do formato UUID)',
+    };
+  }
+
+  // Quando `cloudId` estiver corrompido (não-UUID), deriva UUID determinístico do `id` local em vez de enviar lixo
+  const safeWork =
+    explicitCloudId && !isValidUuid(explicitCloudId)
+      ? { ...work, cloudId: null }
+      : work;
+
+  const row = mapLocalWorkToCatalogRow(safeWork, userId, {
+    numericExternalRating: true,
+    includeDeletedAt,
+    deletedAt,
+  });
+
+  // Garante saneamento final mesmo se algum campo externo veio fora do padrão
+  row.domain = ALLOWED_CLOUD_DOMAINS.includes(row.domain)
+    ? row.domain
+    : sanitizeCloudDomain(safeWork);
+  row.rating = sanitizeCloudInt0To100(row.rating);
+  row.external_rating = sanitizeCloudInt0To100(row.external_rating);
+  row.favorite_rank = sanitizeCloudFavoriteRank(row.favorite_rank);
+  row.created_at = sanitizeCloudIsoTimestamp(row.created_at, EPOCH_ZERO_ISO);
+  row.updated_at = sanitizeCloudIsoTimestamp(row.updated_at, EPOCH_ZERO_ISO);
+
+  const check = validateCatalogRowForCloud(row);
+  if (!check.ok) {
+    return { ok: false, row: null, errors: check.errors, reason: check.reason };
+  }
+  return { ok: true, row, errors: [], reason: '' };
+}
+
+export const workToCloudRow = prepareCatalogRowForCloudUpload;
 
 export function mapCatalogRowToLocalWork(row = {}) {
   const pd = row.progress_data && typeof row.progress_data === 'object' ? row.progress_data : {};
@@ -1282,6 +1512,7 @@ export function readSyncQueue(storage = null) {
   const store = storage || (typeof localStorage !== 'undefined' ? localStorage : null);
   const empty = {
     pendingUpsertIds: [],
+    failedItems: [],
     retryCount: 0,
     nextRetryAt: null,
     lastError: null,
@@ -1292,10 +1523,22 @@ export function readSyncQueue(storage = null) {
     const raw = store.getItem(SYNC_QUEUE_STORAGE_KEY);
     if (!raw) return empty;
     const parsed = JSON.parse(raw);
+    const failedItems = Array.isArray(parsed?.failedItems)
+      ? parsed.failedItems
+          .filter((item) => item && typeof item === 'object')
+          .map((item) => ({
+            workId: String(item.workId || ''),
+            title: String(item.title || 'Sem título'),
+            domain: String(item.domain || ''),
+            reason: String(item.reason || 'Falha ao enviar obra'),
+            failedAt: item.failedAt || null,
+          }))
+      : [];
     return {
       pendingUpsertIds: Array.isArray(parsed?.pendingUpsertIds)
         ? Array.from(new Set(parsed.pendingUpsertIds.map(String).filter(Boolean)))
         : [],
+      failedItems,
       retryCount: Math.max(0, Number(parsed?.retryCount) || 0),
       nextRetryAt: parsed?.nextRetryAt || null,
       lastError: parsed?.lastError ? String(parsed.lastError) : null,
@@ -1314,6 +1557,56 @@ function writeSyncQueue(nextState, storage = null) {
   } catch {
     // Silencioso
   }
+}
+
+export function readFailedSyncItems(storage = null) {
+  return readSyncQueue(storage).failedItems;
+}
+
+export function recordFailedSyncItems(entries = [], storage = null) {
+  const list = Array.isArray(entries) ? entries : [entries];
+  if (list.length === 0) return readSyncQueue(storage);
+  const current = readSyncQueue(storage);
+  const byKey = new Map();
+  for (const prev of current.failedItems) {
+    const k = prev.workId || `title:${prev.title}`;
+    byKey.set(k, prev);
+  }
+  const nowIso = new Date().toISOString();
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const normalized = {
+      workId: String(item.workId || ''),
+      title: String(item.title || 'Sem título'),
+      domain: String(item.domain || ''),
+      reason: String(item.reason || 'Falha ao enviar obra'),
+      failedAt: item.failedAt || nowIso,
+    };
+    const k = normalized.workId || `title:${normalized.title}`;
+    byKey.set(k, normalized);
+  }
+  const next = {
+    ...current,
+    failedItems: Array.from(byKey.values()).slice(-50),
+  };
+  writeSyncQueue(next, storage);
+  return next;
+}
+
+export function clearFailedSyncItems(workIds = null, storage = null) {
+  const current = readSyncQueue(storage);
+  if (workIds === null) {
+    const next = { ...current, failedItems: [] };
+    writeSyncQueue(next, storage);
+    return next;
+  }
+  const removeSet = new Set((Array.isArray(workIds) ? workIds : [workIds]).map(String));
+  const next = {
+    ...current,
+    failedItems: current.failedItems.filter((item) => !removeSet.has(item.workId)),
+  };
+  writeSyncQueue(next, storage);
+  return next;
 }
 
 export function enqueuePendingWorkUpserts(workIds = [], storage = null) {
@@ -1367,6 +1660,7 @@ export function clearSyncFailure(storage = null) {
   const current = readSyncQueue(storage);
   const next = {
     ...current,
+    failedItems: [],
     retryCount: 0,
     nextRetryAt: null,
     lastError: null,
@@ -1379,7 +1673,48 @@ export function clearSyncFailure(storage = null) {
 export function getPendingSyncCount(storage = null) {
   const queue = readSyncQueue(storage);
   const pendingDeletes = readPendingCloudDeletes(storage);
-  return queue.pendingUpsertIds.length + pendingDeletes.length;
+  return Math.max(queue.pendingUpsertIds.length, queue.failedItems.length) + pendingDeletes.length;
+}
+
+/**
+ * Traduz erros de constraint/tipo do PostgreSQL/PostgREST para motivos curtos em português simples.
+ */
+export function formatFriendlyConstraintError(rawError) {
+  const raw = String(rawError?.message || rawError?.details || rawError || '').trim();
+  const code = String(rawError?.code || '').trim();
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('uuid') || (code === '22P02' && lower.includes('uuid'))) {
+    return 'id inválido (fora do formato UUID)';
+  }
+  if (lower.includes('external_rating')) {
+    return 'nota externa fora da faixa (0 a 100)';
+  }
+  if (lower.includes('rating')) {
+    return 'nota fora da faixa (0 a 100)';
+  }
+  if (lower.includes('favorite_rank')) {
+    return 'posição no Top 4 inválida (1 a 4)';
+  }
+  if (lower.includes('domain')) {
+    return 'domínio não aceito (esperado cinema, reading, games ou music)';
+  }
+  if (lower.includes('created_at') || lower.includes('updated_at')) {
+    return 'data de criação ou atualização inválida (esperado formato ISO)';
+  }
+  if (code === '23503' || lower.includes('foreign key') || lower.includes('user_id')) {
+    return 'usuário inválido na conta conectada';
+  }
+  if (code === '42501' || lower.includes('row-level security') || lower.includes('permission denied')) {
+    return 'permissão bloqueada pela política de segurança (RLS)';
+  }
+  if (code === '23514' || lower.includes('check constraint')) {
+    return `valor fora da regra do banco (${raw})`;
+  }
+  if (code === '22P02' || lower.includes('invalid input syntax')) {
+    return `formato de campo inválido (${raw})`;
+  }
+  return raw || 'falha desconhecida ao enviar esta obra';
 }
 
 export function formatFriendlySyncError(rawError) {
@@ -1391,6 +1726,7 @@ export function formatFriendlySyncError(rawError) {
         'Não foi possível sincronizar agora. Seus dados continuam salvos neste aparelho — toque em "Sincronizar agora" para tentar novamente.',
       action: 'retry',
       sessionExpired: false,
+      isNetwork: false,
     };
   }
   if (
@@ -1406,6 +1742,7 @@ export function formatFriendlySyncError(rawError) {
         'Sua sessão expirou. Entre novamente na sua conta para retomar a sincronização — seus dados locais continuam seguros.',
       action: 'relogin',
       sessionExpired: true,
+      isNetwork: false,
     };
   }
   if (
@@ -1415,17 +1752,19 @@ export function formatFriendlySyncError(rawError) {
   ) {
     return {
       message:
-        'O Supabase bloqueou a gravação por política de segurança (RLS). Aplique a migração SQL aditiva e tente sincronizar novamente.',
+        'O Supabase bloqueou a gravação por política de segurança (RLS). Verifique suas políticas no Supabase e tente sincronizar novamente.',
       action: 'retry',
       sessionExpired: false,
+      isNetwork: false,
     };
   }
   if (lower.includes('42p01') || lower.includes('does not exist')) {
     return {
       message:
-        'A tabela public.catalog_works ainda não foi preparada no Supabase. Aplique a migração SQL aditiva e tente novamente.',
+        'A tabela public.catalog_works ainda não foi preparada no Supabase. Verifique a migração SQL e tente novamente.',
       action: 'retry',
       sessionExpired: false,
+      isNetwork: false,
     };
   }
   if (
@@ -1441,12 +1780,15 @@ export function formatFriendlySyncError(rawError) {
         'Sem resposta da nuvem no momento. Suas alterações ficaram na fila local e serão enviadas automaticamente quando a conexão voltar.',
       action: 'retry',
       sessionExpired: false,
+      isNetwork: true,
     };
   }
+  const constraintReason = formatFriendlyConstraintError(rawError);
   return {
-    message: `Não foi possível sincronizar agora (${raw}). Seus dados continuam salvos localmente — tente novamente.`,
+    message: `Não foi possível sincronizar agora: ${constraintReason}. Seus dados continuam salvos localmente.`,
     action: 'retry',
     sessionExpired: false,
+    isNetwork: false,
   };
 }
 
@@ -1475,62 +1817,181 @@ export function isDeletedAtColumnMissingError(error) {
   return /deleted_at/i.test(msg) && /(does not exist|schema cache|unknown column|could not find)/i.test(msg);
 }
 
-async function upsertCatalogRows(client, works = [], userId) {
+function buildFailedWorkRecord(work = {}, reason = '') {
+  const workId = String(work?.id || work?.cloudId || '');
+  const title = String(work?.title || 'Sem título').trim() || 'Sem título';
+  const domain = String(work?.domain || '');
+  return {
+    workId,
+    title,
+    domain,
+    reason: String(reason || 'Falha ao enviar obra'),
+    failedAt: new Date().toISOString(),
+  };
+}
+
+function summarizeFailedWorksError(failedWorks = []) {
+  if (!Array.isArray(failedWorks) || failedWorks.length === 0) return '';
+  const preview = failedWorks
+    .slice(0, 3)
+    .map((f) => `"${f.title}" (${f.reason})`)
+    .join(', ');
+  const extra = failedWorks.length > 3 ? ` e mais ${failedWorks.length - 3}` : '';
+  return `${failedWorks.length} obra${failedWorks.length === 1 ? '' : 's'} não ${failedWorks.length === 1 ? 'pôde' : 'puderam'} ser enviada${failedWorks.length === 1 ? '' : 's'}: ${preview}${extra}.`;
+}
+
+/**
+ * Envia obras em lotes para `public.catalog_works` com saneamento prévio contra as
+ * constraints reais do banco. Se um lote falhar (exceto erro de rede/sessão), NÃO
+ * descarta o lote: tenta obra por obra, mantém na fila apenas as que falharam e
+ * registra cada obra + motivo em português simples no Diagnóstico.
+ */
+async function upsertCatalogRows(client, works = [], userId, { storage = null } = {}) {
   if (!client || !userId || !Array.isArray(works) || works.length === 0) {
-    return { ok: true, count: 0 };
+    return { ok: true, count: 0, succeededWorkIds: [], failedWorks: [] };
+  }
+
+  const validEntries = [];
+  const failedWorks = [];
+  const succeededWorkIds = [];
+
+  for (const work of works) {
+    const prepared = prepareCatalogRowForCloudUpload(work, userId, {
+      includeDeletedAt: !deletedAtColumnUnsupported,
+      deletedAt: null,
+    });
+    if (!prepared.ok || !prepared.row) {
+      const failRec = buildFailedWorkRecord(work, prepared.reason || 'id inválido (fora do formato UUID)');
+      failedWorks.push(failRec);
+      recordLocalError(
+        `Obra "${failRec.title}" rejeitada antes do envio: ${failRec.reason}`,
+        { source: 'cloud-sync', storage: storage || undefined }
+      );
+      continue;
+    }
+    validEntries.push({ work, row: prepared.row });
   }
 
   const chunkSize = 40;
   let totalUpserted = 0;
 
-  for (let i = 0; i < works.length; i += chunkSize) {
-    const slice = works.slice(i, i + chunkSize);
-    const buildRows = () =>
-      slice.map((w) =>
-        mapLocalWorkToCatalogRow(w, userId, {
-          numericExternalRating: externalRatingNumericFallback,
-          includeDeletedAt: !deletedAtColumnUnsupported,
-          deletedAt: null,
-        })
-      );
+  const stripDeletedAtFromRow = (row) => {
+    if (!row || typeof row !== 'object') return row;
+    const copy = { ...row };
+    delete copy.deleted_at;
+    return copy;
+  };
 
-    let rows = buildRows();
+  for (let i = 0; i < validEntries.length; i += chunkSize) {
+    const slice = validEntries.slice(i, i + chunkSize);
+    let rows = slice.map((entry) =>
+      deletedAtColumnUnsupported ? stripDeletedAtFromRow(entry.row) : entry.row
+    );
+
     let { error } = await client
       .from(OMNI_CATALOG_TABLE)
       .upsert(rows, { onConflict: 'id' });
 
     if (error && !deletedAtColumnUnsupported && isDeletedAtColumnMissingError(error)) {
       deletedAtColumnUnsupported = true;
-      rows = buildRows();
+      rows = slice.map((entry) => stripDeletedAtFromRow(entry.row));
       const retry = await client
         .from(OMNI_CATALOG_TABLE)
         .upsert(rows, { onConflict: 'id' });
       error = retry.error;
     }
 
-    if (error && !externalRatingNumericFallback && isExternalRatingTypeError(error)) {
-      externalRatingNumericFallback = true;
-      rows = buildRows();
-      const retry = await client
-        .from(OMNI_CATALOG_TABLE)
-        .upsert(rows, { onConflict: 'id' });
-      error = retry.error;
+    if (!error) {
+      totalUpserted += slice.length;
+      slice.forEach((entry) => {
+        if (entry.work?.id) succeededWorkIds.push(String(entry.work.id));
+      });
+      continue;
     }
 
-    if (error) {
-      const friendly = formatFriendlySyncError(error);
+    const batchFriendly = formatFriendlySyncError(error);
+    // Se for sessão expirada ou queda total de rede, não tenta 40x obra por obra
+    if (batchFriendly.sessionExpired || batchFriendly.isNetwork) {
+      recordLocalError(batchFriendly.message, {
+        source: 'cloud-sync',
+        storage: storage || undefined,
+      });
       return {
         ok: false,
         count: totalUpserted,
-        error: friendly.message,
+        succeededWorkIds,
+        failedWorks,
+        error: batchFriendly.message,
         rawError: error.message || '',
-        sessionExpired: friendly.sessionExpired,
+        sessionExpired: batchFriendly.sessionExpired,
       };
     }
-    totalUpserted += rows.length;
+
+    // Lote falhou por erro de dado/constraint: NÃO descarta o lote — tenta obra por obra!
+    for (const entry of slice) {
+      const singleRow = deletedAtColumnUnsupported
+        ? stripDeletedAtFromRow(entry.row)
+        : entry.row;
+      let singleRes = await client
+        .from(OMNI_CATALOG_TABLE)
+        .upsert([singleRow], { onConflict: 'id' });
+
+      if (
+        singleRes?.error &&
+        !deletedAtColumnUnsupported &&
+        isDeletedAtColumnMissingError(singleRes.error)
+      ) {
+        deletedAtColumnUnsupported = true;
+        singleRes = await client
+          .from(OMNI_CATALOG_TABLE)
+          .upsert([stripDeletedAtFromRow(entry.row)], { onConflict: 'id' });
+      }
+
+      if (!singleRes?.error) {
+        totalUpserted += 1;
+        if (entry.work?.id) succeededWorkIds.push(String(entry.work.id));
+      } else {
+        const reason = formatFriendlyConstraintError(singleRes.error);
+        const failRec = buildFailedWorkRecord(entry.work, reason);
+        failedWorks.push(failRec);
+        recordLocalError(
+          `Falha ao sincronizar "${failRec.title}": ${failRec.reason}`,
+          { source: 'cloud-sync', storage: storage || undefined }
+        );
+      }
+    }
   }
 
-  return { ok: true, count: totalUpserted };
+  if (succeededWorkIds.length > 0) {
+    clearPendingWorkUpserts(succeededWorkIds, storage);
+    clearFailedSyncItems(succeededWorkIds, storage);
+  }
+
+  if (failedWorks.length > 0) {
+    const failedIds = failedWorks.map((f) => f.workId).filter(Boolean);
+    if (failedIds.length > 0) {
+      enqueuePendingWorkUpserts(failedIds, storage);
+    }
+    recordFailedSyncItems(failedWorks, storage);
+    const summaryError = summarizeFailedWorksError(failedWorks);
+    return {
+      ok: false,
+      partialSuccess: totalUpserted > 0,
+      count: totalUpserted,
+      succeededWorkIds,
+      failedWorks,
+      error: summaryError,
+      sessionExpired: false,
+    };
+  }
+
+  return {
+    ok: true,
+    partialSuccess: false,
+    count: totalUpserted,
+    succeededWorkIds,
+    failedWorks: [],
+  };
 }
 
 /**
@@ -1550,7 +2011,22 @@ async function applyCloudDeletes(
     return { ok: true, count: 0, mode: getTombstoneSyncMode() };
   }
 
-  const cloudIds = Array.from(new Set(entries.map((e) => toCloudWorkId(e.cloudId))));
+  const rawCloudIds = Array.from(new Set(entries.map((e) => toCloudWorkId(e.cloudId))));
+  const cloudIds = rawCloudIds.filter((cid) => isValidUuid(cid));
+  if (cloudIds.length !== rawCloudIds.length) {
+    recordLocalError(
+      'Um ou mais IDs de exclusão estavam fora do formato UUID e foram ignorados.',
+      { source: 'cloud-sync' }
+    );
+  }
+  if (cloudIds.length === 0) {
+    return {
+      ok: false,
+      count: 0,
+      error: 'id inválido (fora do formato UUID)',
+      mode: getTombstoneSyncMode(),
+    };
+  }
   const latestDeletedAt =
     entries
       .map((e) => e.deletedAt)
@@ -1994,24 +2470,40 @@ export async function syncCatalogWithSupabase({
       writePendingCloudDeletes(remainingPending, storage);
     }
 
-    // 5. Upload inicial / incremental para public.catalog_works
+    // 5. Upload inicial / incremental para public.catalog_works (saneado + fallback obra por obra)
     let pushedCount = 0;
+    let failedWorks = [];
     if (worksToPush.length > 0) {
-      const pushRes = await upsertCatalogRows(sb, worksToPush, user.id);
+      const pushRes = await upsertCatalogRows(sb, worksToPush, user.id, { storage });
+      pushedCount = pushRes.count || 0;
+      failedWorks = Array.isArray(pushRes.failedWorks) ? pushRes.failedWorks : [];
       if (!pushRes.ok) {
-        enqueuePendingWorkUpserts(
-          worksToPush.map((w) => w.id),
-          storage
-        );
+        if (failedWorks.length === 0) {
+          enqueuePendingWorkUpserts(
+            worksToPush.map((w) => w.id).filter(Boolean),
+            storage
+          );
+        }
         recordSyncFailure(pushRes.error, storage);
+        // Mesmo em falha parcial, preserva obras mescladas localmente sem perder dados
+        if (pushRes.partialSuccess || pulledCount > 0) {
+          await putRelationalWorks(mergedWorks, { idbFactory, replace: true });
+        }
         return {
           ok: false,
+          partialSuccess: Boolean(pushRes.partialSuccess),
           mode: 'error',
+          tombstoneMode: getTombstoneSyncMode(),
+          user,
+          works: mergedWorks,
+          pushedCount,
+          pulledCount,
+          deletedCount,
+          failedWorks,
           sessionExpired: Boolean(pushRes.sessionExpired),
           error: pushRes.error,
         };
       }
-      pushedCount = pushRes.count;
     }
 
     // 6. Persiste resultado mesclado no IndexedDB local
@@ -2063,12 +2555,12 @@ export async function pushWorksToCloud(
   works = [],
   { client = null, storage = null } = {}
 ) {
-  const list = Array.isArray(works) ? works.filter((w) => w && w.id) : [];
-  if (list.length === 0) return { ok: true, count: 0, skipped: true };
+  const list = Array.isArray(works) ? works.filter((w) => w && typeof w === 'object') : [];
+  if (list.length === 0) return { ok: true, count: 0, skipped: true, succeededWorkIds: [], failedWorks: [] };
 
   // Enfileira antes de tentar enviar para sobreviver a recarregamento ou queda de rede
   enqueuePendingWorkUpserts(
-    list.map((w) => w.id),
+    list.map((w) => w.id).filter(Boolean),
     storage
   );
 
@@ -2077,13 +2569,15 @@ export async function pushWorksToCloud(
       ok: false,
       offline: true,
       queued: list.length,
+      succeededWorkIds: [],
+      failedWorks: [],
       error:
         'Você está offline. Suas alterações ficaram na fila e serão enviadas automaticamente ao reconectar.',
     };
   }
 
   const sb = client || getSupabaseClient({ storage });
-  if (!sb) return { ok: false, skipped: true, queued: list.length };
+  if (!sb) return { ok: false, skipped: true, queued: list.length, succeededWorkIds: [], failedWorks: [] };
 
   const sessionRes = await getActiveSupabaseSession({ client: sb, storage });
   if (!sessionRes.user?.id) {
@@ -2092,15 +2586,17 @@ export async function pushWorksToCloud(
       unauthenticated: true,
       sessionExpired: Boolean(sessionRes.sessionExpired),
       queued: list.length,
+      succeededWorkIds: [],
+      failedWorks: [],
       error: sessionRes.error || null,
     };
   }
 
   try {
-    const res = await upsertCatalogRows(sb, list, sessionRes.user.id);
+    const res = await upsertCatalogRows(sb, list, sessionRes.user.id, { storage });
     if (res.ok) {
       clearPendingWorkUpserts(
-        list.map((w) => w.id),
+        list.map((w) => w.id).filter(Boolean),
         storage
       );
       if (getPendingSyncCount(storage) === 0) {
@@ -2109,14 +2605,26 @@ export async function pushWorksToCloud(
       return { ...res, tombstoneMode: getTombstoneSyncMode() };
     }
     recordSyncFailure(res.error, storage);
-    return { ...res, queued: list.length };
+    return {
+      ...res,
+      tombstoneMode: getTombstoneSyncMode(),
+      queued: Array.isArray(res.failedWorks) && res.failedWorks.length > 0
+        ? res.failedWorks.length
+        : list.length,
+    };
   } catch (err) {
     const friendly = formatFriendlySyncError(err);
     recordSyncFailure(friendly.message, storage);
+    recordLocalError(friendly.message, {
+      source: 'cloud-sync',
+      storage: storage || undefined,
+    });
     return {
       ok: false,
       offline: !isOnlineBrowser(),
       queued: list.length,
+      succeededWorkIds: [],
+      failedWorks: [],
       sessionExpired: friendly.sessionExpired,
       error: friendly.message,
     };

@@ -15,32 +15,48 @@ import {
   buildRetryCoverUrl,
   MAX_COVER_IMAGE_RETRIES,
 } from '../src/lib/coverRetry.js';
+import { buildDiagnosticsReportText } from '../src/lib/diagnosticsHelpers.js';
+import { getLocalErrorLog } from '../src/lib/errorLogger.js';
+import { applyCanonicalIdsToWork } from '../src/lib/idBridge.js';
+import { buildManualExternalIds } from '../src/lib/manualWorkLink.js';
 import { normalizeItem } from '../src/hooks/useBacklog.js';
 import {
   buildCinemaSearchCacheKey,
   buildTmdbImageUrl,
   searchCinemaMedia,
 } from '../src/services/cinemaApi.js';
+import { createUuid } from '../src/services/codiceDatabase.js';
 import {
+  ALLOWED_CLOUD_DOMAINS,
   clearPendingWorkUpserts,
   computeRetryBackoffMs,
   deleteWorksFromCloud,
   enqueuePendingWorkUpserts,
   formatFirstSyncSummary,
+  formatFriendlyConstraintError,
   formatFriendlySyncError,
   getPendingSyncCount,
   getTombstoneSyncMode,
+  isValidUuid,
   mapCatalogRowToLocalWork,
   mapLocalWorkToCatalogRow,
   mergeWorksByUpdatedAt,
   OMNI_CATALOG_TABLE,
   parseWorkUpdatedMs,
+  prepareCatalogRowForCloudUpload,
   previewCloudSyncWithSupabase,
   pushWorksToCloud,
   readCloudTombstones,
+  readFailedSyncItems,
+  readSyncQueue,
   resetSyncRuntimeFlagsForTests,
+  sanitizeCloudDomain,
+  sanitizeCloudFavoriteRank,
+  sanitizeCloudInt0To100,
   syncCatalogWithSupabase,
   toCloudWorkId,
+  validateCatalogRowForCloud,
+  workToCloudRow,
 } from '../src/services/omniSyncService.js';
 import {
   clearRelationalMemoryForTests,
@@ -675,20 +691,22 @@ describe('OMNIPRISM v2.7.1 (Fase 2) — 3. SQL (A) somente leitura e SQL (B) est
     assert.match(noComments, /security_flag/i);
   });
 
-  it('migração 20261126_v271 é 100% aditiva, sem DROP, sem alteração de tipos e usa políticas com nomes novos', () => {
+  it('migração 20261126_v271 é estritamente aditiva (sem DROP, sem criar políticas novas, sem alterar constraints)', () => {
     const migSql = readText('supabase/migrations/20261126_v271_catalog_works_sync_additive.sql');
     assert.match(migSql.slice(0, 260), /RASCUNHO:\s*revisar antes de aplicar/i);
     const noComments = migSql.replace(/--.*$/gm, '');
     assert.equal(/\bDROP\b/i.test(noComments), false, 'migração aditiva NUNCA pode conter DROP');
     assert.equal(/\bTRUNCATE\b/i.test(noComments), false);
     assert.equal(/\bALTER\s+COLUMN\b/i.test(noComments), false, 'nunca alterar tipo de coluna');
-    assert.match(noComments, /CREATE TABLE IF NOT EXISTS public\.catalog_works/i);
+    assert.equal(/\bCREATE\s+POLICY\b/i.test(noComments), false, 'NÃO deve criar políticas novas (owner_all_catalog já existe)');
+    assert.equal(/\bCREATE\s+TABLE\b/i.test(noComments), false, 'tabela já existe; migração só adiciona coluna/índices/realtime');
+    assert.equal(/omniprism_v271_/i.test(noComments), false, 'não deve haver políticas omniprism_v271_*');
     assert.match(noComments, /ADD COLUMN IF NOT EXISTS deleted_at timestamptz NULL/i);
-    assert.match(noComments, /CREATE INDEX IF NOT EXISTS idx_catalog_works_user_deleted_v271/i);
-    assert.match(noComments, /omniprism_v271_catalog_works_select_own/);
-    assert.match(noComments, /omniprism_v271_covers_select_own/);
+    assert.match(noComments, /CREATE INDEX IF NOT EXISTS idx_catalog_works_user_updated_v271[\s\S]*\(user_id,\s*updated_at DESC\)/i);
+    assert.match(noComments, /CREATE INDEX IF NOT EXISTS idx_catalog_works_user_deleted_v271[\s\S]*\(user_id,\s*deleted_at\)/i);
     assert.match(noComments, /REPLICA IDENTITY FULL/i);
-    assert.match(noComments, /supabase_realtime/i);
+    assert.match(noComments, /pg_publication_tables/i);
+    assert.match(noComments, /ALTER PUBLICATION supabase_realtime ADD TABLE public\.catalog_works/i);
   });
 });
 
@@ -839,5 +857,317 @@ describe('OMNIPRISM v2.7.1 (Fase 2) — 5. Versão única e política de sessão
       'supabaseClient.js não deve gravar sessão em IndexedDB'
     );
     assert.match(secDoc, /NÃO espelhar sessão Supabase no IndexedDB/i);
+  });
+});
+
+describe('OMNIPRISM v2.7.1 (Fase 2) — 6. Saneamento de constraints, UUID (incl. manuais/idBridge) e fallback obra por obra', () => {
+  it('saneia nota fracionada, nota > 100, external_rating inteiro 0..100, favorite_rank 0 e 5, domínio desconhecido e reading para livros/mangás', () => {
+    assert.equal(sanitizeCloudInt0To100(87.6), 88);
+    assert.equal(sanitizeCloudInt0To100(73.4), 73);
+    assert.equal(sanitizeCloudInt0To100(145), 100);
+    assert.equal(sanitizeCloudInt0To100(-12), 0);
+    assert.equal(sanitizeCloudInt0To100(null), null);
+
+    assert.equal(sanitizeCloudFavoriteRank(0), null);
+    assert.equal(sanitizeCloudFavoriteRank(5), null);
+    assert.equal(sanitizeCloudFavoriteRank(2.5), null);
+    assert.equal(sanitizeCloudFavoriteRank(1), 1);
+    assert.equal(sanitizeCloudFavoriteRank(4), 4);
+
+    // Livros e mangás sempre mapeiam para 'reading'
+    assert.equal(sanitizeCloudDomain({ domain: 'reading', workType: 'book' }), 'reading');
+    assert.equal(sanitizeCloudDomain({ domain: 'books', workType: 'book' }), 'reading');
+    assert.equal(sanitizeCloudDomain({ domain: 'livros', workType: 'manga' }), 'reading');
+    assert.equal(sanitizeCloudDomain({ domain: 'mangá' }), 'reading');
+    // Domínio desconhecido é saneado para um dos 4 domínios aceitos pelo banco
+    const unknownDomain = sanitizeCloudDomain({ domain: 'podcast-desconhecido', workType: 'outro' });
+    assert.ok(ALLOWED_CLOUD_DOMAINS.includes(unknownDomain));
+    assert.equal(sanitizeCloudDomain({ domain: 'desconhecido', workType: 'manga' }), 'reading');
+
+    const prepared = workToCloudRow(
+      {
+        id: 'tmdb-movie-550',
+        title: 'Clube da Luta',
+        domain: 'desconhecido',
+        workType: 'movie',
+        rating: 87.6,
+        externalScore: 132.4,
+        favoriteRank: 5,
+      },
+      'user-sync-1'
+    );
+    assert.equal(prepared.ok, true);
+    assert.equal(isValidUuid(prepared.row.id), true);
+    assert.ok(ALLOWED_CLOUD_DOMAINS.includes(prepared.row.domain));
+    assert.equal(prepared.row.rating, 88);
+    assert.equal(Number.isInteger(prepared.row.rating), true);
+    assert.equal(prepared.row.external_rating, 100);
+    assert.equal(Number.isInteger(prepared.row.external_rating), true);
+    assert.equal(prepared.row.favorite_rank, null);
+    assert.equal(Number.isNaN(Date.parse(prepared.row.created_at)), false);
+    assert.equal(Number.isNaN(Date.parse(prepared.row.updated_at)), false);
+
+    // Nota > 100 e favorite_rank = 0
+    const overMax = prepareCatalogRowForCloudUpload(
+      {
+        id: 'ol-book-1',
+        title: 'Vagabond Vol. 1',
+        domain: 'livros',
+        workType: 'manga',
+        rating: 145,
+        externalRatings: { mal: { value: 9.25, scale: 10 } },
+        favoriteRank: 0,
+      },
+      'user-sync-1'
+    );
+    assert.equal(overMax.ok, true);
+    assert.equal(overMax.row.domain, 'reading');
+    assert.equal(overMax.row.rating, 100);
+    assert.equal(overMax.row.external_rating, 93);
+    assert.equal(overMax.row.favorite_rank, null);
+    assert.equal(isValidUuid(overMax.row.id), true);
+  });
+
+  it('gera UUID válido para todos os domínios, inclusive obras manuais e idBridge, e rejeita ID fora do formato UUID com erro visível', () => {
+    const manualUuid = createUuid();
+    const manualWorks = [
+      {
+        id: manualUuid,
+        domain: 'reading',
+        workType: 'book',
+        title: 'Caderno Manual',
+        isManual: true,
+        ids: buildManualExternalIds(manualUuid, { isbn: '9788535902778' }),
+        rating: 90,
+        updatedAt: '2026-11-26T20:00:00.000Z',
+      },
+      {
+        id: 'manual-legacy-manga-7',
+        domain: 'reading',
+        workType: 'manga',
+        title: 'Mangá Manual Legado',
+        isManual: true,
+        ids: buildManualExternalIds('manual-legacy-manga-7'),
+        rating: 85.4,
+        updatedAt: '2026-11-26T20:01:00.000Z',
+      },
+      applyCanonicalIdsToWork({
+        id: 'tmdb-movie-603',
+        domain: 'cinema',
+        workType: 'movie',
+        title: 'Matrix',
+        tmdbId: 603,
+        imdbId: 'tt0133093',
+        updatedAt: '2026-11-26T20:02:00.000Z',
+      }),
+      {
+        id: 'igdb-1942',
+        domain: 'games',
+        workType: 'game',
+        title: 'The Witcher 3',
+        updatedAt: '2026-11-26T20:03:00.000Z',
+      },
+      {
+        id: 'itunes-album-1440857781',
+        domain: 'music',
+        workType: 'album',
+        title: 'Powerslave',
+        updatedAt: '2026-11-26T20:04:00.000Z',
+      },
+    ];
+
+    for (const w of manualWorks) {
+      const prep = prepareCatalogRowForCloudUpload(w, 'user-sync-1');
+      assert.equal(prep.ok, true, `obra ${w.title} deveria gerar linha válida`);
+      assert.equal(isValidUuid(prep.row.id), true, `id de ${w.title} deve ser UUID válido`);
+      assert.ok(ALLOWED_CLOUD_DOMAINS.includes(prep.row.domain));
+    }
+
+    // ID fora do formato UUID na validação da linha ou obra sem ID -> erro visível, nunca silencioso
+    const invalidRowCheck = validateCatalogRowForCloud({
+      id: 'nao-e-um-uuid',
+      user_id: 'user-sync-1',
+      domain: 'podcast',
+      rating: 150,
+      external_rating: 85.5,
+      favorite_rank: 5,
+      created_at: 'data-ruim',
+      updated_at: '',
+    });
+    assert.equal(invalidRowCheck.ok, false);
+    assert.match(invalidRowCheck.reason, /id inválido/i);
+    assert.match(invalidRowCheck.reason, /domínio não aceito/i);
+    assert.match(invalidRowCheck.reason, /nota fora da faixa/i);
+    assert.match(invalidRowCheck.reason, /nota externa fora da faixa/i);
+    assert.match(invalidRowCheck.reason, /Top 4/i);
+
+    const missingIdPrep = prepareCatalogRowForCloudUpload(
+      { id: '', title: 'Obra Sem ID', domain: 'cinema', workType: 'movie' },
+      'user-sync-1'
+    );
+    assert.equal(missingIdPrep.ok, false);
+    assert.match(missingIdPrep.reason, /id inválido/i);
+
+    assert.match(
+      formatFriendlyConstraintError({ code: '22P02', message: 'invalid input syntax for type uuid: "abc"' }),
+      /id inválido/i
+    );
+    assert.match(
+      formatFriendlyConstraintError({ code: '23514', message: 'violates check constraint "catalog_works_rating_check"' }),
+      /nota fora da faixa/i
+    );
+    assert.match(
+      formatFriendlyConstraintError({ code: '23514', message: 'violates check constraint "catalog_works_domain_check"' }),
+      /domínio não aceito/i
+    );
+  });
+
+  it('lote com uma obra inválida NÃO descarta o lote: sobe as válidas, mantém só a inválida na fila e registra motivo no Diagnóstico', async () => {
+    clearRelationalMemoryForTests();
+    resetSyncRuntimeFlagsForTests();
+
+    const remoteDb = new Map();
+    const storage = createMemoryStorage();
+
+    // Caso A: obra com ID ausente no meio de um lote com 2 obras válidas -> 2 válidas sobem, 1 fica registrada com erro
+    const clientA = createFullSupabaseMock({ remoteDb, supportsDeletedAt: true });
+    const good1 = {
+      id: 'batch-good-1',
+      title: 'Duna',
+      domain: 'reading',
+      workType: 'book',
+      rating: 94.6,
+      updatedAt: '2026-11-26T21:00:00.000Z',
+    };
+    const badNoId = {
+      id: '',
+      title: 'Obra Corrompida Sem ID',
+      domain: 'cinema',
+      workType: 'movie',
+      updatedAt: '2026-11-26T21:01:00.000Z',
+    };
+    const good2 = {
+      id: 'batch-good-2',
+      title: 'Hollow Knight',
+      domain: 'games',
+      workType: 'game',
+      rating: 110,
+      updatedAt: '2026-11-26T21:02:00.000Z',
+    };
+
+    const resA = await pushWorksToCloud([good1, badNoId, good2], {
+      client: clientA,
+      storage,
+    });
+    assert.equal(resA.ok, false);
+    assert.equal(resA.partialSuccess, true);
+    assert.equal(resA.count, 2);
+    assert.equal(remoteDb.has(toCloudWorkId('batch-good-1')), true);
+    assert.equal(remoteDb.has(toCloudWorkId('batch-good-2')), true);
+    assert.equal(remoteDb.get(toCloudWorkId('batch-good-1')).rating, 95);
+    assert.equal(remoteDb.get(toCloudWorkId('batch-good-2')).rating, 100);
+    assert.equal(resA.failedWorks.length, 1);
+    assert.equal(resA.failedWorks[0].title, 'Obra Corrompida Sem ID');
+    assert.match(resA.failedWorks[0].reason, /id inválido/i);
+
+    // Caso B: banco rejeita um lote inteiro por causa de 1 obra específica -> tenta obra por obra, sobe as outras 2 e mantém só a que falhou na fila/Diagnóstico
+    const remoteDbB = new Map();
+    const storageB = createMemoryStorage();
+    const poisonCloudId = toCloudWorkId('poison-work-2');
+
+    const batchRejectClient = {
+      auth: {
+        async getSession() {
+          return {
+            data: {
+              session: {
+                access_token: 'tok',
+                expires_at: Math.floor(Date.now() / 1000) + 3600,
+                user: { id: 'user-sync-1', email: 'u@example.com' },
+              },
+            },
+            error: null,
+          };
+        },
+      },
+      from(table) {
+        assert.equal(table, OMNI_CATALOG_TABLE);
+        return {
+          async upsert(rows) {
+            if (rows.some((r) => r.id === poisonCloudId)) {
+              return {
+                error: {
+                  code: '23514',
+                  message: 'new row violates check constraint "catalog_works_rating_check"',
+                },
+              };
+            }
+            for (const r of rows) {
+              remoteDbB.set(r.id, r);
+            }
+            return { error: null };
+          },
+        };
+      },
+    };
+
+    const okWork1 = {
+      id: 'ok-work-1',
+      title: 'Blade Runner',
+      domain: 'cinema',
+      workType: 'movie',
+      rating: 92,
+      updatedAt: '2026-11-26T22:00:00.000Z',
+    };
+    const poisonWork = {
+      id: 'poison-work-2',
+      title: 'Obra Rejeitada Pelo Banco',
+      domain: 'cinema',
+      workType: 'movie',
+      rating: 80,
+      updatedAt: '2026-11-26T22:01:00.000Z',
+    };
+    const okWork3 = {
+      id: 'ok-work-3',
+      title: 'Clube da Esquina',
+      domain: 'music',
+      workType: 'album',
+      rating: 98,
+      updatedAt: '2026-11-26T22:02:00.000Z',
+    };
+
+    const resB = await pushWorksToCloud([okWork1, poisonWork, okWork3], {
+      client: batchRejectClient,
+      storage: storageB,
+    });
+
+    assert.equal(resB.ok, false);
+    assert.equal(resB.partialSuccess, true);
+    assert.equal(resB.count, 2, 'as 2 obras válidas devem subir mesmo quando o lote falha');
+    assert.equal(remoteDbB.has(toCloudWorkId('ok-work-1')), true);
+    assert.equal(remoteDbB.has(toCloudWorkId('ok-work-3')), true);
+    assert.equal(remoteDbB.has(poisonCloudId), false);
+
+    // Somente a obra que falhou permanece na fila e aparece no Diagnóstico com motivo em português
+    const queueB = readSyncQueue(storageB);
+    assert.deepEqual(queueB.pendingUpsertIds, ['poison-work-2']);
+    const failedItemsB = readFailedSyncItems(storageB);
+    assert.equal(failedItemsB.length, 1);
+    assert.equal(failedItemsB[0].title, 'Obra Rejeitada Pelo Banco');
+    assert.match(failedItemsB[0].reason, /nota fora da faixa/i);
+
+    const errLogsB = getLocalErrorLog({ storage: storageB });
+    assert.ok(
+      errLogsB.some((e) => e.message.includes('Obra Rejeitada Pelo Banco')),
+      'falha deve ser registrada no log local do Diagnóstico'
+    );
+
+    const diagText = buildDiagnosticsReportText({
+      release: CODICE_RELEASE,
+      failedSyncItems: failedItemsB,
+      errorLog: errLogsB,
+    });
+    assert.match(diagText, /Obra Rejeitada Pelo Banco/);
+    assert.match(diagText, /nota fora da faixa/i);
   });
 });

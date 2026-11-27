@@ -576,7 +576,7 @@ export function App() {
       }
 
       if (res.error) {
-        recordLocalError('cloud-sync', res.error);
+        recordLocalError(res.error, { source: 'cloud-sync' });
       }
 
       const nextPending = getPendingSyncCount();
@@ -624,7 +624,7 @@ export function App() {
         !cloudSyncStateRef.current.firstSyncPreview
       ) {
         runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch((err) => {
-          recordLocalError('cloud-sync-retry', err);
+          recordLocalError(err, { source: 'cloud-sync-retry' });
         });
       }
     }, delayMs);
@@ -647,7 +647,7 @@ export function App() {
         }
       })
       .catch((err) => {
-        recordLocalError('cloud-config', err);
+        recordLocalError(err, { source: 'cloud-config' });
       });
     return () => {
       active = false;
@@ -739,7 +739,7 @@ export function App() {
       if (user?.id) {
         attachRealtimeForUser(user.id);
         triggerSafeBootSync(user.id).catch((err) => {
-          recordLocalError('cloud-boot-sync', err);
+          recordLocalError(err, { source: 'cloud-boot-sync' });
         });
       }
     };
@@ -775,7 +775,7 @@ export function App() {
         attachRealtimeForUser(user.id);
         if (initialSyncDoneForUserRef.current !== user.id) {
           triggerSafeBootSync(user.id).catch((err) => {
-            recordLocalError('cloud-auth-sync', err);
+            recordLocalError(err, { source: 'cloud-auth-sync' });
           });
         }
       } else {
@@ -796,7 +796,7 @@ export function App() {
         .catch(() => {});
       if (cloudSyncStateRef.current.authenticated && !cloudSyncStateRef.current.firstSyncPreview) {
         runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch((err) => {
-          recordLocalError('cloud-online-sync', err);
+          recordLocalError(err, { source: 'cloud-online-sync' });
         });
       }
     };
@@ -817,7 +817,7 @@ export function App() {
       if (now - lastFocusSyncAtRef.current < 20_000) return;
       lastFocusSyncAtRef.current = now;
       runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch((err) => {
-        recordLocalError('cloud-focus-sync', err);
+        recordLocalError(err, { source: 'cloud-focus-sync' });
       });
     };
 
@@ -899,7 +899,15 @@ export function App() {
               error: null,
             }));
           } else if (res && !res.skipped) {
-            if (res.error) recordLocalError('cloud-push', res.error);
+            if (Array.isArray(res.succeededWorkIds) && res.succeededWorkIds.length > 0) {
+              const okSet = new Set(res.succeededWorkIds.map(String));
+              changedWorks.forEach((w) => {
+                if (okSet.has(String(w.id))) {
+                  lastPushedMapRef.current.set(String(w.id), w.updatedAt || '');
+                }
+              });
+            }
+            if (res.error) recordLocalError(res.error, { source: 'cloud-push' });
             setCloudSyncState((prev) => ({
               ...prev,
               offline: Boolean(res.offline),
@@ -916,7 +924,7 @@ export function App() {
         })
         .catch((err) => {
           const msg = err?.message || 'Falha inesperada ao enviar alterações para a nuvem.';
-          recordLocalError('cloud-push', msg);
+          recordLocalError(msg, { source: 'cloud-push' });
           setCloudSyncState((prev) => ({
             ...prev,
             pendingCount: getPendingSyncCount(),
@@ -961,7 +969,7 @@ export function App() {
       }
       return snapId;
     } catch (err) {
-      recordLocalError('cloud-presync-snapshot', err);
+      recordLocalError(err, { source: 'cloud-presync-snapshot' });
       return null;
     }
   }, [profile, posts, streakData, readingSessions, collections]);
@@ -1472,13 +1480,13 @@ export function App() {
               error: res?.ok || res?.offline ? prev.error : res?.error || prev.error,
             }));
             if (res && !res.ok && !res.offline && !res.unauthenticated) {
-              if (res.error) recordLocalError('cloud-delete', res.error);
+              if (res.error) recordLocalError(res.error, { source: 'cloud-delete' });
               scheduleCloudRetryRef.current?.();
             }
           })
           .catch((err) => {
             const msg = err?.message || 'Falha ao enviar exclusão para a nuvem.';
-            recordLocalError('cloud-delete', msg);
+            recordLocalError(msg, { source: 'cloud-delete' });
             setCloudSyncState((prev) => ({
               ...prev,
               pendingCount: getPendingSyncCount(),
@@ -1513,13 +1521,13 @@ export function App() {
               error: res?.ok ? null : res?.error || prev.error,
             }));
             if (res && !res.ok && !res.offline && !res.skipped) {
-              if (res.error) recordLocalError('cloud-restore-push', res.error);
+              if (res.error) recordLocalError(res.error, { source: 'cloud-restore-push' });
               scheduleCloudRetryRef.current?.();
             }
           })
           .catch((err) => {
             const msg = err?.message || 'Falha ao reenviar obra restaurada para a nuvem.';
-            recordLocalError('cloud-restore-push', msg);
+            recordLocalError(msg, { source: 'cloud-restore-push' });
             setCloudSyncState((prev) => ({
               ...prev,
               pendingCount: getPendingSyncCount(),
@@ -1723,7 +1731,7 @@ export function App() {
         const hydrated = hydrateAppSnapshotFromDatabase(target.payload);
         await handleApplyRestoreSnapshot(hydrated, 'replace', null, { includeDeleted: true });
       } catch (err) {
-        recordLocalError('cloud-restore-snapshot', err);
+        recordLocalError(err, { source: 'cloud-restore-snapshot' });
         showToast({
           message: 'Não foi possível restaurar o snapshot agora.',
           type: 'error',

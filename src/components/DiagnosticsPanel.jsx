@@ -99,6 +99,7 @@ export function DiagnosticsPanel({
       catalogSummary,
       storageSummary: storageInfo,
       errorLog,
+      failedSyncItems: readSyncQueue().failedItems,
     });
     const ok = await copyTextToClipboard(text).catch(() => false);
     if (ok) {
@@ -307,6 +308,27 @@ export function DiagnosticsPanel({
                 >
                   {syncError}
                 </p>
+              )}
+              {Array.isArray(syncQueue.failedItems) && syncQueue.failedItems.length > 0 && (
+                <div
+                  data-testid="diagnostics-failed-sync-items"
+                  className="space-y-1.5 rounded-[6px] border border-line bg-app p-2.5"
+                >
+                  <p className="text-[11px] font-semibold text-ink">
+                    Obras que falharam ao sincronizar ({syncQueue.failedItems.length})
+                  </p>
+                  <ul className="divide-y divide-line text-[11px]">
+                    {syncQueue.failedItems.map((item, idx) => (
+                      <li
+                        key={`${item.workId || item.title}-${idx}`}
+                        className="py-1.5 first:pt-0 last:pb-0"
+                      >
+                        <span className="font-medium text-ink">{item.title}</span>
+                        <span className="block text-muted">{item.reason}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
             </div>
           );
