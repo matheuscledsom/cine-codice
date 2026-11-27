@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, it } from 'node:test';
 
+import { APP_BUILD_VERSION } from '../src/config/versioning.js';
 import {
   applyPwaUpdateSafely,
   checkForPwaUpdate,
@@ -24,7 +25,10 @@ import {
   smartMergeBackup,
 } from '../src/services/backupEngine.js';
 import { normalizeRelationalWorkRecord } from '../src/services/relationalDb.js';
-import { buildVersionManifestInfo } from '../vite.config.js';
+import {
+  APP_BUILD_VERSION as VITE_APP_BUILD_VERSION,
+  buildVersionManifestInfo,
+} from '../vite.config.js';
 
 const ROOT_DIR = process.cwd();
 
@@ -90,7 +94,7 @@ describe('OMNIPRISM v2.6.0 — FASE 4: Backup Anti-Sobrescrita + .ccodex + Atual
     assert.equal(signed.format, 'omniprism-backup-v2');
     assert.ok(signed.schemaVersion);
     assert.ok(signed.exportedAt);
-    assert.equal(signed.appVersion, '2.6.0');
+    assert.equal(signed.appVersion, APP_BUILD_VERSION);
     assert.ok(signed.deviceId.startsWith('dev-'));
     assert.deepEqual(signed.countsByDomain, {
       cinema: 0,
@@ -436,7 +440,8 @@ describe('OMNIPRISM v2.6.0 — FASE 4: Backup Anti-Sobrescrita + .ccodex + Atual
 
   it('6. version.json no build + verificador PWA (cache no-store, registration.update(), Atualizar agora sem tocar IndexedDB)', async () => {
     const manifest = buildVersionManifestInfo();
-    assert.equal(manifest.version, '2.6.0');
+    assert.equal(manifest.version, VITE_APP_BUILD_VERSION);
+    assert.equal(VITE_APP_BUILD_VERSION, APP_BUILD_VERSION);
     assert.equal(Number.isNaN(Date.parse(manifest.buildTime)), false);
     assert.ok(manifest.commit.length >= 3);
 

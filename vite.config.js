@@ -6,7 +6,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export const PWA_IMAGE_CACHE_BUDGET_MB = 80;
 export const PWA_IMAGE_CACHE_MAX_ENTRIES = 320;
-export const APP_BUILD_VERSION = '2.6.0';
+export const APP_BUILD_VERSION = '2.7.0';
 
 function resolveGitCommitShort() {
   try {
