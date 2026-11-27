@@ -6,8 +6,23 @@
 
 import { getCachedEntry, setCachedEntry } from '../api/cacheDb.js';
 import { CACHE_STORES, CACHE_TTL_MS } from '../api/limits.js';
-import { parseIgdbGameMetadata, parseRawgGameMetadata } from '../lib/gameDepth.js';
-import { fetchIgdbViaProxy, fetchRawgViaProxy } from './apiProxyClient.js';
+import {
+  buildAchievementsSyncPatch,
+  parseIgdbGameMetadata,
+  parseRawgGameMetadata,
+  parseRetroAchievementsResponse,
+  parseSteamAchievementsResponse,
+  parseSteamOwnedGamesResponse,
+} from '../lib/gameDepth.js';
+import {
+  fetchIgdbViaProxy,
+  fetchRawgViaProxy,
+  fetchRetroAchievementsViaProxy,
+  fetchSteamAchievementsViaProxy,
+} from './apiProxyClient.js';
+import { isProviderEnabled } from './providerRegistry.js';
+
+export const ACHIEVEMENT_SYNC_HANDLES_STORAGE_KEY = 'omniprism_achievement_handles_v1';
 
 const GAME_DEPTH_CACHE_TTL_MS = CACHE_TTL_MS.relations || 7 * 24 * 60 * 60 * 1000;
 
@@ -460,3 +475,369 @@ export async function fetchIgdbFranchiseGames(
     fromCache: false,
   };
 }
+
+export function sanitizeSteamIdInput(raw) {
+  const digits = String(raw || '')
+    .trim()
+    .replace(/\s+/g, '');
+  return /^\d{5,20}$/.test(digits) ? digits : '';
+}
+
+export function sanitizeNumericGameIdInput(raw) {
+  const digits = String(raw || '')
+    .trim()
+    .replace(/\s+/g, '');
+  return /^\d+$/.test(digits) ? digits : '';
+}
+
+export function sanitizeRetroAchievementsUsername(raw) {
+  const clean = String(raw || '').trim();
+  return /^[a-zA-Z0-9_-]{2,40}$/.test(clean) ? clean : '';
+}
+
+function resolveHandlesStorage(customStorage = null) {
+  if (customStorage) return customStorage;
+  try {
+    if (typeof localStorage !== 'undefined') return localStorage;
+  } catch {
+    // Sem acesso a localStorage
+  }
+  return null;
+}
+
+/**
+ * Carrega apenas identificadores públicos (SteamID64 / usuário RetroAchievements) para reuso
+ * entre jogos. Nunca armazena chaves ou tokens de API.
+ */
+export function loadAchievementSyncHandles({ storage = null } = {}) {
+  const store = resolveHandlesStorage(storage);
+  if (!store || typeof store.getItem !== 'function') {
+    return { steamId: '', retroachievementsUsername: '' };
+  }
+  try {
+    const raw = store.getItem(ACHIEVEMENT_SYNC_HANDLES_STORAGE_KEY);
+    if (!raw) return { steamId: '', retroachievementsUsername: '' };
+    const parsed = JSON.parse(raw);
+    return {
+      steamId: sanitizeSteamIdInput(parsed?.steamId),
+      retroachievementsUsername: sanitizeRetroAchievementsUsername(
+        parsed?.retroachievementsUsername
+      ),
+    };
+  } catch {
+    return { steamId: '', retroachievementsUsername: '' };
+  }
+}
+
+export function saveAchievementSyncHandles(
+  { steamId, retroachievementsUsername } = {},
+  { storage = null } = {}
+) {
+  const prev = loadAchievementSyncHandles({ storage });
+  const next = {
+    steamId: steamId !== undefined ? sanitizeSteamIdInput(steamId) : prev.steamId,
+    retroachievementsUsername:
+      retroachievementsUsername !== undefined
+        ? sanitizeRetroAchievementsUsername(retroachievementsUsername)
+        : prev.retroachievementsUsername,
+  };
+  const store = resolveHandlesStorage(storage);
+  if (store && typeof store.setItem === 'function') {
+    try {
+      store.setItem(ACHIEVEMENT_SYNC_HANDLES_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Silencioso em quota
+    }
+  }
+  return next;
+}
+
+/**
+ * Sincroniza conquistas de um jogo na Steam via proxy Cloudflare `/api/steam-achievements`
+ * (`STEAM_WEB_API_KEY` apenas no servidor). Se `appId` não for informado, tenta localizar
+ * o jogo na biblioteca do usuário via `GetOwnedGames` pelo título.
+ */
+export async function syncSteamGameAchievements(
+  { steamId = '', appId = '', gameTitle = '' } = {},
+  {
+    fetchImpl = fetch,
+    nowFn = Date.now,
+    signal = undefined,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
+) {
+  if (!isProviderEnabled('steamAchievements', { storage })) {
+    return {
+      ok: false,
+      disabled: true,
+      notConfigured: false,
+      authRequired: false,
+      resolvedAppId: null,
+      gameName: '',
+      achievements: null,
+      error: 'Steam Conquistas está desativada em Status das APIs.',
+    };
+  }
+
+  const cleanSteamId = sanitizeSteamIdInput(steamId);
+  if (!cleanSteamId) {
+    return {
+      ok: false,
+      disabled: false,
+      notConfigured: false,
+      authRequired: false,
+      resolvedAppId: null,
+      gameName: '',
+      achievements: null,
+      error: 'Informe um SteamID64 numérico válido para sincronizar.',
+    };
+  }
+
+  const proxyOpts = {
+    fetchImpl,
+    nowFn,
+    signal,
+    accessToken,
+    supabaseClient,
+    storage,
+    forceProxy,
+    ...(isDev !== undefined ? { isDev } : {}),
+  };
+
+  let cleanAppId = sanitizeNumericGameIdInput(appId);
+
+  if (!cleanAppId && String(gameTitle || '').trim()) {
+    const ownedOut = await fetchSteamAchievementsViaProxy(
+      { action: 'owned_games', steamId: cleanSteamId },
+      proxyOpts
+    );
+    if (ownedOut.notConfigured || ownedOut.status === 503) {
+      return {
+        ok: false,
+        disabled: false,
+        notConfigured: true,
+        authRequired: Boolean(ownedOut.authRequired),
+        resolvedAppId: null,
+        gameName: '',
+        achievements: null,
+        error: ownedOut.authRequired
+          ? 'Entre na sua conta para sincronizar conquistas via servidor.'
+          : 'Sem chave no servidor (configure STEAM_WEB_API_KEY no Cloudflare).',
+      };
+    }
+    if (ownedOut.ok && ownedOut.data) {
+      const parsedOwned = parseSteamOwnedGamesResponse(ownedOut.data, { titleHint: gameTitle });
+      if (parsedOwned.matchedGame?.appId) {
+        cleanAppId = String(parsedOwned.matchedGame.appId);
+      }
+    }
+  }
+
+  if (!cleanAppId) {
+    return {
+      ok: false,
+      disabled: false,
+      notConfigured: false,
+      authRequired: false,
+      resolvedAppId: null,
+      gameName: '',
+      achievements: null,
+      error: 'Informe o AppID Steam do jogo (não encontrado automaticamente na biblioteca).',
+    };
+  }
+
+  const out = await fetchSteamAchievementsViaProxy(
+    { action: 'achievements', steamId: cleanSteamId, appId: cleanAppId },
+    proxyOpts
+  );
+
+  if (out.notConfigured || out.status === 503) {
+    return {
+      ok: false,
+      disabled: false,
+      notConfigured: true,
+      authRequired: Boolean(out.authRequired),
+      resolvedAppId: Number(cleanAppId),
+      gameName: '',
+      achievements: null,
+      error: out.authRequired
+        ? 'Entre na sua conta para sincronizar conquistas via servidor.'
+        : 'Sem chave no servidor (configure STEAM_WEB_API_KEY no Cloudflare).',
+    };
+  }
+
+  if (!out.ok) {
+    if (out.data?.playerstats) {
+      const parsedErr = parseSteamAchievementsResponse(out.data, {
+        nowIso: new Date(nowFn()).toISOString(),
+      });
+      return {
+        ok: false,
+        disabled: false,
+        notConfigured: false,
+        authRequired: out.status === 401,
+        resolvedAppId: Number(cleanAppId),
+        gameName: parsedErr.gameName,
+        achievements: null,
+        error: parsedErr.error,
+      };
+    }
+    return {
+      ok: false,
+      disabled: false,
+      notConfigured: false,
+      authRequired: out.status === 401,
+      resolvedAppId: Number(cleanAppId),
+      gameName: '',
+      achievements: null,
+      error:
+        out.status === 403
+          ? 'Perfil Steam privado. Torne os detalhes de jogos públicos na Steam para sincronizar.'
+          : out.status === 400
+            ? 'Jogo sem conquistas públicas na Steam ou AppID/SteamID inválido.'
+            : out.timedOut
+              ? 'Tempo limite excedido ao consultar Steam.'
+              : 'Não foi possível sincronizar conquistas Steam agora.',
+    };
+  }
+
+  const parsed = parseSteamAchievementsResponse(out.data, {
+    nowIso: new Date(nowFn()).toISOString(),
+  });
+  return {
+    ok: parsed.ok,
+    disabled: false,
+    notConfigured: false,
+    authRequired: false,
+    resolvedAppId: Number(cleanAppId),
+    gameName: parsed.gameName,
+    achievements: parsed.achievements,
+    error: parsed.error,
+  };
+}
+
+/**
+ * Sincroniza conquistas de emuladores via proxy Cloudflare `/api/retroachievements`
+ * (`RETROACHIEVEMENTS_API_KEY` apenas no servidor).
+ */
+export async function syncRetroAchievementsGame(
+  { username = '', gameId = '' } = {},
+  {
+    fetchImpl = fetch,
+    nowFn = Date.now,
+    signal = undefined,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = undefined,
+  } = {}
+) {
+  if (!isProviderEnabled('retroachievements', { storage })) {
+    return {
+      ok: false,
+      disabled: true,
+      notConfigured: false,
+      authRequired: false,
+      gameTitle: '',
+      consoleName: '',
+      achievements: null,
+      error: 'RetroAchievements está desativada em Status das APIs.',
+    };
+  }
+
+  const cleanUser = sanitizeRetroAchievementsUsername(username);
+  if (!cleanUser) {
+    return {
+      ok: false,
+      disabled: false,
+      notConfigured: false,
+      authRequired: false,
+      gameTitle: '',
+      consoleName: '',
+      achievements: null,
+      error: 'Informe um usuário válido do RetroAchievements.',
+    };
+  }
+
+  const cleanGameId = sanitizeNumericGameIdInput(gameId);
+  if (!cleanGameId) {
+    return {
+      ok: false,
+      disabled: false,
+      notConfigured: false,
+      authRequired: false,
+      gameTitle: '',
+      consoleName: '',
+      achievements: null,
+      error: 'Informe o Game ID numérico do RetroAchievements.',
+    };
+  }
+
+  const out = await fetchRetroAchievementsViaProxy(
+    { username: cleanUser, gameId: cleanGameId },
+    {
+      fetchImpl,
+      nowFn,
+      signal,
+      accessToken,
+      supabaseClient,
+      storage,
+      forceProxy,
+      ...(isDev !== undefined ? { isDev } : {}),
+    }
+  );
+
+  if (out.notConfigured || out.status === 503) {
+    return {
+      ok: false,
+      disabled: false,
+      notConfigured: true,
+      authRequired: Boolean(out.authRequired),
+      gameTitle: '',
+      consoleName: '',
+      achievements: null,
+      error: out.authRequired
+        ? 'Entre na sua conta para sincronizar conquistas via servidor.'
+        : 'Sem chave no servidor (configure RETROACHIEVEMENTS_API_KEY no Cloudflare).',
+    };
+  }
+
+  if (!out.ok) {
+    return {
+      ok: false,
+      disabled: false,
+      notConfigured: false,
+      authRequired: out.status === 401,
+      gameTitle: '',
+      consoleName: '',
+      achievements: null,
+      error:
+        out.status === 404
+          ? 'Jogo ou usuário não encontrado no RetroAchievements.'
+          : out.timedOut
+            ? 'Tempo limite excedido ao consultar RetroAchievements.'
+            : 'Não foi possível sincronizar conquistas do RetroAchievements agora.',
+    };
+  }
+
+  const parsed = parseRetroAchievementsResponse(out.data, {
+    nowIso: new Date(nowFn()).toISOString(),
+  });
+  return {
+    ok: parsed.ok,
+    disabled: false,
+    notConfigured: false,
+    authRequired: false,
+    gameTitle: parsed.gameTitle,
+    consoleName: parsed.consoleName,
+    achievements: parsed.achievements,
+    error: parsed.error,
+  };
+}
+
+export { buildAchievementsSyncPatch };

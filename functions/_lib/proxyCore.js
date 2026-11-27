@@ -16,11 +16,17 @@ export const RAWG_UPSTREAM_BASE = 'https://api.rawg.io/api';
 export const IGDB_UPSTREAM_BASE = 'https://api.igdb.com/v4';
 export const TWITCH_OAUTH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token';
 export const STEAM_STORE_UPSTREAM_BASE = 'https://store.steampowered.com/api';
+export const STEAM_WEB_API_UPSTREAM_BASE = 'https://api.steampowered.com';
+export const RETROACHIEVEMENTS_UPSTREAM_BASE = 'https://retroachievements.org/API';
 export const BRASILAPI_ISBN_UPSTREAM_BASE = 'https://brasilapi.com.br/api/isbn/v1';
 export const GOOGLE_BOOKS_UPSTREAM_BASE = 'https://www.googleapis.com/books/v1/volumes';
 
 export const SEARCH_CACHE_TTL_SECONDS = 600; // 10 minutos
 export const DETAIL_CACHE_TTL_SECONDS = 86400; // 24 horas
+export const ACHIEVEMENTS_CACHE_TTL_SECONDS = 300; // 5 minutos
+
+const STEAM_ID_RE = /^\d{5,20}$/;
+const RETROACHIEVEMENTS_USER_RE = /^[a-zA-Z0-9_-]{2,40}$/;
 
 const SECRET_PARAM_RE = /^(api_?key|apikey|access_token|token|key|sk|api_sig|client_secret)$/i;
 const SAFE_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
@@ -125,6 +131,8 @@ export function readServerEnvConfig(env = {}) {
   const twitchClientId = String(env?.TWITCH_CLIENT_ID || '').trim();
   const twitchClientSecret = String(env?.TWITCH_CLIENT_SECRET || '').trim();
   const googleBooksApiKey = String(env?.GOOGLE_BOOKS_API_KEY || '').trim();
+  const steamWebApiKey = String(env?.STEAM_WEB_API_KEY || '').trim();
+  const retroachievementsApiKey = String(env?.RETROACHIEVEMENTS_API_KEY || '').trim();
 
   return {
     supabaseUrl,
@@ -136,6 +144,8 @@ export function readServerEnvConfig(env = {}) {
     twitchClientId,
     twitchClientSecret,
     googleBooksApiKey,
+    steamWebApiKey,
+    retroachievementsApiKey,
     providers: {
       tmdb: { configured: Boolean(tmdbApiKey) },
       omdb: { configured: Boolean(omdbApiKey) },
@@ -143,6 +153,8 @@ export function readServerEnvConfig(env = {}) {
       rawg: { configured: Boolean(rawgApiKey) },
       igdb: { configured: Boolean(twitchClientId && twitchClientSecret) },
       googleBooks: { configured: Boolean(googleBooksApiKey) },
+      steamAchievements: { configured: Boolean(steamWebApiKey) },
+      retroachievements: { configured: Boolean(retroachievementsApiKey) },
     },
   };
 }
@@ -175,7 +187,7 @@ export function isAllowedSameOriginRequest(request) {
 export function maskSensitiveValues(rawText, secrets = []) {
   let out = String(rawText ?? '');
   if (!out) return out;
-  out = out.replace(/((?:api_?key|apikey|access_token|token)=)([^&\s'"]+)/gi, '$1****');
+  out = out.replace(/((?:api_?key|apikey|access_token|token|key)=)([^&\s'"]+)/gi, '$1****');
   out = out.replace(/(Bearer\s+)([A-Za-z0-9._-]+)/gi, '$1****');
   for (const secret of Array.isArray(secrets) ? secrets : []) {
     const clean = String(secret || '').trim();
@@ -622,6 +634,135 @@ export function buildSanitizedGoogleBooksUrls(incomingSearchParams, googleBooksA
     cacheUrl,
     upstreamUrl,
     ttlSeconds: SEARCH_CACHE_TTL_SECONDS,
+  };
+}
+
+export function buildSanitizedSteamAchievementsUrls(incomingSearchParams, steamWebApiKey) {
+  const rawAction = String(incomingSearchParams?.get?.('action') || '')
+    .trim()
+    .toLowerCase();
+  const steamId = String(
+    incomingSearchParams?.get?.('steamId') || incomingSearchParams?.get?.('steamid') || ''
+  ).trim();
+  const appId = String(
+    incomingSearchParams?.get?.('appId') || incomingSearchParams?.get?.('appid') || ''
+  ).trim();
+  const langRaw = String(incomingSearchParams?.get?.('l') || 'brazilian')
+    .trim()
+    .toLowerCase();
+  const lang = /^[a-z-]{2,20}$/.test(langRaw) ? langRaw : 'brazilian';
+
+  if (!steamId || !STEAM_ID_RE.test(steamId)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Informe um steamId numérico válido (SteamID64).',
+    };
+  }
+
+  const isOwnedGames =
+    rawAction === 'owned_games' ||
+    rawAction === 'owned' ||
+    rawAction === 'getownedgames' ||
+    (!rawAction && !appId);
+
+  if (isOwnedGames) {
+    const sanitized = new URLSearchParams();
+    sanitized.set('format', 'json');
+    sanitized.set('include_appinfo', '1');
+    sanitized.set('include_played_free_games', '1');
+    sanitized.set('steamid', steamId);
+
+    const cacheUrl = `${STEAM_WEB_API_UPSTREAM_BASE}/IPlayerService/GetOwnedGames/v0001/?${sanitized.toString()}`;
+    const upstreamParams = new URLSearchParams(sanitized);
+    upstreamParams.set('key', steamWebApiKey);
+    const upstreamUrl = `${STEAM_WEB_API_UPSTREAM_BASE}/IPlayerService/GetOwnedGames/v0001/?${upstreamParams.toString()}`;
+
+    return {
+      ok: true,
+      action: 'owned_games',
+      cacheUrl,
+      upstreamUrl,
+      ttlSeconds: ACHIEVEMENTS_CACHE_TTL_SECONDS,
+    };
+  }
+
+  if (rawAction && rawAction !== 'achievements' && rawAction !== 'getplayerachievements') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Ação Steam não permitida pelo proxy (use achievements ou owned_games).',
+    };
+  }
+
+  if (!appId || !NUMERIC_ID_RE.test(appId)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Informe um appId numérico válido para consultar conquistas Steam.',
+    };
+  }
+
+  const sanitized = new URLSearchParams();
+  sanitized.set('appid', appId);
+  sanitized.set('l', lang);
+  sanitized.set('steamid', steamId);
+
+  const cacheUrl = `${STEAM_WEB_API_UPSTREAM_BASE}/ISteamUserStats/GetPlayerAchievements/v0001/?${sanitized.toString()}`;
+  const upstreamParams = new URLSearchParams(sanitized);
+  upstreamParams.set('key', steamWebApiKey);
+  const upstreamUrl = `${STEAM_WEB_API_UPSTREAM_BASE}/ISteamUserStats/GetPlayerAchievements/v0001/?${upstreamParams.toString()}`;
+
+  return {
+    ok: true,
+    action: 'achievements',
+    cacheUrl,
+    upstreamUrl,
+    ttlSeconds: ACHIEVEMENTS_CACHE_TTL_SECONDS,
+  };
+}
+
+export function buildSanitizedRetroAchievementsUrls(
+  incomingSearchParams,
+  retroachievementsApiKey
+) {
+  const username = String(
+    incomingSearchParams?.get?.('username') || incomingSearchParams?.get?.('u') || ''
+  ).trim();
+  const gameId = String(
+    incomingSearchParams?.get?.('gameId') || incomingSearchParams?.get?.('g') || ''
+  ).trim();
+
+  if (!username || !RETROACHIEVEMENTS_USER_RE.test(username)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Informe um username válido do RetroAchievements (letras, números, _ ou -).',
+    };
+  }
+
+  if (!gameId || !NUMERIC_ID_RE.test(gameId)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Informe um gameId numérico válido do RetroAchievements.',
+    };
+  }
+
+  const sanitized = new URLSearchParams();
+  sanitized.set('g', gameId);
+  sanitized.set('u', username);
+
+  const cacheUrl = `${RETROACHIEVEMENTS_UPSTREAM_BASE}/API_GetGameInfoAndUserProgress.php?${sanitized.toString()}`;
+  const upstreamParams = new URLSearchParams(sanitized);
+  upstreamParams.set('y', retroachievementsApiKey);
+  const upstreamUrl = `${RETROACHIEVEMENTS_UPSTREAM_BASE}/API_GetGameInfoAndUserProgress.php?${upstreamParams.toString()}`;
+
+  return {
+    ok: true,
+    cacheUrl,
+    upstreamUrl,
+    ttlSeconds: ACHIEVEMENTS_CACHE_TTL_SECONDS,
   };
 }
 

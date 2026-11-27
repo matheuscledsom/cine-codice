@@ -99,6 +99,8 @@ export function ApiStatusPanel({ authenticated = false }) {
       rawg: { configured: false },
       igdb: { configured: false },
       googleBooks: { configured: false },
+      steamAchievements: { configured: false },
+      retroachievements: { configured: false },
     },
   });
   const [providerPrefs, setProviderPrefs] = useState(() => loadProviderPreferences());
@@ -138,6 +140,9 @@ export function ApiStatusPanel({ authenticated = false }) {
         lastfm: { configured: Boolean(res.providers?.lastfm?.configured) },
         rawg: { configured: Boolean(res.providers?.rawg?.configured) },
         igdb: { configured: Boolean(res.providers?.igdb?.configured) },
+        googleBooks: { configured: Boolean(res.providers?.googleBooks?.configured) },
+        steamAchievements: { configured: Boolean(res.providers?.steamAchievements?.configured) },
+        retroachievements: { configured: Boolean(res.providers?.retroachievements?.configured) },
       },
     });
   }, []);
@@ -164,7 +169,10 @@ export function ApiStatusPanel({ authenticated = false }) {
         sourceId === 'omdb' ||
         sourceId === 'lastfm' ||
         sourceId === 'rawg' ||
-        sourceId === 'igdb'
+        sourceId === 'igdb' ||
+        sourceId === 'googleBooks' ||
+        sourceId === 'steamAchievements' ||
+        sourceId === 'retroachievements'
       ) {
         await refreshServerStatus();
       }

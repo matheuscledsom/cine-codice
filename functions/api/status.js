@@ -27,6 +27,8 @@ export async function handleStatusRequest(context, { fetchImpl = fetch } = {}) {
         rawg: { configured: Boolean(cfg.providers.rawg.configured) },
         igdb: { configured: Boolean(cfg.providers.igdb.configured) },
         googleBooks: { configured: Boolean(cfg.providers.googleBooks.configured) },
+        steamAchievements: { configured: Boolean(cfg.providers.steamAchievements.configured) },
+        retroachievements: { configured: Boolean(cfg.providers.retroachievements.configured) },
       },
     },
     200
