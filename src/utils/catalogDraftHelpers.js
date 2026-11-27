@@ -15,14 +15,83 @@ import {
   isEpisodicWork,
 } from './backlogHelpers.js';
 
+export const QUICK_GAME_PLATFORM_OPTIONS = Object.freeze([
+  'PS2',
+  'PS4',
+  'PC',
+  'Switch',
+  'Emulador',
+]);
+
+export const QUICK_GAME_EDITION_OPTIONS = Object.freeze([
+  'Jogo',
+  'Remake',
+  'Remaster',
+  'Port',
+  'DLC',
+]);
+
+export const QUICK_GAME_COMPLETION_OPTIONS = Object.freeze([
+  Object.freeze({ value: 'História Principal', label: 'História Principal' }),
+  Object.freeze({ value: 'Zerado', label: 'Zerado' }),
+  Object.freeze({ value: '100% / Platina', label: '100% / Platina' }),
+  Object.freeze({ value: 'Multiplayer / Ranked', label: 'Multiplayer' }),
+]);
+
+export const QUICK_SYNOPSIS_EXPAND_THRESHOLD = 110;
+
 /**
- * Campos enxutos da folha rápida v2.4.0 (Fase 4.1):
+ * Monta os chips compactos de Plataforma para a folha rápida de Games:
+ * destaca a(s) plataforma(s) original(is) primeiro e inclui opções rápidas
+ * (PS2, PS4, PC, Switch, Emulador) sem duplicatas.
+ */
+export function buildQuickGamePlatformOptions(work = {}) {
+  const originals = Array.isArray(work?.originalPlatforms)
+    ? work.originalPlatforms.map((p) => String(p || '').trim()).filter(Boolean)
+    : [];
+  const apiPlatforms = Array.isArray(work?.platforms)
+    ? work.platforms.map((p) => String(p || '').trim()).filter(Boolean)
+    : [];
+  const currentPlatform = String(work?.platform || '').trim();
+
+  const ordered = [];
+  const seen = new Set();
+  const pushUnique = (plat) => {
+    const clean = String(plat || '').trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    ordered.push({
+      label: clean,
+      isOriginal: originals.some((orig) => orig.toLowerCase() === key),
+    });
+  };
+
+  originals.forEach(pushUnique);
+  if (currentPlatform) pushUnique(currentPlatform);
+  apiPlatforms.slice(0, 4).forEach(pushUnique);
+  QUICK_GAME_PLATFORM_OPTIONS.forEach(pushUnique);
+
+  return ordered;
+}
+
+/**
+ * Indica quando a sinopse na folha rápida excede ~2 linhas e deve exibir o botão "Ler mais".
+ */
+export function shouldShowSynopsisExpandToggle(synopsis = '') {
+  return String(synopsis || '').trim().length > QUICK_SYNOPSIS_EXPAND_THRESHOLD;
+}
+
+/**
+ * Campos enxutos da folha rápida (v2.4.0 Fase 4.1 + v2.7.0 Fase 1):
  * - Nenhuma opção pré-selecionada quando status está vazio.
  * - Fila ("Quero...") não pergunta nada.
- * - Games em andamento pergunta "Onde você está jogando?" (plataformas da API + outra).
+ * - Games ao selecionar Jogando ou Zerado ativa `showQuickGameMetaChips`
+ *   (chips compactos de Plataforma + Edição + Tipo de Conclusão), preservando
+ *   as flags legadas (`askGamePlatform`, `askGameEdition`, `askGameCompletionType`).
  * - Leitura ("Lendo") pergunta página atual.
  * - Concluído/Lido/Zerado/Ouvido exibe seletor 5 estrelas + botão discreto "Avaliar por 5 critérios".
- * - Formato, dublagem, edição e tipo de conclusão ficam recolhidos na ficha completa.
  */
 export function getQuickSheetLeanFields(domain = 'cinema', status = '') {
   const cleanDomain = normalizeDomainId(domain);
@@ -33,6 +102,7 @@ export function getQuickSheetLeanFields(domain = 'cinema', status = '') {
       askGamePlatform: false,
       askGameEdition: false,
       askGameCompletionType: false,
+      showQuickGameMetaChips: false,
       askCurrentPage: false,
       askStarRating: false,
       showConfirmFullPages: false,
@@ -47,6 +117,7 @@ export function getQuickSheetLeanFields(domain = 'cinema', status = '') {
     askGamePlatform: cleanDomain === 'games' && isInProgress,
     askGameEdition: cleanDomain === 'games' && isInProgress,
     askGameCompletionType: cleanDomain === 'games' && isCompleted,
+    showQuickGameMetaChips: cleanDomain === 'games' && (isInProgress || isCompleted),
     askCurrentPage: cleanDomain === 'reading' && isInProgress,
     askStarRating: isCompleted,
     showConfirmFullPages: cleanDomain === 'reading' && isCompleted,
