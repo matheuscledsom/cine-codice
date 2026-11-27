@@ -72,9 +72,12 @@ import {
   saveSupabaseConfig,
   SUPABASE_AUTH_STORAGE_KEY,
 } from '../src/services/supabaseClient.js';
+import { generateEditorialPosterSvg } from '../src/graphics/posterGenerator.js';
 import {
   APP_BUILD_VERSION as VITE_APP_BUILD_VERSION,
   buildVersionManifestInfo,
+  PWA_EXTERNAL_COVER_URL_PATTERN,
+  PWA_SUPABASE_COVER_URL_PATTERN,
 } from '../vite.config.js';
 
 const ROOT_DIR = process.cwd();
@@ -1292,5 +1295,137 @@ describe('OMNIPRISM v2.7.1 (Fase 2) — 6. Saneamento de constraints, UUID (incl
     assert.equal(mergedFightClub?.cloudId, fightClubUuid);
     assert.equal(mergedFightClub?.title, 'Clube da Luta');
     assert.equal(mergedFightClub?.rating, 98);
+  });
+});
+
+describe('OMNIPRISM v2.7.1 — Hotfix de capas no Service Worker (CSP connect-src + Workbox + Fallback)', () => {
+  it('permite TODOS os hosts de capa interceptados pelo Workbox em connect-src e img-src de public/_headers', () => {
+    const headers = readText('public/_headers');
+    const cspLine = headers.match(/Content-Security-Policy:\s*([^\r\n]+)/i)?.[1] || '';
+    const directives = cspLine.split(';').map((d) => d.trim());
+    const connectSrc = directives.find((d) => /^connect-src\b/i.test(d)) || '';
+    const imgSrc = directives.find((d) => /^img-src\b/i.test(d)) || '';
+
+    const coverTestUrls = [
+      { host: 'https://image.tmdb.org', url: 'https://image.tmdb.org/t/p/w500/p.jpg' },
+      { host: 'https://s4.anilist.co', url: 'https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/a.jpg' },
+      { host: 'https://img.anili.st', url: 'https://img.anili.st/media/1' },
+      { host: 'https://cdn.myanimelist.net', url: 'https://cdn.myanimelist.net/images/anime/1.jpg' },
+      { host: 'https://static.tvmaze.com', url: 'https://static.tvmaze.com/uploads/images/medium_portrait/1.jpg' },
+      { host: 'https://m.media-amazon.com', url: 'https://m.media-amazon.com/images/M/a.jpg' },
+      { host: 'https://img.omdbapi.com', url: 'https://img.omdbapi.com/?i=tt0137523' },
+      { host: 'https://commons.wikimedia.org', url: 'https://commons.wikimedia.org/wiki/Special:FilePath/test.jpg' },
+      { host: 'https://upload.wikimedia.org', url: 'https://upload.wikimedia.org/wikipedia/commons/a/test.jpg' },
+      { host: 'https://books.google.com', url: 'https://books.google.com/books/content?id=1' },
+      { host: 'https://books.googleusercontent.com', url: 'https://books.googleusercontent.com/books/content?id=1' },
+      { host: 'https://covers.openlibrary.org', url: 'https://covers.openlibrary.org/b/id/123-L.jpg' },
+      { host: 'https://images.igdb.com', url: 'https://images.igdb.com/igdb/image/upload/t_cover_big/co1rba.jpg' },
+      { host: 'https://media.rawg.io', url: 'https://media.rawg.io/media/games/bloodborne.jpg' },
+      { host: 'https://shared.fastly.steamstatic.com', url: 'https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/570940/library_600x900.jpg' },
+      { host: 'https://cdn.akamai.steamstatic.com', url: 'https://cdn.akamai.steamstatic.com/steam/apps/570940/capsule_231x87.jpg' },
+      { host: 'https://cdn.cloudflare.steamstatic.com', url: 'https://cdn.cloudflare.steamstatic.com/steam/apps/570940/header.jpg' },
+      { host: 'https://coverartarchive.org', url: 'https://coverartarchive.org/release-group/abc/front-500' },
+      { host: 'https://*.archive.org', url: 'https://ia801400.us.archive.org/1/items/mbid/thumb.jpg' },
+      { host: 'https://*.mzstatic.com', url: 'https://is1-ssl.mzstatic.com/image/thumb/Music/600x600bb.jpg' },
+    ];
+
+    for (const entry of coverTestUrls) {
+      assert.equal(
+        PWA_EXTERNAL_COVER_URL_PATTERN.test(entry.url),
+        true,
+        `Workbox deve reconhecer URL de capa: ${entry.url}`
+      );
+      assert.ok(
+        imgSrc.includes(entry.host),
+        `Host ausente em img-src de public/_headers: ${entry.host}`
+      );
+      assert.ok(
+        connectSrc.includes(entry.host),
+        `Host interceptado pelo Service Worker ausente em connect-src (bloqueia fetch do Workbox): ${entry.host}`
+      );
+    }
+  });
+
+  it('nunca intercepta /rest/v1 ou /auth/v1 do Supabase no cache CacheFirst de capas do Workbox', () => {
+    const supabaseRestUrl =
+      'https://ydotilbburpwvblrbrdt.supabase.co/rest/v1/catalog_works?select=*&user_id=eq.abc';
+    const supabaseAuthUrl = 'https://ydotilbburpwvblrbrdt.supabase.co/auth/v1/user';
+    const supabaseCoverUrl =
+      'https://ydotilbburpwvblrbrdt.supabase.co/storage/v1/object/public/covers/u1/w1.webp';
+
+    assert.equal(PWA_EXTERNAL_COVER_URL_PATTERN.test(supabaseRestUrl), false);
+    assert.equal(PWA_EXTERNAL_COVER_URL_PATTERN.test(supabaseAuthUrl), false);
+    assert.equal(PWA_EXTERNAL_COVER_URL_PATTERN.test(supabaseCoverUrl), false);
+
+    assert.equal(
+      PWA_SUPABASE_COVER_URL_PATTERN.test(supabaseRestUrl),
+      false,
+      'CacheFirst de capas NUNCA pode cachear SELECT /rest/v1/catalog_works'
+    );
+    assert.equal(
+      PWA_SUPABASE_COVER_URL_PATTERN.test(supabaseAuthUrl),
+      false,
+      'CacheFirst de capas NUNCA pode cachear /auth/v1/user'
+    );
+    assert.equal(
+      PWA_SUPABASE_COVER_URL_PATTERN.test(supabaseCoverUrl),
+      true,
+      'CacheFirst deve cachear apenas objetos públicos de /storage/v1/object/public/covers/'
+    );
+  });
+
+  it('preserva URLs de capa protocol-relative (//images.igdb.com/...) e restaura coverSources no sync', () => {
+    const row = mapLocalWorkToCatalogRow(
+      {
+        id: 'igdb-7334',
+        domain: 'games',
+        workType: 'game',
+        title: 'Bloodborne',
+        coverUrl: '//images.igdb.com/igdb/image/upload/t_cover_big/co1rba.jpg',
+        coverSources: ['//images.igdb.com/igdb/image/upload/t_cover_big/co1rba.jpg'],
+        updatedAt: '2026-11-27T01:00:00.000Z',
+      },
+      'user-cover-1'
+    );
+
+    assert.equal(row.cover_url, 'https://images.igdb.com/igdb/image/upload/t_cover_big/co1rba.jpg');
+    assert.deepEqual(row.progress_data.coverSources, [
+      'https://images.igdb.com/igdb/image/upload/t_cover_big/co1rba.jpg',
+    ]);
+
+    const restored = mapCatalogRowToLocalWork({
+      ...row,
+      progress_data: { ...row.progress_data, coverSources: [] },
+    });
+    assert.equal(
+      restored.coverUrl,
+      'https://images.igdb.com/igdb/image/upload/t_cover_big/co1rba.jpg'
+    );
+    assert.deepEqual(restored.coverSources, [
+      'https://images.igdb.com/igdb/image/upload/t_cover_big/co1rba.jpg',
+    ]);
+  });
+
+  it('exibe rótulo do domínio correto no cartaz editorial gerado (JOGO, LIVRO, ÁLBUM, FILME)', () => {
+    assert.match(
+      generateEditorialPosterSvg({ title: 'Bloodborne', workType: 'game', releaseYear: 2015 }),
+      /JOGO · 2015/
+    );
+    assert.match(
+      generateEditorialPosterSvg({ title: 'Duna', workType: 'book', releaseYear: 1965 }),
+      /LIVRO · 1965/
+    );
+    assert.match(
+      generateEditorialPosterSvg({ title: 'Berserk', workType: 'manga' }),
+      /MANGÁ/
+    );
+    assert.match(
+      generateEditorialPosterSvg({ title: 'Dark Side of the Moon', workType: 'album', releaseYear: 1973 }),
+      /ÁLBUM · 1973/
+    );
+    assert.match(
+      generateEditorialPosterSvg({ title: 'Solaris', workType: 'movie', releaseYear: 1972 }),
+      /FILME · 1972/
+    );
   });
 });

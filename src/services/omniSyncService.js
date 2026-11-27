@@ -170,6 +170,9 @@ function normalizeHttpUrl(raw) {
   const clean = String(raw || '').trim();
   if (!clean) return null;
   if (/^data:/i.test(clean)) return null;
+  if (clean.startsWith('//')) {
+    return `https:${clean}`;
+  }
   if (/^https?:\/\//i.test(clean)) {
     return clean.replace(/^http:\/\//i, 'https://');
   }
@@ -831,11 +834,12 @@ export function mapCatalogRowToLocalWork(row = {}) {
         : null,
     coverUrl: row.cover_url || null,
     backdropUrl: row.backdrop_url || null,
-    coverSources: Array.isArray(pd.coverSources)
-      ? pd.coverSources
-      : row.cover_url
-        ? [row.cover_url]
-        : [],
+    coverSources:
+      Array.isArray(pd.coverSources) && pd.coverSources.length > 0
+        ? pd.coverSources
+        : row.cover_url
+          ? [row.cover_url]
+          : [],
     synopsis,
     overview: synopsis,
     genres: Array.isArray(row.genres) ? row.genres : [],
