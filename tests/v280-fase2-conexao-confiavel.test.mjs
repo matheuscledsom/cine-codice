@@ -1170,4 +1170,127 @@ describe('OMNIPRISM v2.7.1 (Fase 2) — 6. Saneamento de constraints, UUID (incl
     assert.match(diagText, /Obra Rejeitada Pelo Banco/);
     assert.match(diagText, /nota fora da faixa/i);
   });
+
+  it('round-trip de IDs não-UUID (4 domínios + manual): sobe com UUID determinístico, volta no pull e é reconhecida como a MESMA obra sem duplicar', async () => {
+    clearRelationalMemoryForTests();
+    resetSyncRuntimeFlagsForTests();
+
+    const remoteDb = new Map();
+    const pcStorage = createMemoryStorage();
+    const client = createFullSupabaseMock({ remoteDb, supportsDeletedAt: true });
+
+    const localNonUuidWorks = [
+      {
+        id: 'tmdb-movie-550',
+        title: 'Fight Club',
+        domain: 'cinema',
+        workType: 'movie',
+        status: 'completed',
+        rating: 92,
+        updatedAt: '2026-11-26T18:00:00.000Z',
+      },
+      {
+        id: 'openlibrary-OL99W',
+        title: 'O Processo',
+        domain: 'reading',
+        workType: 'book',
+        status: 'playing',
+        pagesRead: 80,
+        totalPages: 240,
+        updatedAt: '2026-11-26T18:01:00.000Z',
+      },
+      {
+        id: 'igdb-1942',
+        title: 'The Witcher 3',
+        domain: 'games',
+        workType: 'game',
+        status: 'completed',
+        rating: 96,
+        updatedAt: '2026-11-26T18:02:00.000Z',
+      },
+      {
+        id: 'itunes-album-1440857781',
+        title: 'Powerslave',
+        domain: 'music',
+        workType: 'album',
+        status: 'completed',
+        rating: 95,
+        updatedAt: '2026-11-26T18:03:00.000Z',
+      },
+      {
+        id: 'manual-legacy-42',
+        title: 'Caderno Antigo Manual',
+        domain: 'reading',
+        workType: 'book',
+        isManual: true,
+        ids: buildManualExternalIds('manual-legacy-42'),
+        status: 'queued',
+        updatedAt: '2026-11-26T18:04:00.000Z',
+      },
+    ];
+
+    // Confirma que nenhum ID local inicial é UUID
+    for (const w of localNonUuidWorks) {
+      assert.equal(isValidUuid(w.id), false);
+    }
+
+    // Sync 1: push inicial converte cada ID não-UUID em UUID determinístico válido
+    const sync1 = await syncCatalogWithSupabase({
+      client,
+      localWorksOverride: localNonUuidWorks,
+      storage: pcStorage,
+    });
+    assert.equal(sync1.ok, true);
+    assert.equal(sync1.pushedCount, 5);
+    assert.equal(sync1.works.length, 5);
+    assert.equal(remoteDb.size, 5);
+
+    for (const w of localNonUuidWorks) {
+      const expectedUuid = toCloudWorkId(w.id);
+      assert.equal(isValidUuid(expectedUuid), true);
+      assert.equal(remoteDb.has(expectedUuid), true, `UUID determinístico de ${w.id} deve estar no remoto`);
+      assert.equal(remoteDb.get(expectedUuid).id, expectedUuid);
+    }
+
+    // Sync 2: novo pull/sync imediato passando os mesmos itens locais originais (sem cloudId) -> ZERO duplicação e ZERO re-push
+    const sync2 = await syncCatalogWithSupabase({
+      client,
+      localWorksOverride: localNonUuidWorks,
+      storage: pcStorage,
+    });
+    assert.equal(sync2.ok, true);
+    assert.equal(sync2.works.length, 5, 'pull subsequente NÃO pode duplicar obras com ID não-UUID');
+    assert.equal(sync2.pushedCount, 0, 'não deve reenviar obras já sincronizadas');
+    assert.equal(remoteDb.size, 5);
+
+    // Sync 3: outro aparelho renomeia "Fight Club" -> "Clube da Luta" (mais novo) E simula linha remota sem progress_data.localId
+    const fightClubUuid = toCloudWorkId('tmdb-movie-550');
+    const existingRemoteRow = remoteDb.get(fightClubUuid);
+    const updatedProgressData = { ...(existingRemoteRow.progress_data || {}) };
+    delete updatedProgressData.localId;
+    remoteDb.set(fightClubUuid, {
+      ...existingRemoteRow,
+      title: 'Clube da Luta',
+      rating: 98,
+      progress_data: updatedProgressData,
+      updated_at: '2026-11-26T20:00:00.000Z',
+    });
+
+    const sync3 = await syncCatalogWithSupabase({
+      client,
+      localWorksOverride: localNonUuidWorks,
+      storage: pcStorage,
+    });
+    assert.equal(sync3.ok, true);
+    assert.equal(sync3.works.length, 5, 'mesmo com título alterado e sem localId remoto, deve reconhecer como a MESMA obra sem duplicar');
+    assert.equal(sync3.pushedCount, 0);
+    assert.equal(remoteDb.size, 5);
+    const mergedFightClub = sync3.works.find(
+      (w) => w.id === 'tmdb-movie-550' || w.cloudId === fightClubUuid
+    );
+    assert.equal(mergedFightClub?.id, 'tmdb-movie-550', 'preserva o ID local original');
+    assert.equal(mergedFightClub?.cloudId, fightClubUuid);
+    assert.equal(mergedFightClub?.title, 'Clube da Luta');
+    assert.equal(mergedFightClub?.rating, 98);
+  });
 });
