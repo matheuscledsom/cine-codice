@@ -26,6 +26,7 @@ import {
   Star,
   Tag,
   Trash2,
+  Trophy,
   Tv,
   UserCheck,
   Users,
@@ -63,10 +64,14 @@ import { formatNextAiringBadge } from '../lib/episodeStats';
 import { extractWorkEntities } from '../lib/entityHelpers';
 import { ALL_FRANCHISE_TIER_OPTIONS } from '../lib/franchiseTier';
 import {
+  ACHIEVEMENT_SOURCE_OPTIONS,
   GAME_ATTRIBUTION_LINKS,
+  buildAchievementsSyncPatch,
+  formatAchievementsSourceLabel,
   formatGameAchievementsSummary,
   formatGameCampaignTime,
   formatGameCompletion100Time,
+  normalizeAchievementSource,
   normalizeAchievementsModel,
   suggestGameFranchiseLink,
 } from '../lib/gameDepth';
@@ -82,7 +87,13 @@ import {
   searchCinemaMedia,
 } from '../services/cinemaApi';
 import { findFranchiseForItem } from '../services/franchiseEngine';
-import { fetchGameDepthWithFallback } from '../services/gameDepthService';
+import {
+  fetchGameDepthWithFallback,
+  loadAchievementSyncHandles,
+  saveAchievementSyncHandles,
+  syncRetroAchievementsGame,
+  syncSteamGameAchievements,
+} from '../services/gameDepthService';
 import { fetchLastfmSubgenres } from '../services/musicDepthService';
 import {
   fetchBookByIsbn,
@@ -213,6 +224,24 @@ export function WorkDetailPage({
   const [linkSearchError, setLinkSearchError] = useState('');
   const [coverUploadBusy, setCoverUploadBusy] = useState(false);
   const [coverUploadError, setCoverUploadError] = useState('');
+  const [achSourceTab, setAchSourceTab] = useState(() =>
+    normalizeAchievementSource(item?.achievements?.source)
+  );
+  const [achSyncLoading, setAchSyncLoading] = useState(false);
+  const [achSyncFeedback, setAchSyncFeedback] = useState({ type: 'idle', message: '' });
+  const [achievementsModalOpen, setAchievementsModalOpen] = useState(false);
+  const [achManualUnlockedDraft, setAchManualUnlockedDraft] = useState('');
+  const [achManualTotalDraft, setAchManualTotalDraft] = useState('');
+  const [steamIdDraft, setSteamIdDraft] = useState(() => loadAchievementSyncHandles().steamId);
+  const [steamAppIdDraft, setSteamAppIdDraft] = useState(() =>
+    item?.ids?.steam ? String(item.ids.steam) : ''
+  );
+  const [raUsernameDraft, setRaUsernameDraft] = useState(
+    () => loadAchievementSyncHandles().retroachievementsUsername
+  );
+  const [raGameIdDraft, setRaGameIdDraft] = useState(() =>
+    item?.ids?.retroachievements ? String(item.ids.retroachievements) : ''
+  );
   const [ratingsMeta, setRatingsMeta] = useState({
     failedSources: [],
     omdbMissingKey: false,
@@ -411,6 +440,18 @@ export function WorkDetailPage({
     setPendingPagesFillPrompt(false);
     setTop4PickerOpen(false);
     setTagInput('');
+    setAchievementsModalOpen(false);
+    setAchSyncLoading(false);
+    setAchSyncFeedback({ type: 'idle', message: '' });
+    const savedHandles = loadAchievementSyncHandles();
+    setSteamIdDraft(savedHandles.steamId);
+    setRaUsernameDraft(savedHandles.retroachievementsUsername);
+    const currentForAch = latestItemRef.current;
+    setAchSourceTab(normalizeAchievementSource(currentForAch?.achievements?.source));
+    setSteamAppIdDraft(currentForAch?.ids?.steam ? String(currentForAch.ids.steam) : '');
+    setRaGameIdDraft(
+      currentForAch?.ids?.retroachievements ? String(currentForAch.ids.retroachievements) : ''
+    );
     setRatingsMeta({
       failedSources: [],
       omdbMissingKey: false,
@@ -464,6 +505,8 @@ export function WorkDetailPage({
       if (e.key === 'Escape') {
         if (activeEntity) {
           setActiveEntity(null);
+        } else if (achievementsModalOpen) {
+          setAchievementsModalOpen(false);
         } else if (isEditDrawerOpen) {
           setIsEditDrawerOpen(false);
         } else {
@@ -473,7 +516,149 @@ export function WorkDetailPage({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [item, activeEntity, isEditDrawerOpen, onClose]);
+  }, [item, activeEntity, achievementsModalOpen, isEditDrawerOpen, onClose]);
+
+  const openAchievementsSheet = (mode = achSourceTab) => {
+    const cleanMode = normalizeAchievementSource(mode);
+    setAchSourceTab(cleanMode);
+    setAchSyncFeedback({ type: 'idle', message: '' });
+    setAchManualUnlockedDraft(
+      item?.achievements?.unlocked !== null && item?.achievements?.unlocked !== undefined
+        ? String(item.achievements.unlocked)
+        : ''
+    );
+    setAchManualTotalDraft(
+      item?.achievements?.total !== null && item?.achievements?.total !== undefined
+        ? String(item.achievements.total)
+        : ''
+    );
+    const handles = loadAchievementSyncHandles();
+    if (!steamIdDraft && handles.steamId) setSteamIdDraft(handles.steamId);
+    if (!raUsernameDraft && handles.retroachievementsUsername) {
+      setRaUsernameDraft(handles.retroachievementsUsername);
+    }
+    setSteamAppIdDraft(item?.ids?.steam ? String(item.ids.steam) : steamAppIdDraft || '');
+    setRaGameIdDraft(
+      item?.ids?.retroachievements ? String(item.ids.retroachievements) : raGameIdDraft || ''
+    );
+    setAchievementsModalOpen(true);
+  };
+
+  const handleSyncSteamAchievements = async ({
+    overrideSteamId = steamIdDraft,
+    overrideAppId = steamAppIdDraft || (item?.ids?.steam ? String(item.ids.steam) : ''),
+  } = {}) => {
+    if (!item?.id || achSyncLoading) return;
+    const cleanSteamId = String(overrideSteamId || '').trim();
+    const cleanAppId = String(overrideAppId || '').trim();
+    if (!cleanSteamId) {
+      openAchievementsSheet('steam');
+      return;
+    }
+
+    setAchSyncLoading(true);
+    setAchSyncFeedback({ type: 'info', message: 'Sincronizando conquistas na Steam...' });
+    try {
+      saveAchievementSyncHandles({ steamId: cleanSteamId });
+      const res = await syncSteamGameAchievements({
+        steamId: cleanSteamId,
+        appId: cleanAppId,
+        gameTitle: item.title || '',
+      });
+      if (!res.ok || !res.achievements) {
+        setAchSyncFeedback({
+          type: 'error',
+          message: res.error || 'Não foi possível sincronizar conquistas Steam.',
+        });
+        showToast({
+          message: res.error || 'Falha ao sincronizar conquistas Steam.',
+          type: 'error',
+        });
+        return;
+      }
+
+      const patch = buildAchievementsSyncPatch(item, res.achievements, {
+        steamAppId: res.resolvedAppId || cleanAppId,
+      });
+      if (patch) {
+        onUpdateItem(item.id, patch);
+      }
+      if (res.resolvedAppId) {
+        setSteamAppIdDraft(String(res.resolvedAppId));
+      }
+      const summary = formatGameAchievementsSummary(res.achievements);
+      setAchSyncFeedback({
+        type: 'success',
+        message: `Steam sincronizada: ${summary?.label || `${res.achievements.unlocked} obtidos`}.`,
+      });
+      setAchievementsModalOpen(false);
+      showToast({
+        message: `Conquistas Steam atualizadas (${summary?.label || `${res.achievements.unlocked} obtidos`}).`,
+        type: 'success',
+      });
+    } finally {
+      setAchSyncLoading(false);
+    }
+  };
+
+  const handleSyncRetroAchievements = async ({
+    overrideUsername = raUsernameDraft,
+    overrideGameId = raGameIdDraft ||
+      (item?.ids?.retroachievements ? String(item.ids.retroachievements) : ''),
+  } = {}) => {
+    if (!item?.id || achSyncLoading) return;
+    const cleanUser = String(overrideUsername || '').trim();
+    const cleanGameId = String(overrideGameId || '').trim();
+    if (!cleanUser || !cleanGameId) {
+      openAchievementsSheet('retroachievements');
+      return;
+    }
+
+    setAchSyncLoading(true);
+    setAchSyncFeedback({
+      type: 'info',
+      message: 'Sincronizando conquistas no RetroAchievements...',
+    });
+    try {
+      saveAchievementSyncHandles({ retroachievementsUsername: cleanUser });
+      const res = await syncRetroAchievementsGame({
+        username: cleanUser,
+        gameId: cleanGameId,
+      });
+      if (!res.ok || !res.achievements) {
+        setAchSyncFeedback({
+          type: 'error',
+          message: res.error || 'Não foi possível sincronizar no RetroAchievements.',
+        });
+        showToast({
+          message: res.error || 'Falha ao sincronizar RetroAchievements.',
+          type: 'error',
+        });
+        return;
+      }
+
+      const patch = buildAchievementsSyncPatch(item, res.achievements, {
+        retroachievementsGameId: cleanGameId,
+      });
+      if (patch) {
+        onUpdateItem(item.id, patch);
+      }
+      setRaGameIdDraft(cleanGameId);
+      const summary = formatGameAchievementsSummary(res.achievements);
+      const consoleSuffix = res.consoleName ? ` · ${res.consoleName}` : '';
+      setAchSyncFeedback({
+        type: 'success',
+        message: `RetroAchievements sincronizado: ${summary?.label || `${res.achievements.unlocked} obtidos`}${consoleSuffix}.`,
+      });
+      setAchievementsModalOpen(false);
+      showToast({
+        message: `RetroAchievements atualizado (${summary?.label || `${res.achievements.unlocked} obtidos`}).`,
+        type: 'success',
+      });
+    } finally {
+      setAchSyncLoading(false);
+    }
+  };
 
   const franchise = useMemo(
     () => (item ? findFranchiseForItem(item, allItems.length > 0 ? allItems : [item]) : null),
@@ -1499,7 +1684,7 @@ export function WorkDetailPage({
                           {fichaAch && (
                             <div className="col-span-2 rounded-lg border border-line bg-app p-2.5">
                               <dt className="text-[10px] text-subtle">
-                                Troféus / Conquistas ({fichaAch.source === 'manual' ? 'Manual · Offline' : fichaAch.source})
+                                Troféus / Conquistas ({formatAchievementsSourceLabel(fichaAch.source)})
                               </dt>
                               <dd className="mt-0.5 font-semibold tabular-nums text-ink">
                                 {fichaAch.label}
@@ -2418,72 +2603,247 @@ export function WorkDetailPage({
                     </div>
                   </div>
 
-                  {/* Troféus / Conquistas manuais (somente botões táteis no modo leitura; campos numéricos no Drawer Editar) */}
-                  <div className="rounded-xl border border-line bg-app p-3 space-y-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <span className="text-[11px] font-medium text-ink">
-                          Troféus / Conquistas
-                        </span>
-                        <span className="ml-2 text-[10px] text-subtle">
-                          Marcação manual · Offline
-                        </span>
+                  {/* Troféus & Conquistas — Manual/Offline, Steam e RetroAchievements (somente controles táteis no modo leitura) */}
+                  {(() => {
+                    const achSummary = formatGameAchievementsSummary(item.achievements);
+                    const achUpdatedLabel = item.achievements?.updated_at
+                      ? (() => {
+                          const dt = new Date(item.achievements.updated_at);
+                          return Number.isNaN(dt.getTime())
+                            ? ''
+                            : dt.toLocaleDateString('pt-BR', {
+                                day: '2-digit',
+                                month: '2-digit',
+                                year: 'numeric',
+                              });
+                        })()
+                      : '';
+                    const effectiveSteamAppId =
+                      steamAppIdDraft || (item.ids?.steam ? String(item.ids.steam) : '');
+                    const effectiveRaGameId =
+                      raGameIdDraft ||
+                      (item.ids?.retroachievements ? String(item.ids.retroachievements) : '');
+
+                    return (
+                      <div
+                        data-testid="game-achievements-section"
+                        className="rounded-[6px] border border-line bg-app p-3.5 space-y-3"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Trophy
+                              className="h-3.5 w-3.5 shrink-0 text-accent"
+                              strokeWidth={1.5}
+                              aria-hidden="true"
+                            />
+                            <span className="text-xs font-semibold text-ink">
+                              Troféus &amp; Conquistas
+                            </span>
+                            <span className="rounded-[4px] border border-line bg-card px-1.5 py-0.5 text-[10px] text-subtle">
+                              {achSummary?.sourceLabel || formatAchievementsSourceLabel(achSourceTab)}
+                            </span>
+                          </div>
+                          <span className="text-xs font-semibold tabular-nums text-accent">
+                            {achSummary?.label || '0 obtidos'}
+                          </span>
+                        </div>
+
+                        {achSummary && typeof achSummary.pct === 'number' && (
+                          <div
+                            className="h-1.5 w-full overflow-hidden rounded-full bg-line"
+                            role="progressbar"
+                            aria-valuenow={achSummary.pct}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-label="Progresso de troféus e conquistas"
+                          >
+                            <div
+                              className="h-full rounded-full bg-accent transition-all"
+                              style={{ width: `${achSummary.pct}%` }}
+                            />
+                          </div>
+                        )}
+
+                        <div
+                          role="tablist"
+                          aria-label="Origem das conquistas"
+                          className="flex flex-wrap gap-1.5"
+                        >
+                          {ACHIEVEMENT_SOURCE_OPTIONS.map((opt) => {
+                            const active = achSourceTab === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                role="tab"
+                                aria-selected={active}
+                                onClick={() => {
+                                  setAchSourceTab(opt.id);
+                                  setAchSyncFeedback({ type: 'idle', message: '' });
+                                }}
+                                className={`min-h-[36px] rounded-[6px] border px-2.5 text-[11px] font-medium transition-colors ${
+                                  active
+                                    ? 'border-accent bg-accent/15 text-accent'
+                                    : 'border-line bg-card text-muted hover:text-ink'
+                                }`}
+                              >
+                                {opt.id === 'manual' ? 'Manual / Console Offline' : opt.shortLabel}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {achSourceTab === 'manual' && (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = Number(item.achievements?.unlocked) || 0;
+                                const tot = item.achievements?.total ?? null;
+                                const patch = buildAchievementsSyncPatch(item, {
+                                  source: 'manual',
+                                  unlocked: Math.max(0, cur - 1),
+                                  total: tot,
+                                  updated_at: new Date().toISOString(),
+                                });
+                                if (patch) onUpdateItem(item.id, patch);
+                              }}
+                              className="min-h-[44px] min-w-[44px] rounded-[6px] border border-line bg-card px-2.5 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+                              aria-label="Diminuir troféu obtido"
+                            >
+                              -1
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const cur = Number(item.achievements?.unlocked) || 0;
+                                const tot = item.achievements?.total ?? null;
+                                const patch = buildAchievementsSyncPatch(item, {
+                                  source: 'manual',
+                                  unlocked: tot !== null ? Math.min(tot, cur + 1) : cur + 1,
+                                  total: tot,
+                                  updated_at: new Date().toISOString(),
+                                });
+                                if (patch) onUpdateItem(item.id, patch);
+                              }}
+                              className="min-h-[44px] min-w-[44px] rounded-[6px] border border-line bg-card px-2.5 text-xs font-semibold tabular-nums text-ink hover:border-accent"
+                              aria-label="Adicionar troféu obtido"
+                            >
+                              +1
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openAchievementsSheet('manual')}
+                              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-ink hover:border-accent"
+                            >
+                              <SlidersHorizontal className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                              <span>
+                                Editar obtidos / total ({item.achievements?.unlocked ?? 0} /{' '}
+                                {item.achievements?.total ?? '—'})
+                              </span>
+                            </button>
+                          </div>
+                        )}
+
+                        {achSourceTab === 'steam' && (
+                          <div className="space-y-2">
+                            <p className="text-[11px] leading-relaxed text-muted">
+                              {steamIdDraft
+                                ? `SteamID ${steamIdDraft}${effectiveSteamAppId ? ` · AppID ${effectiveSteamAppId}` : ' · AppID detectado via biblioteca'}`
+                                : 'Vincule seu SteamID64 para sincronizar conquistas via servidor (perfil público).'}
+                            </p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={achSyncLoading}
+                                onClick={() =>
+                                  steamIdDraft
+                                    ? handleSyncSteamAchievements()
+                                    : openAchievementsSheet('steam')
+                                }
+                                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] bg-accent px-3.5 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-55"
+                              >
+                                <RefreshCw
+                                  className={`h-3.5 w-3.5 ${achSyncLoading ? 'animate-spin' : ''}`}
+                                  strokeWidth={1.5}
+                                />
+                                <span>
+                                  {achSyncLoading ? 'Sincronizando...' : 'Sincronizar conquistas'}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openAchievementsSheet('steam')}
+                                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
+                              >
+                                <SlidersHorizontal className="h-3.5 w-3.5" strokeWidth={1.5} />
+                                <span>Configurar Steam</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {achSourceTab === 'retroachievements' && (
+                          <div className="space-y-2">
+                            <p className="text-[11px] leading-relaxed text-muted">
+                              {raUsernameDraft && effectiveRaGameId
+                                ? `Usuário ${raUsernameDraft} · Game ID ${effectiveRaGameId}`
+                                : 'Para emuladores (PS1, PS2, SNES, GBA, N64, PSP). Informe seu usuário e o Game ID.'}
+                            </p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={achSyncLoading}
+                                onClick={() =>
+                                  raUsernameDraft && effectiveRaGameId
+                                    ? handleSyncRetroAchievements()
+                                    : openAchievementsSheet('retroachievements')
+                                }
+                                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] bg-accent px-3.5 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-55"
+                              >
+                                <RefreshCw
+                                  className={`h-3.5 w-3.5 ${achSyncLoading ? 'animate-spin' : ''}`}
+                                  strokeWidth={1.5}
+                                />
+                                <span>
+                                  {achSyncLoading ? 'Sincronizando...' : 'Sincronizar conquistas'}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openAchievementsSheet('retroachievements')}
+                                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border border-line bg-card px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink"
+                              >
+                                <SlidersHorizontal className="h-3.5 w-3.5" strokeWidth={1.5} />
+                                <span>Configurar RetroAchievements</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {(achSyncFeedback.message || achUpdatedLabel) && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line/70 pt-2 text-[11px]">
+                            <span
+                              className={
+                                achSyncFeedback.type === 'error'
+                                  ? 'text-ink'
+                                  : achSyncFeedback.type === 'success'
+                                    ? 'text-accent'
+                                    : 'text-muted'
+                              }
+                            >
+                              {achSyncFeedback.message || 'Notas e comentários preservados ao sincronizar.'}
+                            </span>
+                            {achUpdatedLabel && (
+                              <span className="tabular-nums text-[10px] text-subtle">
+                                Atualizado em {achUpdatedLabel}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <span className="text-xs font-semibold tabular-nums text-accent">
-                        {formatGameAchievementsSummary(item.achievements)?.label || '0 obtidos'}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const cur = Number(item.achievements?.unlocked) || 0;
-                          const tot = item.achievements?.total ?? null;
-                          onUpdateItem(item.id, {
-                            achievements: normalizeAchievementsModel({
-                              source: item.achievements?.source || 'manual',
-                              unlocked: Math.max(0, cur - 1),
-                              total: tot,
-                              updated_at: new Date().toISOString(),
-                            }),
-                          });
-                        }}
-                        className="min-h-[36px] min-w-[44px] rounded-lg border border-line bg-card px-2.5 text-xs font-semibold tabular-nums text-ink hover:border-accent"
-                        aria-label="Diminuir troféu obtido"
-                      >
-                        -1
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const cur = Number(item.achievements?.unlocked) || 0;
-                          const tot = item.achievements?.total ?? null;
-                          onUpdateItem(item.id, {
-                            achievements: normalizeAchievementsModel({
-                              source: item.achievements?.source || 'manual',
-                              unlocked: tot !== null ? Math.min(tot, cur + 1) : cur + 1,
-                              total: tot,
-                              updated_at: new Date().toISOString(),
-                            }),
-                          });
-                        }}
-                        className="min-h-[36px] min-w-[44px] rounded-lg border border-line bg-card px-2.5 text-xs font-semibold tabular-nums text-ink hover:border-accent"
-                        aria-label="Adicionar troféu obtido"
-                      >
-                        +1
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditMoreDetailsOpen(true);
-                          setIsEditDrawerOpen(true);
-                        }}
-                        className="min-h-[36px] rounded-lg border border-line bg-card px-2.5 text-xs font-medium text-muted hover:border-accent hover:text-ink"
-                      >
-                        Definir total ({item.achievements?.total ?? '—'})
-                      </button>
-                    </div>
-                  </div>
+                    );
+                  })()}
 
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap gap-1.5">
@@ -3559,6 +3919,46 @@ export function WorkDetailPage({
                           className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
                         />
                       </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          AppID Steam (opcional · conquistas)
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={item.ids?.steam ?? ''}
+                          onChange={(e) => {
+                            const digits = e.target.value.replace(/\D/g, '');
+                            const nextIds = { ...(item.ids || {}) };
+                            if (digits) nextIds.steam = Number(digits);
+                            else delete nextIds.steam;
+                            setSteamAppIdDraft(digits);
+                            onUpdateItem(item.id, { ids: nextIds });
+                          }}
+                          placeholder="Ex.: 620"
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-medium text-muted">
+                          Game ID RetroAchievements (emulador)
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={item.ids?.retroachievements ?? ''}
+                          onChange={(e) => {
+                            const digits = e.target.value.replace(/\D/g, '');
+                            const nextIds = { ...(item.ids || {}) };
+                            if (digits) nextIds.retroachievements = Number(digits);
+                            else delete nextIds.retroachievements;
+                            setRaGameIdDraft(digits);
+                            onUpdateItem(item.id, { ids: nextIds });
+                          }}
+                          placeholder="Ex.: 14402"
+                          className="min-h-[44px] w-full rounded-[6px] border border-line bg-card px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                        />
+                      </label>
                       <label className="block sm:col-span-2">
                         <span className="mb-1 block text-[11px] font-medium text-muted">
                           Justificativa da Nota 11 (Obra-Prima · opcional)
@@ -4150,6 +4550,245 @@ export function WorkDetailPage({
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Folha sob demanda: Troféus & Conquistas (Manual / Steam / RetroAchievements) */}
+      {achievementsModalOpen && workDomain === 'games' && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 sm:items-center sm:p-4"
+          onClick={() => setAchievementsModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Troféus e conquistas do jogo"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85dvh] w-full max-w-md overflow-y-auto rounded-t-[14px] border border-line bg-card p-5 space-y-4 sm:rounded-[14px]"
+          >
+            <div className="flex items-center justify-between border-b border-line pb-3">
+              <div>
+                <h2 className="font-editorial text-base font-semibold text-ink">
+                  Troféus &amp; Conquistas
+                </h2>
+                <p className="text-[11px] text-muted">
+                  Atualiza somente a contagem de conquistas, preservando notas e comentários.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAchievementsModalOpen(false)}
+                aria-label="Fechar painel de conquistas"
+                className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] border border-line text-muted hover:text-ink"
+              >
+                <X className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {ACHIEVEMENT_SOURCE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    setAchSourceTab(opt.id);
+                    setAchSyncFeedback({ type: 'idle', message: '' });
+                  }}
+                  className={`min-h-[36px] rounded-[6px] border px-2.5 text-[11px] font-medium transition-colors ${
+                    achSourceTab === opt.id
+                      ? 'border-accent bg-accent/15 text-accent'
+                      : 'border-line bg-app text-muted hover:text-ink'
+                  }`}
+                >
+                  {opt.id === 'manual' ? 'Manual / Offline' : opt.shortLabel}
+                </button>
+              ))}
+            </div>
+
+            {achSourceTab === 'manual' && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const nextUnlocked =
+                    achManualUnlockedDraft === '' ? 0 : Math.max(0, Number(achManualUnlockedDraft) || 0);
+                  const nextTotal =
+                    achManualTotalDraft === '' ? null : Math.max(0, Number(achManualTotalDraft) || 0);
+                  const patch = buildAchievementsSyncPatch(item, {
+                    source: 'manual',
+                    unlocked: nextUnlocked,
+                    total: nextTotal,
+                    updated_at: new Date().toISOString(),
+                  });
+                  if (patch) {
+                    onUpdateItem(item.id, patch);
+                    const summary = formatGameAchievementsSummary(patch.achievements);
+                    setAchSyncFeedback({
+                      type: 'success',
+                      message: `Conquistas atualizadas (${summary?.label || `${nextUnlocked} obtidos`}).`,
+                    });
+                    showToast({
+                      message: `Conquistas salvas (${summary?.label || `${nextUnlocked} obtidos`}).`,
+                      type: 'success',
+                    });
+                  }
+                  setAchievementsModalOpen(false);
+                }}
+                className="space-y-3"
+              >
+                <div className="grid grid-cols-2 gap-2.5">
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Obtidos
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={achManualUnlockedDraft}
+                      onChange={(e) => setAchManualUnlockedDraft(e.target.value)}
+                      placeholder="Ex.: 24"
+                      className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-muted">
+                      Total
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={achManualTotalDraft}
+                      onChange={(e) => setAchManualTotalDraft(e.target.value)}
+                      placeholder="Ex.: 50"
+                      className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs tabular-nums text-ink focus:border-accent focus:outline-none"
+                    />
+                  </label>
+                </div>
+                <p className="text-[11px] text-subtle">
+                  Ideal para consoles offline (PS2, Switch, 3DS, mídia física) ou acompanhamento manual.
+                </p>
+                <button
+                  type="submit"
+                  className="inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-[6px] bg-accent px-4 text-xs font-semibold text-accent-ink hover:opacity-90"
+                >
+                  <Check className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  <span>Salvar contagem offline</span>
+                </button>
+              </form>
+            )}
+
+            {achSourceTab === 'steam' && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSyncSteamAchievements({
+                    overrideSteamId: steamIdDraft,
+                    overrideAppId: steamAppIdDraft,
+                  });
+                }}
+                className="space-y-3"
+              >
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-muted">
+                    SteamID64 do jogador
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={steamIdDraft}
+                    onChange={(e) => setSteamIdDraft(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Ex.: 76561198000000000"
+                    className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs tabular-nums text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-muted">
+                    AppID Steam do jogo (opcional — busca automática na biblioteca)
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={steamAppIdDraft}
+                    onChange={(e) => setSteamAppIdDraft(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Ex.: 620 (Portal 2)"
+                    className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs tabular-nums text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                  />
+                </label>
+                <p className="text-[11px] leading-relaxed text-subtle">
+                  A chave STEAM_WEB_API_KEY permanece apenas no servidor Cloudflare. Seu perfil Steam precisa ter detalhes de jogos públicos.
+                </p>
+                {achSyncFeedback.message && (
+                  <p className="text-xs text-muted">{achSyncFeedback.message}</p>
+                )}
+                <button
+                  type="submit"
+                  disabled={achSyncLoading || !steamIdDraft.trim()}
+                  className="inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-[6px] bg-accent px-4 text-xs font-semibold text-accent-ink hover:opacity-90 disabled:opacity-55"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${achSyncLoading ? 'animate-spin' : ''}`}
+                    strokeWidth={1.5}
+                  />
+                  <span>{achSyncLoading ? 'Sincronizando...' : 'Sincronizar conquistas'}</span>
+                </button>
+              </form>
+            )}
+
+            {achSourceTab === 'retroachievements' && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSyncRetroAchievements({
+                    overrideUsername: raUsernameDraft,
+                    overrideGameId: raGameIdDraft,
+                  });
+                }}
+                className="space-y-3"
+              >
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-muted">
+                    Usuário RetroAchievements
+                  </span>
+                  <input
+                    type="text"
+                    value={raUsernameDraft}
+                    onChange={(e) => setRaUsernameDraft(e.target.value.trim())}
+                    placeholder="Ex.: seu_usuario"
+                    className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-muted">
+                    Game ID RetroAchievements
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={raGameIdDraft}
+                    onChange={(e) => setRaGameIdDraft(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Ex.: 14402"
+                    className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs tabular-nums text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                  />
+                </label>
+                <p className="text-[11px] leading-relaxed text-subtle">
+                  Para jogos em emuladores (RetroArch, PCSX2, DuckStation, PPSSPP, Dolphin). A chave RETROACHIEVEMENTS_API_KEY fica somente no servidor.
+                </p>
+                {achSyncFeedback.message && (
+                  <p className="text-xs text-muted">{achSyncFeedback.message}</p>
+                )}
+                <button
+                  type="submit"
+                  disabled={achSyncLoading || !raUsernameDraft.trim() || !raGameIdDraft.trim()}
+                  className="inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-[6px] bg-accent px-4 text-xs font-semibold text-accent-ink hover:opacity-90 disabled:opacity-55"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${achSyncLoading ? 'animate-spin' : ''}`}
+                    strokeWidth={1.5}
+                  />
+                  <span>{achSyncLoading ? 'Sincronizando...' : 'Sincronizar conquistas'}</span>
+                </button>
+              </form>
             )}
           </div>
         </div>

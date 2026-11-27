@@ -352,6 +352,52 @@ export function applyCriterionChange(
 }
 
 /**
+ * Converte valor de um critério (0..10) para mini-estrelas interativas (0.5..5.0; 0 explícito permanece 0; null retorna null).
+ */
+export function criterionValue10ToStars(value10) {
+  const num = parseOptionalNumber(value10);
+  if (num === null) return null;
+  const clamped = Math.max(0, Math.min(CRITERION_MAX, num));
+  if (clamped === 0) return 0;
+  return Math.max(STAR_STEP, roundToHalfStar(clamped / 2));
+}
+
+/**
+ * Converte mini-estrelas de um critério (0.5..5.0) para escala canônica 0..10 (1 estrela = 2 pontos = 20%).
+ */
+export function criterionStarsToValue10(stars) {
+  const rounded = roundToHalfStar(stars);
+  if (rounded === null) return null;
+  return Math.max(0, Math.min(CRITERION_MAX, Math.round(rounded * 2 * 10) / 10));
+}
+
+/**
+ * Formata equivalente discreto 0–10 de um critério (ex.: "8/10", "7.5/10" ou "—").
+ */
+export function formatCriterionValue10(value10) {
+  const num = parseOptionalNumber(value10);
+  if (num === null) return '—';
+  const clamped = Math.max(0, Math.min(CRITERION_MAX, Math.round(num * 10) / 10));
+  const label = Number.isInteger(clamped) ? String(clamped) : clamped.toFixed(1);
+  return `${label}/10`;
+}
+
+/**
+ * Aplica alteração em um critério a partir da seleção em mini-estrelas (0.5 a 5.0 ou null para limpar).
+ */
+export function applyCriterionStarChange(
+  currentState = {},
+  { domain = 'cinema', key, stars } = {}
+) {
+  const value10 = criterionStarsToValue10(stars);
+  return applyCriterionChange(currentState, {
+    domain,
+    key,
+    value: value10,
+  });
+}
+
+/**
  * Aplica sobrescrita manual direta nas estrelas (0.5 a 5.0, ou null para limpar).
  * Preserva os critérios já preenchidos, marcando `ratingManualOverride` quando diferem.
  */

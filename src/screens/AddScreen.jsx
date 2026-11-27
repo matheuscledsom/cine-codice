@@ -60,12 +60,14 @@ import {
   searchMockCinema,
 } from '../services/cinemaApi';
 import {
+  detectCinemaExtraOrSpecial,
   fetchBookByIsbn,
   fetchMusicReleaseTracks,
   formatTrackDuration,
   getDisplayGenres,
   getDisplaySynopsis,
   getQuickSuggestionsForDomain,
+  hasRealPosterUrl,
   searchWorksByDomain,
 } from '../services/multiDomainSearchService';
 import {
@@ -93,9 +95,13 @@ import {
   isEpisodicWork,
 } from '../utils/backlogHelpers';
 import {
+  QUICK_GAME_COMPLETION_OPTIONS,
+  QUICK_GAME_EDITION_OPTIONS,
   buildQuickCatalogDraftWithStatus,
+  buildQuickGamePlatformOptions,
   findCatalogDuplicate,
   getQuickSheetLeanFields,
+  shouldShowSynopsisExpandToggle,
 } from '../utils/catalogDraftHelpers';
 import { findDuplicateMatch } from '../utils/catalogImporters';
 import {
@@ -238,6 +244,7 @@ export function AddScreen({
 
   const [draftItem, setDraftItem] = useState(null);
   const [showDraftTypePicker, setShowDraftTypePicker] = useState(false);
+  const [synopsisExpanded, setSynopsisExpanded] = useState(false);
   const [otherPlatformOpen, setOtherPlatformOpen] = useState(false);
   const [customPlatformText, setCustomPlatformText] = useState('');
   const [confirmFillFullPages, setConfirmFillFullPages] = useState(false);
@@ -535,8 +542,14 @@ export function AddScreen({
           skipCache,
           onPartialResults: (partialPayload) => {
             if (controller.signal.aborted) return;
-            if (Array.isArray(partialPayload?.results) && partialPayload.results.length > 0) {
-              setResults(partialPayload.results);
+            const rawPartial = Array.isArray(partialPayload?.results)
+              ? partialPayload.results
+              : [];
+            const visiblePartial = partialPayload?.partial
+              ? rawPartial.filter(hasRealPosterUrl)
+              : rawPartial;
+            if (visiblePartial.length > 0) {
+              setResults(visiblePartial);
               setIsLoading(false);
               setIsStreamingMore(Boolean(partialPayload.partial));
             }
@@ -673,6 +686,7 @@ export function AddScreen({
     const controller = new AbortController();
     enrichAbortRef.current = controller;
     setShowDraftTypePicker(false);
+    setSynopsisExpanded(false);
     setOtherPlatformOpen(false);
     setCustomPlatformText('');
     setConfirmFillFullPages(false);
@@ -878,6 +892,7 @@ export function AddScreen({
     onAddItem(finalDraft);
     setDraftItem(null);
     setShowDraftTypePicker(false);
+    setSynopsisExpanded(false);
     setConfirmFillFullPages(false);
 
     if (
@@ -1190,6 +1205,21 @@ export function AddScreen({
   const draftDuplicate = draftItem ? findDuplicateInfo(draftItem) : null;
   const draftDisplayGenres = draftItem ? getDisplayGenres(draftItem, { max: 3 }) : [];
   const draftDisplaySynopsis = draftItem ? getDisplaySynopsis(draftItem) : '';
+  const draftShowSynopsisToggle = shouldShowSynopsisExpandToggle(draftDisplaySynopsis);
+  const draftExtraInfo =
+    draftItem && draftDomain === 'cinema'
+      ? draftItem.isExtraOrSpecial
+        ? { isExtra: true, label: draftItem.extraBadgeLabel || 'Extra' }
+        : detectCinemaExtraOrSpecial(draftItem)
+      : { isExtra: false, label: '' };
+  const draftGamePlatformChips =
+    draftItem && draftDomain === 'games' ? buildQuickGamePlatformOptions(draftItem) : [];
+  const draftGameEditionOptions =
+    draftItem && draftDomain === 'games'
+      ? normalizeGameEditionType(draftItem.editionType) === 'Coletânea'
+        ? [...QUICK_GAME_EDITION_OPTIONS, 'Coletânea']
+        : QUICK_GAME_EDITION_OPTIONS
+      : QUICK_GAME_EDITION_OPTIONS;
   const manualDomain = manualDraft
     ? normalizeDomainId(manualDraft.domain || effectiveDomain)
     : effectiveDomain;
@@ -1682,6 +1712,12 @@ export function AddScreen({
               const searchRatings = getPresentExternalRatingBadges(
                 candidate.externalRatings
               ).slice(0, 1);
+              const extraInfo =
+                candDomain === 'cinema'
+                  ? candidate.isExtraOrSpecial
+                    ? { isExtra: true, label: candidate.extraBadgeLabel || 'Extra' }
+                    : detectCinemaExtraOrSpecial(candidate)
+                  : { isExtra: false, label: '' };
 
               return (
                 <article
@@ -1708,6 +1744,14 @@ export function AddScreen({
                       <h3 className="font-editorial line-clamp-2 text-sm font-semibold leading-snug text-ink group-hover:text-accent">
                         {titles.primary}
                       </h3>
+                      {extraInfo.isExtra && (
+                        <span
+                          data-testid="cinema-extra-badge"
+                          className="inline-flex items-center rounded-[4px] border border-line bg-app px-1.5 py-0.5 text-[10px] font-medium text-muted"
+                        >
+                          {extraInfo.label}
+                        </span>
+                      )}
                       {metaLine && (
                         <p className="truncate text-xs tabular-nums text-muted">
                           {metaLine}
@@ -1783,7 +1827,7 @@ export function AddScreen({
         </section>
       )}
 
-      {/* Folha Curta Enxuta de Catalogação Rápida (v2.4.0 Fase 4.1) */}
+      {/* Folha Curta Enxuta de Catalogação Rápida (v2.4.0 Fase 4.1 + v2.7.0 Fase 1) */}
       {draftItem && draftLeanFields && (
         <div
           key={`draft-drawer-${draftItem.id}`}
@@ -1792,6 +1836,7 @@ export function AddScreen({
             enrichAbortRef.current?.abort();
             setDraftItem(null);
             setShowDraftTypePicker(false);
+            setSynopsisExpanded(false);
             setOtherPlatformOpen(false);
             setCustomPlatformText('');
             setConfirmFillFullPages(false);
@@ -1802,392 +1847,413 @@ export function AddScreen({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-[14px] border border-line bg-card p-5 space-y-4 sm:rounded-[14px] no-scrollbar"
+            className="flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-t-[14px] border border-line bg-card sm:rounded-[14px]"
           >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-start gap-3 min-w-0">
-                <CoverArt
-                  item={draftItem}
-                  compact
-                  className={`${draftDomain === 'music' ? 'w-16 aspect-square' : 'w-16 aspect-[2/3]'} shrink-0 rounded-[6px]`}
-                />
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[11px] font-medium text-muted">
-                      {getWorkTypeLabel(draftItem, draftDomain)}
-                      {enrichingCandidate ? ' · Carregando...' : ''}
-                    </span>
+            <div className="flex-1 overflow-y-auto p-5 space-y-3.5 no-scrollbar">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0">
+                  <CoverArt
+                    item={draftItem}
+                    compact
+                    className={`${draftDomain === 'music' ? 'w-16 aspect-square' : 'w-16 aspect-[2/3]'} shrink-0 rounded-[6px]`}
+                  />
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-medium text-muted">
+                        {getWorkTypeLabel(draftItem, draftDomain)}
+                        {draftExtraInfo.isExtra ? ` · ${draftExtraInfo.label}` : ''}
+                        {enrichingCandidate ? ' · Carregando...' : ''}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowDraftTypePicker((v) => !v)}
+                        className="text-[11px] font-medium text-muted underline underline-offset-2 hover:text-ink"
+                      >
+                        {showDraftTypePicker ? 'ocultar tipo' : 'alterar tipo'}
+                      </button>
+                    </div>
+                    <h2 className="font-editorial mt-0.5 line-clamp-2 text-base font-semibold text-ink">
+                      {draftItem.title}
+                    </h2>
+                    <p className="mt-0.5 text-xs tabular-nums text-muted">
+                      {[
+                        draftItem.creator || draftItem.director || draftItem.studio,
+                        draftItem.releaseYear,
+                        draftDomain === 'reading' && draftItem.totalPages
+                          ? `${draftItem.totalPages} págs`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    enrichAbortRef.current?.abort();
+                    setDraftItem(null);
+                    setShowDraftTypePicker(false);
+                    setSynopsisExpanded(false);
+                    setOtherPlatformOpen(false);
+                    setCustomPlatformText('');
+                    setConfirmFillFullPages(false);
+                  }}
+                  aria-label={add.drawerCancelLabel}
+                  className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] text-muted hover:text-ink"
+                >
+                  <X className="h-4 w-4" strokeWidth={1.5} />
+                </button>
+              </div>
+
+              {draftDuplicate && (
+                <div
+                  role="alert"
+                  data-testid="duplicate-warning-banner"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-line bg-app px-3 py-2.5 text-xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-ink">Possível duplicata no catálogo</p>
+                    <p className="text-[11px] text-muted">{draftDuplicate.label}</p>
+                  </div>
+                  {onSelectExisting && (
                     <button
                       type="button"
-                      onClick={() => setShowDraftTypePicker((v) => !v)}
-                      className="text-[11px] font-medium text-muted underline underline-offset-2 hover:text-ink"
+                      onClick={() => {
+                        const target = draftDuplicate.match;
+                        setDraftItem(null);
+                        setSynopsisExpanded(false);
+                        onSelectExisting(target);
+                      }}
+                      className="min-h-[44px] shrink-0 rounded-[6px] border border-line bg-card px-3 text-xs font-semibold text-ink hover:border-muted"
                     >
-                      {showDraftTypePicker ? 'ocultar tipo' : 'alterar tipo'}
+                      Abrir existente
                     </button>
-                  </div>
-                  <h2 className="font-editorial mt-0.5 line-clamp-2 text-base font-semibold text-ink">
-                    {draftItem.title}
-                  </h2>
-                  <p className="mt-0.5 text-xs tabular-nums text-muted">
-                    {[
-                      draftItem.creator || draftItem.director || draftItem.studio,
-                      draftItem.releaseYear,
-                      draftDomain === 'reading' && draftItem.totalPages
-                        ? `${draftItem.totalPages} págs`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
+                  )}
+                </div>
+              )}
+
+              {showDraftTypePicker && (
+                <WorkTypeSelector
+                  key={`wt-${draftItem.id}-${draftDomain}`}
+                  domain={draftDomain}
+                  label={draftVocab.workTypeLabel}
+                  value={draftItem.workType}
+                  onChange={(nextType) =>
+                    setDraftItem((curr) => ({ ...curr, workType: nextType }))
+                  }
+                />
+              )}
+
+              {draftDisplayGenres.length > 0 && (
+                <p className="text-xs text-muted">{draftDisplayGenres.join(' · ')}</p>
+              )}
+
+              {draftDisplaySynopsis && (
+                <div className="space-y-0.5" data-testid="quick-sheet-synopsis">
+                  <p
+                    className={`${
+                      synopsisExpanded ? '' : 'line-clamp-2'
+                    } text-xs leading-relaxed text-muted`}
+                  >
+                    {draftDisplaySynopsis}
                   </p>
+                  {draftShowSynopsisToggle && (
+                    <button
+                      type="button"
+                      onClick={() => setSynopsisExpanded((v) => !v)}
+                      aria-expanded={synopsisExpanded}
+                      data-testid="quick-sheet-synopsis-toggle"
+                      className="-my-2 inline-flex min-h-[44px] items-center text-[11px] font-medium text-muted underline underline-offset-2 hover:text-ink"
+                    >
+                      {synopsisExpanded ? 'Ler menos' : 'Ler mais'}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Status sem pré-seleção */}
+              <div>
+                <p className="mb-1.5 text-xs font-medium text-muted">{add.drawerStatusLabel}</p>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {addFlowStatuses.map((statusId) => {
+                    const cfg = getStatusConfigForDomain(statusId, draftDomain);
+                    const active = draftItem.status === statusId;
+                    return (
+                      <button
+                        key={statusId}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => {
+                          setConfirmFillFullPages(false);
+                          setDraftItem((curr) => buildDraftWithStatus(curr, statusId));
+                        }}
+                        className={`min-h-[44px] rounded-[6px] border px-2 text-xs font-medium transition-colors ${
+                          active
+                            ? 'border-accent bg-accent text-accent-ink'
+                            : 'border-line bg-app text-muted hover:text-ink'
+                        }`}
+                      >
+                        {cfg.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+
+              {/* Games (Jogando ou Zerado): chips compactos de Plataforma + Edição ao lado de Tipo de Conclusão */}
+              {draftLeanFields.showQuickGameMetaChips && (
+                <div
+                  className="space-y-2.5 border-t border-line pt-3"
+                  data-testid="quick-sheet-game-chips"
+                >
+                  <div className="space-y-1.5">
+                    <p className="text-xs font-semibold text-ink">
+                      {draftItem.status === 'completed'
+                        ? 'Onde você jogou?'
+                        : 'Onde você está jogando?'}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {draftGamePlatformChips.map(({ label: plat, isOriginal }) => {
+                        const active = draftItem.platform === plat && !otherPlatformOpen;
+                        return (
+                          <button
+                            key={plat}
+                            type="button"
+                            aria-pressed={active}
+                            onClick={() => {
+                              setOtherPlatformOpen(false);
+                              setCustomPlatformText('');
+                              setDraftItem((curr) => ({
+                                ...curr,
+                                platform: curr.platform === plat ? '' : plat,
+                              }));
+                            }}
+                            className={`inline-flex min-h-[44px] items-center gap-1 rounded-[6px] border px-2.5 text-xs font-medium transition-colors ${
+                              active
+                                ? 'border-accent bg-accent text-accent-ink'
+                                : isOriginal
+                                  ? 'border-muted bg-elevated font-semibold text-ink hover:border-ink'
+                                  : 'border-line bg-app text-muted hover:text-ink'
+                            }`}
+                          >
+                            <span>{plat}</span>
+                            {isOriginal && (
+                              <span className="rounded-[3px] border border-current/30 px-1 py-0.5 text-[9px] uppercase tracking-wide">
+                                Original
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        aria-pressed={otherPlatformOpen}
+                        onClick={() => setOtherPlatformOpen((v) => !v)}
+                        className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium transition-colors ${
+                          otherPlatformOpen
+                            ? 'border-accent bg-accent text-accent-ink'
+                            : 'border-line bg-app text-muted hover:text-ink'
+                        }`}
+                      >
+                        Outra plataforma
+                      </button>
+                    </div>
+                  </div>
+
+                  {otherPlatformOpen && (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={customPlatformText}
+                        onChange={(e) => {
+                          setCustomPlatformText(e.target.value);
+                          setDraftItem((curr) => ({ ...curr, platform: e.target.value.trim() }));
+                        }}
+                        placeholder="Digite ou escolha a plataforma..."
+                        aria-label="Outra plataforma"
+                        className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
+                      />
+                      <div className="flex flex-wrap gap-1.5">
+                        {EXTENDED_GAME_PLATFORMS.filter(
+                          (p) => !draftGamePlatformChips.some((c) => c.label === p)
+                        ).map((plat) => (
+                          <button
+                            key={plat}
+                            type="button"
+                            onClick={() => {
+                              setCustomPlatformText(plat);
+                              setDraftItem((curr) => ({ ...curr, platform: plat }));
+                            }}
+                            className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs ${
+                              draftItem.platform === plat
+                                ? 'border-accent bg-accent text-accent-ink'
+                                : 'border-line bg-app text-muted hover:text-ink'
+                            }`}
+                          >
+                            {plat}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 gap-2.5 pt-0.5 sm:grid-cols-2">
+                    <div className="space-y-1.5" data-testid="quick-sheet-game-edition">
+                      <p className="text-[11px] font-medium text-muted">Edição</p>
+                      <div className="flex flex-wrap gap-1">
+                        {draftGameEditionOptions.map((ed) => {
+                          const isSelected = normalizeGameEditionType(draftItem.editionType) === ed;
+                          return (
+                            <button
+                              key={ed}
+                              type="button"
+                              aria-pressed={isSelected}
+                              onClick={() =>
+                                setDraftItem((curr) => ({ ...curr, editionType: ed }))
+                              }
+                              className={`min-h-[44px] rounded-[6px] border px-2 text-xs font-medium transition-colors ${
+                                isSelected
+                                  ? 'border-accent bg-accent text-accent-ink'
+                                  : 'border-line bg-app text-muted hover:text-ink'
+                              }`}
+                            >
+                              {ed}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5" data-testid="quick-sheet-game-completion">
+                      <p className="text-[11px] font-medium text-muted">Tipo de conclusão</p>
+                      <div className="flex flex-wrap gap-1">
+                        {QUICK_GAME_COMPLETION_OPTIONS.map((opt) => {
+                          const active = draftItem.completionType === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              aria-pressed={active}
+                              onClick={() =>
+                                setDraftItem((curr) => ({
+                                  ...curr,
+                                  completionType:
+                                    curr.completionType === opt.value ? '' : opt.value,
+                                }))
+                              }
+                              className={`min-h-[44px] rounded-[6px] border px-2 text-xs font-medium transition-colors ${
+                                active
+                                  ? 'border-accent bg-accent text-accent-ink'
+                                  : 'border-line bg-app text-muted hover:text-ink'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {draftLeanFields.askGamePlatform && (
+                    <label className="block pt-0.5">
+                      <span className="mb-1 block text-[11px] font-medium text-muted">
+                        Origem / Loja (opcional)
+                      </span>
+                      <select
+                        value={draftItem.storeOrLauncher || ''}
+                        onChange={(e) =>
+                          setDraftItem((curr) => ({ ...curr, storeOrLauncher: e.target.value }))
+                        }
+                        className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
+                      >
+                        <option value="">Não informar</option>
+                        {GAME_STORES_LAUNCHERS.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
+              )}
+
+              {/* Leitura ("Lendo"): pergunta página atual */}
+              {draftLeanFields.askCurrentPage && (
+                <label className="block border-t border-line pt-3">
+                  <span className="mb-1.5 block text-xs font-semibold text-ink">
+                    Página atual
+                    {Number(draftItem.totalPages) > 0 ? ` (de ${draftItem.totalPages})` : ''}
+                  </span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={draftItem.pagesRead ?? 0}
+                    onChange={(e) =>
+                      setDraftItem((curr) => ({
+                        ...curr,
+                        pagesRead: Math.max(0, Number(e.target.value) || 0),
+                      }))
+                    }
+                    className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-sm tabular-nums text-ink focus:border-accent focus:outline-none"
+                  />
+                </label>
+              )}
+
+              {/* Concluído / Lido / Zerado / Ouvido: 5 estrelas com meia estrela + botão discreto "Avaliar por 5 critérios" */}
+              {draftLeanFields.askStarRating && (
+                <div className="space-y-3 border-t border-line pt-3">
+                  <StarRatingPicker
+                    domain={draftDomain}
+                    rating={draftItem.rating}
+                    ratingSource={draftItem.ratingSource}
+                    reviewCriteria={draftItem.reviewCriteria}
+                    reviewCriteria5={draftItem.reviewCriteria5}
+                    ratingManualOverride={draftItem.ratingManualOverride}
+                    lifeWork={draftItem.lifeWork}
+                    gameRating11={draftItem.gameRating11}
+                    compact
+                    onChange={(patch) =>
+                      setDraftItem((curr) => ({
+                        ...curr,
+                        ...patch,
+                        verdict:
+                          patch.rating !== null && patch.rating !== undefined
+                            ? getVerdictForScore(patch.rating)
+                            : null,
+                      }))
+                    }
+                  />
+
+                  {draftLeanFields.showConfirmFullPages &&
+                    Number(draftItem.totalPages) > 0 &&
+                    Number(draftItem.pagesRead || 0) < Number(draftItem.totalPages) && (
+                      <label className="flex min-h-[44px] cursor-pointer items-center gap-2 text-xs text-muted">
+                        <input
+                          type="checkbox"
+                          checked={confirmFillFullPages}
+                          onChange={(e) => setConfirmFillFullPages(e.target.checked)}
+                          className="h-4 w-4 shrink-0 accent-[var(--accent-color)]"
+                        />
+                        <span>
+                          Confirmar páginas lidas ({draftItem.totalPages} págs)
+                        </span>
+                      </label>
+                    )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex shrink-0 gap-2 border-t border-line bg-card px-5 py-3">
               <button
                 type="button"
                 onClick={() => {
                   enrichAbortRef.current?.abort();
                   setDraftItem(null);
                   setShowDraftTypePicker(false);
-                  setOtherPlatformOpen(false);
-                  setCustomPlatformText('');
-                  setConfirmFillFullPages(false);
-                }}
-                aria-label={add.drawerCancelLabel}
-                className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] text-muted hover:text-ink"
-              >
-                <X className="h-4 w-4" strokeWidth={1.5} />
-              </button>
-            </div>
-
-            {draftDuplicate && (
-              <div
-                role="alert"
-                data-testid="duplicate-warning-banner"
-                className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-line bg-app px-3 py-2.5 text-xs"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-ink">Possível duplicata no catálogo</p>
-                  <p className="text-[11px] text-muted">{draftDuplicate.label}</p>
-                </div>
-                {onSelectExisting && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const target = draftDuplicate.match;
-                      setDraftItem(null);
-                      onSelectExisting(target);
-                    }}
-                    className="min-h-[44px] shrink-0 rounded-[6px] border border-line bg-card px-3 text-xs font-semibold text-ink hover:border-muted"
-                  >
-                    Abrir existente
-                  </button>
-                )}
-              </div>
-            )}
-
-            {showDraftTypePicker && (
-              <WorkTypeSelector
-                key={`wt-${draftItem.id}-${draftDomain}`}
-                domain={draftDomain}
-                label={draftVocab.workTypeLabel}
-                value={draftItem.workType}
-                onChange={(nextType) =>
-                  setDraftItem((curr) => ({ ...curr, workType: nextType }))
-                }
-              />
-            )}
-
-            {draftDisplayGenres.length > 0 && (
-              <p className="text-xs text-muted">{draftDisplayGenres.join(' · ')}</p>
-            )}
-
-            {draftDisplaySynopsis && (
-              <p className="line-clamp-2 text-xs leading-relaxed text-muted">
-                {draftDisplaySynopsis}
-              </p>
-            )}
-
-            {/* Status sem pré-seleção */}
-            <div>
-              <p className="mb-1.5 text-xs font-medium text-muted">{add.drawerStatusLabel}</p>
-              <div className="grid grid-cols-3 gap-1.5">
-                {addFlowStatuses.map((statusId) => {
-                  const cfg = getStatusConfigForDomain(statusId, draftDomain);
-                  const active = draftItem.status === statusId;
-                  return (
-                    <button
-                      key={statusId}
-                      type="button"
-                      aria-pressed={active}
-                      onClick={() => {
-                        setConfirmFillFullPages(false);
-                        setDraftItem((curr) => buildDraftWithStatus(curr, statusId));
-                      }}
-                      className={`min-h-[44px] rounded-[6px] border px-2 text-xs font-medium transition-colors ${
-                        active
-                          ? 'border-accent bg-accent text-accent-ink'
-                          : 'border-line bg-app text-muted hover:text-ink'
-                      }`}
-                    >
-                      {cfg.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Games em andamento: "Onde você está jogando?" (original destacada) + Tipo de Edição + Origem */}
-            {draftLeanFields.askGamePlatform && (
-              <div className="space-y-2.5 border-t border-line pt-3">
-                <p className="text-xs font-semibold text-ink">
-                  Onde você está jogando?
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {Array.from(
-                    new Set([
-                      ...(Array.isArray(draftItem.platforms) ? draftItem.platforms : []),
-                      ...(Array.isArray(draftItem.originalPlatforms)
-                        ? draftItem.originalPlatforms
-                        : []),
-                    ])
-                  ).map((plat) => {
-                    const active = draftItem.platform === plat && !otherPlatformOpen;
-                    const isOriginal =
-                      Array.isArray(draftItem.originalPlatforms) &&
-                      draftItem.originalPlatforms.includes(plat);
-                    return (
-                      <button
-                        key={plat}
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() => {
-                          setOtherPlatformOpen(false);
-                          setCustomPlatformText('');
-                          setDraftItem((curr) => ({
-                            ...curr,
-                            platform: curr.platform === plat ? '' : plat,
-                          }));
-                        }}
-                        className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-[6px] border px-3 text-xs font-medium transition-colors ${
-                          active
-                            ? 'border-accent bg-accent text-accent-ink'
-                            : isOriginal
-                              ? 'border-accent/60 bg-app text-ink hover:border-accent'
-                              : 'border-line bg-app text-muted hover:text-ink'
-                        }`}
-                      >
-                        <span>{plat}</span>
-                        {isOriginal && (
-                          <span className="rounded-[3px] border border-current/30 px-1 py-0.5 text-[9px] uppercase tracking-wide">
-                            Original
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                  <button
-                    type="button"
-                    aria-pressed={otherPlatformOpen}
-                    onClick={() => setOtherPlatformOpen((v) => !v)}
-                    className={`min-h-[44px] rounded-[6px] border px-3 text-xs font-medium transition-colors ${
-                      otherPlatformOpen
-                        ? 'border-accent bg-accent text-accent-ink'
-                        : 'border-line bg-app text-muted hover:text-ink'
-                    }`}
-                  >
-                    Outra plataforma
-                  </button>
-                </div>
-
-                {otherPlatformOpen && (
-                  <div className="space-y-2">
-                    <input
-                      type="text"
-                      value={customPlatformText}
-                      onChange={(e) => {
-                        setCustomPlatformText(e.target.value);
-                        setDraftItem((curr) => ({ ...curr, platform: e.target.value.trim() }));
-                      }}
-                      placeholder="Digite ou escolha a plataforma..."
-                      aria-label="Outra plataforma"
-                      className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs text-ink placeholder:text-subtle focus:border-accent focus:outline-none"
-                    />
-                    <div className="flex flex-wrap gap-1.5">
-                      {EXTENDED_GAME_PLATFORMS.filter(
-                        (p) => !(draftItem.platforms || []).includes(p)
-                      ).map((plat) => (
-                        <button
-                          key={plat}
-                          type="button"
-                          onClick={() => {
-                            setCustomPlatformText(plat);
-                            setDraftItem((curr) => ({ ...curr, platform: plat }));
-                          }}
-                          className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs ${
-                            draftItem.platform === plat
-                              ? 'border-accent bg-accent text-accent-ink'
-                              : 'border-line bg-app text-muted hover:text-ink'
-                          }`}
-                        >
-                          {plat}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {draftLeanFields.askGameEdition && (
-                  <div className="space-y-1.5 pt-1">
-                    <p className="text-[11px] font-medium text-muted">Tipo de edição</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {GAME_EDITION_TYPES.map((ed) => {
-                        const isSelected = normalizeGameEditionType(draftItem.editionType) === ed;
-                        return (
-                          <button
-                            key={ed}
-                            type="button"
-                            aria-pressed={isSelected}
-                            onClick={() =>
-                              setDraftItem((curr) => ({ ...curr, editionType: ed }))
-                            }
-                            className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium transition-colors ${
-                              isSelected
-                                ? 'border-accent bg-accent text-accent-ink'
-                                : 'border-line bg-app text-muted hover:text-ink'
-                            }`}
-                          >
-                            {ed}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                <label className="block pt-1">
-                  <span className="mb-1 block text-[11px] font-medium text-muted">
-                    Origem / Loja (opcional)
-                  </span>
-                  <select
-                    value={draftItem.storeOrLauncher || ''}
-                    onChange={(e) =>
-                      setDraftItem((curr) => ({ ...curr, storeOrLauncher: e.target.value }))
-                    }
-                    className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-xs text-ink focus:border-accent focus:outline-none"
-                  >
-                    <option value="">Não informar</option>
-                    {GAME_STORES_LAUNCHERS.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            )}
-
-            {/* Games zerados: Tipo de conclusão */}
-            {draftLeanFields.askGameCompletionType && (
-              <div className="space-y-1.5 border-t border-line pt-3">
-                <p className="text-xs font-semibold text-ink">Tipo de conclusão</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {GAME_COMPLETION_TYPES.map((ctype) => {
-                    const active = draftItem.completionType === ctype;
-                    return (
-                      <button
-                        key={ctype}
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() =>
-                          setDraftItem((curr) => ({
-                            ...curr,
-                            completionType: curr.completionType === ctype ? '' : ctype,
-                          }))
-                        }
-                        className={`min-h-[44px] rounded-[6px] border px-2.5 text-xs font-medium transition-colors ${
-                          active
-                            ? 'border-accent bg-accent text-accent-ink'
-                            : 'border-line bg-app text-muted hover:text-ink'
-                        }`}
-                      >
-                        {ctype}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Leitura ("Lendo"): pergunta página atual */}
-            {draftLeanFields.askCurrentPage && (
-              <label className="block border-t border-line pt-3">
-                <span className="mb-1.5 block text-xs font-semibold text-ink">
-                  Página atual
-                  {Number(draftItem.totalPages) > 0 ? ` (de ${draftItem.totalPages})` : ''}
-                </span>
-                <input
-                  type="number"
-                  min="0"
-                  value={draftItem.pagesRead ?? 0}
-                  onChange={(e) =>
-                    setDraftItem((curr) => ({
-                      ...curr,
-                      pagesRead: Math.max(0, Number(e.target.value) || 0),
-                    }))
-                  }
-                  className="min-h-[44px] w-full rounded-[6px] border border-line bg-app px-3 text-sm tabular-nums text-ink focus:border-accent focus:outline-none"
-                />
-              </label>
-            )}
-
-            {/* Concluído / Lido / Zerado / Ouvido: 5 estrelas com meia estrela + botão discreto "Avaliar por 5 critérios" */}
-            {draftLeanFields.askStarRating && (
-              <div className="space-y-3 border-t border-line pt-3">
-                <StarRatingPicker
-                  domain={draftDomain}
-                  rating={draftItem.rating}
-                  ratingSource={draftItem.ratingSource}
-                  reviewCriteria={draftItem.reviewCriteria}
-                  reviewCriteria5={draftItem.reviewCriteria5}
-                  ratingManualOverride={draftItem.ratingManualOverride}
-                  lifeWork={draftItem.lifeWork}
-                  gameRating11={draftItem.gameRating11}
-                  compact
-                  onChange={(patch) =>
-                    setDraftItem((curr) => ({
-                      ...curr,
-                      ...patch,
-                      verdict:
-                        patch.rating !== null && patch.rating !== undefined
-                          ? getVerdictForScore(patch.rating)
-                          : null,
-                    }))
-                  }
-                />
-
-                {draftLeanFields.showConfirmFullPages &&
-                  Number(draftItem.totalPages) > 0 &&
-                  Number(draftItem.pagesRead || 0) < Number(draftItem.totalPages) && (
-                    <label className="flex min-h-[44px] cursor-pointer items-center gap-2 text-xs text-muted">
-                      <input
-                        type="checkbox"
-                        checked={confirmFillFullPages}
-                        onChange={(e) => setConfirmFillFullPages(e.target.checked)}
-                        className="h-4 w-4 shrink-0 accent-[var(--accent-color)]"
-                      />
-                      <span>
-                        Confirmar páginas lidas ({draftItem.totalPages} págs)
-                      </span>
-                    </label>
-                  )}
-              </div>
-            )}
-
-            <div className="flex gap-2 border-t border-line pt-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setDraftItem(null);
-                  setShowDraftTypePicker(false);
+                  setSynopsisExpanded(false);
                   setOtherPlatformOpen(false);
                   setCustomPlatformText('');
                   setConfirmFillFullPages(false);

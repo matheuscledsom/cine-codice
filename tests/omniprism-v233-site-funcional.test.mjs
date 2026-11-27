@@ -343,6 +343,8 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
         rawg: { configured: false },
         igdb: { configured: false },
         googleBooks: { configured: false },
+        steamAchievements: { configured: false },
+        retroachievements: { configured: false },
       },
     });
 
@@ -364,6 +366,8 @@ describe('OmniPrism v2.3.3 — 2. Proxy Cloudflare Pages Functions (functions/ap
         rawg: { configured: false },
         igdb: { configured: false },
         googleBooks: { configured: false },
+        steamAchievements: { configured: false },
+        retroachievements: { configured: false },
       },
     });
   });

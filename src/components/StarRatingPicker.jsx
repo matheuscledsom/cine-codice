@@ -3,15 +3,26 @@ import { useState } from 'react';
 import {
   LIFE_WORK_LABEL,
   applyCriterionChange,
+  applyCriterionStarChange,
   applyLifeWorkToggle,
   applyManualStarRating,
+  criterionStarsToValue10,
+  criterionValue10ToStars,
+  formatCriterionValue10,
   formatStarsNumber,
   getCriteriaForDomain,
   resolveWorkRatingState,
 } from '../lib/ratingModel.js';
 
 function HalfAwareStarIcon({ fill = 0, size = 'md' }) {
-  const dim = size === 'sm' ? 'h-3.5 w-3.5' : size === 'lg' ? 'h-6 w-6' : 'h-5 w-5';
+  const dim =
+    size === 'xs'
+      ? 'h-4 w-4'
+      : size === 'sm'
+        ? 'h-3.5 w-3.5'
+        : size === 'lg'
+          ? 'h-6 w-6'
+          : 'h-5 w-5';
   if (fill >= 1) {
     return (
       <Star
@@ -151,6 +162,16 @@ export function StarRatingPicker({
     emitPatch(next);
   };
 
+  const handleCriterionStarSelect = (key, currentStars, starVal) => {
+    const nextStars = currentStars === starVal ? null : starVal;
+    const next = applyCriterionStarChange(currentSnapshot, {
+      domain,
+      key,
+      stars: nextStars,
+    });
+    emitPatch(next);
+  };
+
   const handleApplySuggestedStars = () => {
     if (state.criteria.suggestedStars === null) return;
     const next = applyManualStarRating(
@@ -258,52 +279,102 @@ export function StarRatingPicker({
       </div>
 
       {criteriaOpen && (
-        <div className="space-y-3 border-t border-line pt-3">
-          <p className="text-xs text-muted">
-            Cada critério (0 a 10) equivale a 1 estrela (20%). Critérios em branco não entram como zero.
+        <div
+          className="space-y-2.5 border-t border-line pt-3"
+          data-testid="criteria-mini-stars-panel"
+        >
+          <p className="text-[11px] leading-snug text-muted">
+            Toque nas mini-estrelas (0.5 a 5.0). Cada critério equivale a 1 estrela (20%) e critérios em branco não entram como zero.
           </p>
 
-          <div className="space-y-2.5">
+          <div className="divide-y divide-line">
             {criteriaDefs.map((def) => {
               const currentVal = state.criteria.criteria[def.key];
               const isFilled = currentVal !== null && currentVal !== undefined;
+              const activeCriterionStars = criterionValue10ToStars(currentVal);
+
               return (
                 <div
                   key={def.key}
-                  className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between"
+                  data-testid={`criterion-row-${def.key}`}
+                  className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 py-1"
                 >
-                  <div className="flex items-center justify-between gap-2 sm:min-w-[190px]">
-                    <label
-                      htmlFor={`criterion-${domain}-${def.key}`}
-                      className="text-xs font-medium text-ink"
-                    >
-                      {def.label}
-                    </label>
-                    <span className="text-xs font-semibold text-muted tabular-numerals sm:hidden">
-                      {isFilled ? `${currentVal}/10` : '—'}
-                    </span>
-                  </div>
+                  <span
+                    className="min-w-[110px] flex-1 truncate text-xs font-medium text-ink"
+                    title={def.label}
+                  >
+                    <span className="sm:hidden">{def.shortLabel || def.label}</span>
+                    <span className="hidden sm:inline">{def.label}</span>
+                  </span>
 
-                  <div className="flex flex-1 items-center gap-2">
-                    <input
-                      id={`criterion-${domain}-${def.key}`}
-                      type="range"
-                      min="0"
-                      max="10"
-                      step="0.5"
-                      value={isFilled ? currentVal : 0}
-                      onChange={(e) => handleCriterionInput(def.key, Number(e.target.value))}
-                      className="h-2 flex-1 accent-[var(--accent-color)]"
-                      aria-label={def.label}
-                    />
-                    <span className="hidden w-12 text-right text-xs font-semibold text-ink tabular-numerals sm:inline">
-                      {isFilled ? `${currentVal}/10` : '—'}
+                  <div className="flex shrink-0 items-center gap-1">
+                    <div
+                      className="inline-flex items-center"
+                      role="group"
+                      aria-label={`${def.label} (0.5 a 5.0 estrelas)`}
+                      data-testid={`criterion-stars-${def.key}`}
+                    >
+                      {[1, 2, 3, 4, 5].map((idx) => {
+                        const halfVal = idx - 0.5;
+                        const fullVal = idx;
+                        const diff =
+                          activeCriterionStars !== null
+                            ? activeCriterionStars - (idx - 1)
+                            : 0;
+                        const fill = diff >= 1 ? 1 : diff >= 0.5 ? 0.5 : 0;
+
+                        return (
+                          <div
+                            key={idx}
+                            data-testid={`criterion-star-slot-${def.key}-${idx}`}
+                            className="relative inline-flex min-h-[44px] min-w-[44px] items-center justify-center"
+                          >
+                            <HalfAwareStarIcon fill={fill} size="xs" />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleCriterionStarSelect(
+                                  def.key,
+                                  activeCriterionStars,
+                                  halfVal
+                                )
+                              }
+                              className="absolute inset-y-0 left-0 w-1/2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                              aria-label={`${def.label}: ${halfVal.toFixed(1)} estrelas (${criterionStarsToValue10(halfVal)}/10)`}
+                              aria-pressed={activeCriterionStars === halfVal}
+                              title={`${halfVal.toFixed(1)} estrelas (${criterionStarsToValue10(halfVal)}/10)`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleCriterionStarSelect(
+                                  def.key,
+                                  activeCriterionStars,
+                                  fullVal
+                                )
+                              }
+                              className="absolute inset-y-0 right-0 w-1/2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                              aria-label={`${def.label}: ${fullVal.toFixed(1)} estrelas (${criterionStarsToValue10(fullVal)}/10)`}
+                              aria-pressed={activeCriterionStars === fullVal}
+                              title={`${fullVal.toFixed(1)} estrelas (${criterionStarsToValue10(fullVal)}/10)`}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <span
+                      data-testid={`criterion-val10-${def.key}`}
+                      className="w-10 text-right text-[11px] font-medium text-muted tabular-numerals"
+                    >
+                      {formatCriterionValue10(currentVal)}
                     </span>
+
                     <button
                       type="button"
                       disabled={!isFilled}
                       onClick={() => handleCriterionInput(def.key, null)}
-                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-app hover:text-ink disabled:opacity-30"
+                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-app hover:text-ink disabled:opacity-25"
                       aria-label={`Limpar ${def.label}`}
                       title="Deixar sem nota"
                     >

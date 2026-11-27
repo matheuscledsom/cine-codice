@@ -2800,6 +2800,167 @@ export async function fetchMusicReleaseTracks(
   return [];
 }
 
+const CINEMA_MAKING_OF_REGEX =
+  /\b(making\s+of|behind\s+the\s+scenes|bastidores|por\s+tr[áa]s\s+das\s+c[âa]meras|featurette|deleted\s+scenes?|cenas\s+(?:deletadas|exclu[íi]das)|bloopers?|gag\s+reel|audio\s+commentary|coment[áa]rios\s+em\s+[áa]udio)\b/i;
+
+const CINEMA_EXTRA_COMPANION_REGEX =
+  /\b(inside\s+the\s+(?:episode|episodes|series|film|movie|season|making|show|world)|after\s*-?\s*show|aftershow|post\s*-?\s*show|companion\s+(?:series|show|podcast)|episode\s+insider|sneak\s+peek|table\s+read|cast\s+interview|webisodes?|minisodes?|talking\s+(?:bad|dead|saul|strange|watchmen)|bonus\s+(?:content|features?|material|episode))\b/i;
+
+const CINEMA_SPECIAL_REGEX =
+  /\b((?:reunion|holiday|christmas|anniversary|tribute|recap|tv|behind-the-scenes)\s+special|especial\s+de\s+(?:reuni[ãa]o|natal|anivers[áa]rio|bastidores))\b|:\s*(?:the\s+)?(?:special|extras?)\b|\((?:tv\s+)?special\)/i;
+
+/**
+ * Verifica se um candidato possui URL real de pôster/capa (evitando cartões placeholder vazios).
+ */
+export function hasRealPosterUrl(item = {}) {
+  if (!item || typeof item !== 'object') return false;
+  const candidates = [
+    item.coverUrl,
+    item.manualCoverDataUrl,
+    ...(Array.isArray(item.coverCandidates) ? item.coverCandidates : []),
+    ...(Array.isArray(item.coverSources) ? item.coverSources : []),
+  ];
+  return candidates.some((u) => {
+    const clean = String(u || '').trim();
+    return /^https?:\/\//i.test(clean) || /^data:image\//i.test(clean);
+  });
+}
+
+/**
+ * Detecta discretamente extras, bastidores e especiais em resultados de Cinema/Séries
+ * (ex.: "Inside the Episode", "Making of", "Behind the Scenes", "Reunion Special")
+ * sem falso positivo em filmes/séries principais.
+ */
+export function detectCinemaExtraOrSpecial(item = {}) {
+  if (!item || typeof item !== 'object') {
+    return { isExtra: false, kind: null, label: '' };
+  }
+  const title = String(item.title || '').trim();
+  const originalTitle = String(item.originalTitle || '').trim();
+  const combinedTitle = `${title} ${originalTitle}`.trim();
+  if (!combinedTitle) {
+    return { isExtra: false, kind: null, label: '' };
+  }
+
+  if (CINEMA_MAKING_OF_REGEX.test(combinedTitle)) {
+    return { isExtra: true, kind: 'making_of', label: 'Extra · Bastidores' };
+  }
+  if (CINEMA_EXTRA_COMPANION_REGEX.test(combinedTitle)) {
+    return { isExtra: true, kind: 'extra', label: 'Extra' };
+  }
+  if (
+    CINEMA_SPECIAL_REGEX.test(combinedTitle) ||
+    String(item.animeFormat || '').trim() === 'Especial'
+  ) {
+    return { isExtra: true, kind: 'special', label: 'Especial' };
+  }
+  return { isExtra: false, kind: null, label: '' };
+}
+
+/**
+ * Garante prioridade do TMDB nas buscas de Cinema/Séries (`all`, `movie`, `series`)
+ * para entregar pôsteres reais desde o primeiro frame.
+ */
+export function orderCinemaSearchSources(sources = [], filter = 'all') {
+  const list = Array.from(new Set((Array.isArray(sources) ? sources : []).filter(Boolean)));
+  if (filter === 'anime') return list;
+  const tmdbIndex = list.indexOf('tmdb');
+  if (tmdbIndex <= 0) return list;
+  const next = list.filter((s) => s !== 'tmdb');
+  next.unshift('tmdb');
+  return next;
+}
+
+/**
+ * Ranqueia e anota resultados de Cinema/Séries:
+ * - Sinaliza extras/especiais (`isExtraOrSpecial`, `extraBadgeLabel`) e posiciona abaixo da obra principal;
+ * - Prioriza resultados com pôster real (especialmente TMDB) antes de cartões sem capa;
+ * - Quando `onlyWithPoster: true` (streaming parcial), omite placeholders sem capa enquanto outras fontes carregam.
+ */
+export function prioritizeCinemaSearchCandidates(
+  candidates = [],
+  query = '',
+  { filter = 'all', onlyWithPoster = false } = {}
+) {
+  const normQ = normalizeText(query);
+  const queryWantsExtra =
+    CINEMA_MAKING_OF_REGEX.test(String(query || '')) ||
+    CINEMA_EXTRA_COMPANION_REGEX.test(String(query || '')) ||
+    CINEMA_SPECIAL_REGEX.test(String(query || ''));
+
+  const annotated = (Array.isArray(candidates) ? candidates : [])
+    .filter((item) => item && item.title)
+    .map((item, idx) => {
+      const extraInfo = detectCinemaExtraOrSpecial(item);
+      return {
+        item: {
+          ...item,
+          isExtraOrSpecial: extraInfo.isExtra,
+          extraBadgeLabel: extraInfo.label || '',
+        },
+        extraInfo,
+        hasPoster: hasRealPosterUrl(item),
+        idx,
+      };
+    });
+
+  const pool = onlyWithPoster
+    ? annotated.filter((entry) => entry.hasPoster)
+    : annotated;
+
+  const scoreEntry = ({ item, extraInfo, hasPoster }) => {
+    let score = 0;
+    const normTitle = normalizeText(item.title || '');
+    const normOrig = normalizeText(item.originalTitle || '');
+    const isTmdb =
+      item.sourceBadge === 'TMDB' ||
+      (Array.isArray(item.mergedSources) && item.mergedSources.includes('TMDB')) ||
+      Boolean(item.tmdbId || item.ids?.tmdb);
+
+    // 1. Pôster real + prioridade TMDB em Cinema/Séries
+    if (hasPoster) {
+      score += 300;
+    } else {
+      score -= 220;
+    }
+
+    if (filter !== 'anime' && isTmdb) {
+      score += hasPoster ? 160 : 60;
+    }
+
+    // 2. Correspondência de título com a busca
+    if (normQ) {
+      if (normTitle === normQ || (normOrig && normOrig === normQ)) {
+        score += 240;
+      } else if (normTitle.startsWith(normQ) || (normOrig && normOrig.startsWith(normQ))) {
+        score += 130;
+      } else if (normTitle.includes(normQ) || (normOrig && normOrig.includes(normQ))) {
+        score += 75;
+      }
+    }
+
+    // 3. Rebaixa extras/especiais abaixo da obra principal (salvo quando buscados explicitamente)
+    if (extraInfo.isExtra && !queryWantsExtra) {
+      score -= 260;
+    }
+
+    // 4. Sinais sutis de qualidade de metadados
+    if (item.releaseYear) score += 15;
+    if (String(item.synopsis || '').trim().length > 30) score += 15;
+    if (Number(item.externalScore) > 0) score += 10;
+
+    return score;
+  };
+
+  return pool
+    .sort((a, b) => {
+      const diff = scoreEntry(b) - scoreEntry(a);
+      if (diff !== 0) return diff;
+      return a.idx - b.idx;
+    })
+    .map((entry) => entry.item);
+}
+
 export async function searchWorksByDomain(domain, query, options = {}) {
   const cleanDomain = normalizeDomainId(domain);
   if (cleanDomain === 'reading') return searchReadingWorks(query, options);
@@ -2837,7 +2998,7 @@ export function getQuickSuggestionsForDomain(domain = 'cinema') {
   return [
     { label: 'Hayao Miyazaki', query: 'Spirited Away', filter: 'anime', sources: ['anilist', 'jikan'] },
     { label: 'Blade Runner 2049', query: 'Blade Runner', filter: 'movie', sources: ['tmdb', 'imdb', 'wikidata'] },
-    { label: 'Breaking Bad', query: 'Breaking Bad', filter: 'series', sources: ['tvmaze', 'tmdb', 'imdb'] },
+    { label: 'Breaking Bad', query: 'Breaking Bad', filter: 'series', sources: ['tmdb', 'tvmaze', 'imdb'] },
     { label: 'Attack on Titan', query: 'Attack on Titan', filter: 'anime', sources: ['anilist', 'jikan'] },
     { label: 'Parasita', query: 'Parasite', filter: 'movie', sources: ['tmdb', 'imdb', 'wikidata'] },
     { label: 'Cowboy Bebop', query: 'Cowboy Bebop', filter: 'anime', sources: ['anilist', 'jikan'] },

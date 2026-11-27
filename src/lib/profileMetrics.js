@@ -31,7 +31,15 @@ import {
   getWatchedEpisodesCount,
   isEpisodicWork,
 } from '../utils/backlogHelpers.js';
+import { isBookEdition } from './bookEditions.js';
+import { inferFranchiseTier } from './franchiseTier.js';
+import { classifyMusicReleaseScope } from './musicHierarchy.js';
 import { computeWorkCritiqueBadge } from './ratingBadges.js';
+import {
+  formatStarsNumber,
+  resolveLifeWorkFlag,
+  score100ToStars,
+} from './ratingModel.js';
 import { isConfirmedUserRating } from './ratings.js';
 import { computeSpectatorMetrics } from './statsEngine.js';
 
@@ -451,8 +459,17 @@ export function computeDomainBreakdownMetrics(items = []) {
     const domainWorks = backlog.filter((w) => inferDomainFromWork(w) === dom.id);
     const completedWorks = domainWorks.filter((w) => w.status === 'completed').length;
     const rated = domainWorks.filter((w) => isPositiveConfirmedUserRating(w));
-    const ratingSum = rated.reduce((sum, w) => sum + Number(w.rating || 0), 0);
+    const ratingSum = rated.reduce((sum, w) => {
+      if (Number(w.rating) > 0) return sum + Number(w.rating);
+      if (dom.id === 'games') {
+        const g11 = resolveGameRating11(w);
+        if (g11 !== null) return sum + Math.min(100, Math.round(g11 * 10));
+      }
+      return sum;
+    }, 0);
     const averageRating = rated.length > 0 ? Math.round(ratingSum / rated.length) : null;
+    const averageStars = averageRating !== null ? score100ToStars(averageRating) : null;
+    const averageStarsLabel = averageStars !== null ? formatStarsNumber(averageStars) : '—';
     const favoritesCount = domainWorks.filter(
       (w) =>
         Boolean(w.isFavorite) ||
@@ -460,6 +477,9 @@ export function computeDomainBreakdownMetrics(items = []) {
           Number(w.favoriteRank) >= 1 &&
           Number(w.favoriteRank) <= 4)
     ).length;
+    const lifeWorks = domainWorks.filter((w) => resolveLifeWorkFlag(w));
+    const completionRatePct =
+      domainWorks.length > 0 ? Math.round((completedWorks / domainWorks.length) * 100) : 0;
 
     let progressSummary = '';
     if (dom.id === 'reading') {
@@ -499,13 +519,229 @@ export function computeDomainBreakdownMetrics(items = []) {
       tintHex: dom.tintHex,
       totalWorks: domainWorks.length,
       completedWorks,
+      completionRatePct,
       ratedWorksCount: rated.length,
       averageRating,
       averageRatingLabel: averageRating !== null ? String(averageRating) : '—',
+      averageStars,
+      averageStarsLabel,
       favoritesCount,
+      lifeWorksCount: lifeWorks.length,
+      lifeWorks,
       progressSummary,
     };
   });
+}
+
+function normalizeMilestoneKey(raw) {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function getWorkRecencyTs(work = {}) {
+  return Date.parse(work?.updatedAt || work?.completedDate || work?.createdAt || '') || 0;
+}
+
+/**
+ * Normaliza o identificador `@arroba` do colecionador sem espaços nem caracteres inválidos.
+ */
+export function normalizeCollectorHandle(rawHandle = '', fallback = '@meu-arquivo') {
+  const cleaned = String(rawHandle || '')
+    .trim()
+    .replace(/^@+/, '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  return cleaned ? `@${cleaned}` : fallback;
+}
+
+/**
+ * Resolve a identidade editorial do colecionador para o Hero do Perfil.
+ */
+export function resolveCollectorIdentity(profile = {}, titleEvaluation = null, items = []) {
+  const safeProfile = profile && typeof profile === 'object' ? profile : {};
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false
+  );
+  const activeDomains = new Set(backlog.map((w) => inferDomainFromWork(w)));
+
+  const displayName = String(safeProfile.displayName || '').trim() || 'Meu arquivo';
+  const handle = normalizeCollectorHandle(safeProfile.handle || '@meu-arquivo');
+  const explicitTitle = String(safeProfile.collectorTitle || '').trim();
+  const badgeTitle = String(titleEvaluation?.resolvedActiveBadge?.name || '').trim();
+
+  let fallbackTitle = 'Colecionador em Formação';
+  if (activeDomains.size === 4 && backlog.length >= 12) {
+    fallbackTitle = 'Colecionador dos 4 Mundos';
+  } else if (backlog.length >= 30) {
+    fallbackTitle = 'Curador de Catálogo';
+  } else if (backlog.length >= 10) {
+    fallbackTitle = 'Colecionador Ativo';
+  }
+
+  return {
+    displayName,
+    handle,
+    collectorTitle: explicitTitle || badgeTitle || fallbackTitle,
+    hasCustomTitle: Boolean(explicitTitle),
+    bio: String(safeProfile.bio || '').trim(),
+  };
+}
+
+/**
+ * Calcula automaticamente a Estante de Marcos & Conquistas do Catálogo:
+ * - Platinas / 100% em Games
+ * - Sagas Concluídas (franquias com >= 2 obras da linha principal 100% concluídas)
+ * - Discografias Completas (artistas com >= 2 álbuns de estúdio concluídos ou entrada de discografia concluída)
+ * - Obras da Vida (marcadas com lifeWork ou gameRating11 === 11)
+ */
+export function computeCollectorMilestones(items = []) {
+  const backlog = (Array.isArray(items) ? items : []).filter(
+    (item) => item && item.inBacklog !== false
+  );
+
+  // 1. Platinas / 100% em Games
+  const platinumWorks = backlog
+    .filter((w) => {
+      if (inferDomainFromWork(w) !== 'games') return false;
+      if (w.isPlatinum === true) return true;
+      if (/100%|platina/i.test(String(w.completionType || ''))) return true;
+      const totalAch = Number(w.achievements?.total);
+      const unlockedAch = Number(w.achievements?.unlocked);
+      return Number.isFinite(totalAch) && totalAch > 0 && unlockedAch >= totalAch;
+    })
+    .sort((a, b) => getWorkRecencyTs(b) - getWorkRecencyTs(a));
+
+  // 2. Sagas Concluídas (Cinema, Livros e Games)
+  const sagaGroups = new Map();
+  for (const work of backlog) {
+    const dom = inferDomainFromWork(work);
+    if (dom === 'music') continue;
+    if (dom === 'reading' && isBookEdition(work)) continue;
+    const rawSaga = String(work.franchiseName || '').trim();
+    const normSaga = normalizeMilestoneKey(rawSaga);
+    if (!normSaga) continue;
+    const key = `${dom}::${normSaga}`;
+    if (!sagaGroups.has(key)) {
+      sagaGroups.set(key, { id: key, name: rawSaga, domain: dom, works: [] });
+    }
+    sagaGroups.get(key).works.push(work);
+  }
+
+  const completedSagas = [];
+  for (const group of sagaGroups.values()) {
+    const mainlineWorks = group.works.filter((w) => inferFranchiseTier(w) === 'mainline');
+    const targetWorks = mainlineWorks.length > 0 ? mainlineWorks : group.works;
+    if (targetWorks.length < 2) continue;
+    if (!targetWorks.every((w) => w.status === 'completed')) continue;
+    const coverWork = targetWorks.find((w) => Boolean(w.coverUrl)) || targetWorks[0];
+    completedSagas.push({
+      id: group.id,
+      name: group.name,
+      domain: group.domain,
+      completedCount: targetWorks.length,
+      totalCount: targetWorks.length,
+      coverWork,
+      works: targetWorks,
+    });
+  }
+  completedSagas.sort(
+    (a, b) => b.completedCount - a.completedCount || a.name.localeCompare(b.name)
+  );
+
+  // 3. Discografias Completas (Música)
+  const artistGroups = new Map();
+  for (const work of backlog) {
+    if (inferDomainFromWork(work) !== 'music') continue;
+    const rawArtist = String(work.artist || work.creator || work.director || '').trim();
+    const normArtist = normalizeMilestoneKey(rawArtist);
+    if (!normArtist) continue;
+    if (!artistGroups.has(normArtist)) {
+      artistGroups.set(normArtist, {
+        id: `discog-${normArtist}`,
+        artist: rawArtist,
+        studioAlbums: [],
+        completedDiscogEntries: [],
+      });
+    }
+    const bucket = artistGroups.get(normArtist);
+    if (work.workType === 'discography') {
+      if (work.status === 'completed') {
+        bucket.completedDiscogEntries.push(work);
+      }
+    } else if (classifyMusicReleaseScope(work) === 'studio') {
+      bucket.studioAlbums.push(work);
+    }
+  }
+
+  const completedDiscographies = [];
+  for (const bucket of artistGroups.values()) {
+    const hasCompletedStudioSet =
+      bucket.studioAlbums.length >= 2 &&
+      bucket.studioAlbums.every((w) => w.status === 'completed');
+    const hasExplicitDiscog = bucket.completedDiscogEntries.length > 0;
+    if (!hasCompletedStudioSet && !hasExplicitDiscog) continue;
+    const works =
+      bucket.studioAlbums.length > 0 ? bucket.studioAlbums : bucket.completedDiscogEntries;
+    const coverWork = works.find((w) => Boolean(w.coverUrl)) || works[0];
+    completedDiscographies.push({
+      id: bucket.id,
+      artist: bucket.artist,
+      completedCount: works.length,
+      totalCount: works.length,
+      coverWork,
+      works,
+    });
+  }
+  completedDiscographies.sort(
+    (a, b) => b.completedCount - a.completedCount || a.artist.localeCompare(b.artist)
+  );
+
+  // 4. Obras da Vida (todos os 4 domínios)
+  const lifeWorks = backlog
+    .filter((w) => resolveLifeWorkFlag(w))
+    .sort((a, b) => getWorkRecencyTs(b) - getWorkRecencyTs(a) || Number(b.rating || 0) - Number(a.rating || 0));
+
+  const lifeWorksByDomain = { cinema: 0, reading: 0, games: 0, music: 0 };
+  for (const lw of lifeWorks) {
+    const dom = inferDomainFromWork(lw);
+    if (lifeWorksByDomain[dom] !== undefined) {
+      lifeWorksByDomain[dom] += 1;
+    }
+  }
+
+  return {
+    platinums: {
+      count: platinumWorks.length,
+      works: platinumWorks,
+    },
+    completedSagas: {
+      count: completedSagas.length,
+      sagas: completedSagas,
+    },
+    completedDiscographies: {
+      count: completedDiscographies.length,
+      artists: completedDiscographies,
+    },
+    lifeWorks: {
+      count: lifeWorks.length,
+      works: lifeWorks,
+      byDomain: lifeWorksByDomain,
+    },
+    totalMilestones:
+      platinumWorks.length +
+      completedSagas.length +
+      completedDiscographies.length +
+      lifeWorks.length,
+  };
 }
 
 function buildGenericRanking(items = [], extractKeys, extractWeight, formatMetric) {

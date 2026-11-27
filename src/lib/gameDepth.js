@@ -22,7 +22,40 @@ export const GAME_ATTRIBUTION_LINKS = {
   igdb: { label: 'IGDB.com', url: 'https://www.igdb.com' },
   rawg: { label: 'RAWG', url: 'https://rawg.io' },
   steam: { label: 'Steam Store', url: 'https://store.steampowered.com' },
+  retroachievements: { label: 'RetroAchievements', url: 'https://retroachievements.org' },
 };
+
+export const ACHIEVEMENT_SOURCE_OPTIONS = Object.freeze([
+  Object.freeze({ id: 'manual', label: 'Manual · Offline', shortLabel: 'Manual / Offline' }),
+  Object.freeze({ id: 'steam', label: 'Steam', shortLabel: 'Steam' }),
+  Object.freeze({
+    id: 'retroachievements',
+    label: 'RetroAchievements',
+    shortLabel: 'RetroAchievements',
+  }),
+]);
+
+export function normalizeAchievementSource(raw) {
+  const clean = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (!clean || clean === 'manual' || clean === 'offline') return 'manual';
+  if (clean === 'steam' || clean === 'steam_web_api' || clean === 'steamachievements') {
+    return 'steam';
+  }
+  if (clean === 'retroachievements' || clean === 'retro_achievements' || clean === 'ra') {
+    return 'retroachievements';
+  }
+  return clean;
+}
+
+export function formatAchievementsSourceLabel(source) {
+  const norm = normalizeAchievementSource(source);
+  if (norm === 'steam') return 'Steam';
+  if (norm === 'retroachievements') return 'RetroAchievements';
+  if (norm === 'manual') return 'Manual · Offline';
+  return String(source || 'Manual · Offline').trim() || 'Manual · Offline';
+}
 
 const EDITION_SUFFIX_RE =
   /\b(remake|remastered|definitive\s+edition|goty|game\s+of\s+the\s+year|complete\s+edition|director'?s\s+cut|hd|anniversary\s+edition|ultimate\s+edition|royal|golden|expanded)\b/gi;
@@ -515,7 +548,7 @@ export function normalizeAchievementsModel(raw = null) {
   }
 
   return {
-    source: String(raw.source || 'manual').trim() || 'manual',
+    source: normalizeAchievementSource(raw.source),
     unlocked,
     total,
     updated_at: raw.updated_at || new Date().toISOString(),
@@ -531,12 +564,218 @@ export function formatGameAchievementsSummary(achievements = null) {
       : null;
   return {
     ...norm,
+    sourceLabel: formatAchievementsSourceLabel(norm.source),
     pct,
     label:
       norm.total && norm.total > 0
         ? `${norm.unlocked} / ${norm.total}${pct !== null ? ` (${pct}%)` : ''}`
         : `${norm.unlocked} obtidos`,
   };
+}
+
+/**
+ * Interpreta resposta de `ISteamUserStats/GetPlayerAchievements` da Steam Web API.
+ */
+export function parseSteamAchievementsResponse(
+  payload = null,
+  { nowIso = new Date().toISOString() } = {}
+) {
+  const stats = payload?.playerstats;
+  if (!stats || typeof stats !== 'object') {
+    return {
+      ok: false,
+      error: 'Resposta Steam inválida ou indisponível.',
+      gameName: '',
+      achievements: null,
+    };
+  }
+
+  if (stats.success === false) {
+    const rawErr = String(stats.error || '').toLowerCase();
+    const friendly = rawErr.includes('private') || rawErr.includes('not public')
+      ? 'Perfil Steam privado. Torne os detalhes de jogos públicos na Steam para sincronizar.'
+      : rawErr.includes('no stats') || rawErr.includes('requested app')
+        ? 'Este jogo não possui conquistas públicas registradas na Steam.'
+        : 'Não foi possível ler as conquistas deste jogo na Steam.';
+    return {
+      ok: false,
+      error: friendly,
+      gameName: String(stats.gameName || '').trim(),
+      achievements: null,
+    };
+  }
+
+  const list = Array.isArray(stats.achievements) ? stats.achievements : [];
+  if (list.length === 0) {
+    return {
+      ok: false,
+      error: 'Este jogo não possui conquistas registradas na Steam.',
+      gameName: String(stats.gameName || '').trim(),
+      achievements: null,
+    };
+  }
+
+  const unlocked = list.filter(
+    (entry) => Number(entry?.achieved) === 1 || entry?.achieved === true
+  ).length;
+
+  return {
+    ok: true,
+    error: '',
+    gameName: String(stats.gameName || '').trim(),
+    achievements: normalizeAchievementsModel({
+      source: 'steam',
+      unlocked,
+      total: list.length,
+      updated_at: nowIso,
+    }),
+  };
+}
+
+/**
+ * Interpreta resposta de `IPlayerService/GetOwnedGames` da Steam Web API e
+ * opcionalmente encontra o `appId` correspondente ao título do jogo.
+ */
+export function parseSteamOwnedGamesResponse(payload = null, { titleHint = '' } = {}) {
+  const rawList = Array.isArray(payload?.response?.games) ? payload.response.games : [];
+  const games = rawList
+    .map((g) => {
+      const appId = Number(g?.appid);
+      const name = String(g?.name || '').trim();
+      if (!Number.isFinite(appId) || appId <= 0) return null;
+      const mins = Number(g?.playtime_forever) || 0;
+      return {
+        appId: Math.floor(appId),
+        name,
+        playtimeHours: Math.round((mins / 60) * 10) / 10,
+      };
+    })
+    .filter(Boolean);
+
+  let matchedGame = null;
+  const normHint = normalizeGameKey(titleHint);
+  if (normHint && games.length > 0) {
+    matchedGame =
+      games.find((g) => normalizeGameKey(g.name) === normHint) ||
+      games.find((g) => {
+        const k = normalizeGameKey(g.name);
+        return k && (k.startsWith(normHint) || normHint.startsWith(k));
+      }) ||
+      games.find((g) => {
+        const k = normalizeGameKey(g.name);
+        return k && normHint.length >= 4 && (k.includes(normHint) || normHint.includes(k));
+      }) ||
+      null;
+  }
+
+  return { games, matchedGame };
+}
+
+/**
+ * Interpreta resposta de `API_GetGameInfoAndUserProgress.php` do RetroAchievements.
+ */
+export function parseRetroAchievementsResponse(
+  payload = null,
+  { nowIso = new Date().toISOString() } = {}
+) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return {
+      ok: false,
+      error: 'Resposta RetroAchievements inválida.',
+      gameTitle: '',
+      consoleName: '',
+      achievements: null,
+    };
+  }
+
+  const gameTitle = String(payload.Title || '').trim();
+  const consoleName = String(payload.ConsoleName || '').trim();
+  const achMapValues =
+    payload.Achievements && typeof payload.Achievements === 'object'
+      ? Object.values(payload.Achievements)
+      : [];
+
+  const totalRaw = Number(payload.NumAchievements);
+  const total =
+    Number.isFinite(totalRaw) && totalRaw > 0 ? Math.floor(totalRaw) : achMapValues.length;
+
+  if (total <= 0) {
+    const hasGameMeta = Boolean(gameTitle || Number(payload.ID) > 0);
+    return {
+      ok: false,
+      error: hasGameMeta
+        ? 'Este jogo não possui conquistas registradas no RetroAchievements.'
+        : 'Jogo ou usuário não encontrado no RetroAchievements.',
+      gameTitle,
+      consoleName,
+      achievements: null,
+    };
+  }
+
+  const normalAwarded = Number(payload.NumAwardedToUser);
+  const hardcoreAwarded = Number(payload.NumAwardedToUserHardcore);
+  let unlocked = 0;
+
+  if (Number.isFinite(normalAwarded) || Number.isFinite(hardcoreAwarded)) {
+    unlocked = Math.max(
+      0,
+      Number.isFinite(normalAwarded) ? Math.floor(normalAwarded) : 0,
+      Number.isFinite(hardcoreAwarded) ? Math.floor(hardcoreAwarded) : 0
+    );
+  } else if (achMapValues.length > 0) {
+    unlocked = achMapValues.filter(
+      (entry) => Boolean(entry?.DateEarned || entry?.DateEarnedHardcore)
+    ).length;
+  }
+
+  return {
+    ok: true,
+    error: '',
+    gameTitle,
+    consoleName,
+    achievements: normalizeAchievementsModel({
+      source: 'retroachievements',
+      unlocked,
+      total,
+      updated_at: nowIso,
+    }),
+  };
+}
+
+/**
+ * Monta patch não-destrutivo de conquistas preservando integralmente notas, comentários,
+ * avaliações, citações e demais metadados da obra.
+ */
+export function buildAchievementsSyncPatch(
+  work = {},
+  syncedAchievements = null,
+  { steamAppId = '', retroachievementsGameId = '' } = {}
+) {
+  const normalized = normalizeAchievementsModel(syncedAchievements);
+  if (!normalized) return null;
+
+  const patch = {
+    achievements: normalized,
+  };
+
+  const cleanSteamAppId = /^\d+$/.test(String(steamAppId || '').trim())
+    ? Number(String(steamAppId).trim())
+    : null;
+  const cleanRaGameId = /^\d+$/.test(String(retroachievementsGameId || '').trim())
+    ? Number(String(retroachievementsGameId).trim())
+    : null;
+
+  if (cleanSteamAppId || cleanRaGameId) {
+    const existingIds =
+      work?.ids && typeof work.ids === 'object' && !Array.isArray(work.ids)
+        ? { ...work.ids }
+        : {};
+    if (cleanSteamAppId) existingIds.steam = cleanSteamAppId;
+    if (cleanRaGameId) existingIds.retroachievements = cleanRaGameId;
+    patch.ids = existingIds;
+  }
+
+  return patch;
 }
 
 /**

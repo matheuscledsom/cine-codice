@@ -16,6 +16,8 @@ import {
   fetchOmdbViaProxyOrDirect,
   fetchProxyStatus,
   fetchRawgViaProxy,
+  fetchRetroAchievementsViaProxy,
+  fetchSteamAchievementsViaProxy,
   fetchSteamViaProxyOrDirect,
   fetchTmdbViaProxyOrDirect,
 } from './apiProxyClient.js';
@@ -165,6 +167,26 @@ export const API_STATUS_SOURCES = Object.freeze([
     probeType: 'steam',
   },
   {
+    id: 'steamAchievements',
+    label: 'Steam Conquistas',
+    domainId: 'games',
+    domainLabel: 'Games',
+    host: 'api.steampowered.com',
+    supportsServerProxy: true,
+    serverOnlySecret: true,
+    probeType: 'steamAchievements',
+  },
+  {
+    id: 'retroachievements',
+    label: 'RetroAchievements',
+    domainId: 'games',
+    domainLabel: 'Games',
+    host: 'retroachievements.org',
+    supportsServerProxy: true,
+    serverOnlySecret: true,
+    probeType: 'retroachievements',
+  },
+  {
     id: 'itunes',
     label: 'iTunes',
     domainId: 'music',
@@ -210,6 +232,9 @@ export async function loadServerApiStatus(options = {}) {
       lastfm: { configured: Boolean(res.providers?.lastfm?.configured) },
       rawg: { configured: Boolean(res.providers?.rawg?.configured) },
       igdb: { configured: Boolean(res.providers?.igdb?.configured) },
+      googleBooks: { configured: Boolean(res.providers?.googleBooks?.configured) },
+      steamAchievements: { configured: Boolean(res.providers?.steamAchievements?.configured) },
+      retroachievements: { configured: Boolean(res.providers?.retroachievements?.configured) },
     },
   };
 }
@@ -576,6 +601,144 @@ export async function probeApiSource(
         latencyMs,
         via: outcome.via,
         message: outcome.via === 'proxy' ? 'Online via servidor' : 'Online',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
+  if (meta.probeType === 'steamAchievements') {
+    try {
+      const outcome = await fetchSteamAchievementsViaProxy(
+        { probe: '1' },
+        {
+          dedup: false,
+          timeoutMs,
+          fetchImpl,
+          nowFn,
+          accessToken,
+          supabaseClient,
+          storage,
+          forceProxy,
+          ...(isDev !== undefined ? { isDev } : {}),
+        }
+      );
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (outcome.notConfigured || outcome.status === 503) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'not_configured',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.authRequired
+            ? 'Entre na sua conta para verificar o proxy Steam no servidor.'
+            : 'Sem chave no servidor (STEAM_WEB_API_KEY).',
+          checkedAt: nowFn(),
+        };
+      }
+      if (!outcome.ok) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'error',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.status
+            ? `Indisponível (HTTP ${outcome.status}).`
+            : 'Falha ao consultar Steam Conquistas via servidor.',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: true,
+        state: 'online',
+        status: outcome.status || 200,
+        latencyMs,
+        via: 'proxy',
+        message: 'Online via servidor',
+        checkedAt: nowFn(),
+      };
+    } catch {
+      return {
+        id: meta.id,
+        ok: false,
+        state: 'error',
+        status: null,
+        latencyMs: Math.max(0, nowFn() - start),
+        via: 'none',
+        message: 'Falha de conexão ou tempo limite excedido.',
+        checkedAt: nowFn(),
+      };
+    }
+  }
+
+  if (meta.probeType === 'retroachievements') {
+    try {
+      const outcome = await fetchRetroAchievementsViaProxy(
+        { probe: '1' },
+        {
+          dedup: false,
+          timeoutMs,
+          fetchImpl,
+          nowFn,
+          accessToken,
+          supabaseClient,
+          storage,
+          forceProxy,
+          ...(isDev !== undefined ? { isDev } : {}),
+        }
+      );
+      const latencyMs = Math.max(0, nowFn() - start);
+      if (outcome.notConfigured || outcome.status === 503) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'not_configured',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.authRequired
+            ? 'Entre na sua conta para verificar o proxy RetroAchievements no servidor.'
+            : 'Sem chave no servidor (RETROACHIEVEMENTS_API_KEY).',
+          checkedAt: nowFn(),
+        };
+      }
+      if (!outcome.ok) {
+        return {
+          id: meta.id,
+          ok: false,
+          state: 'error',
+          status: outcome.status ?? null,
+          latencyMs,
+          via: outcome.via,
+          message: outcome.status
+            ? `Indisponível (HTTP ${outcome.status}).`
+            : 'Falha ao consultar RetroAchievements via servidor.',
+          checkedAt: nowFn(),
+        };
+      }
+      return {
+        id: meta.id,
+        ok: true,
+        state: 'online',
+        status: outcome.status || 200,
+        latencyMs,
+        via: 'proxy',
+        message: 'Online via servidor',
         checkedAt: nowFn(),
       };
     } catch {

@@ -55,6 +55,10 @@ import {
   mapCategoriesToGenreAndSubgenres,
   normalizeLanguageLabel,
 } from '../utils/genreMapper.js';
+import {
+  orderCinemaSearchSources,
+  prioritizeCinemaSearchCandidates,
+} from './multiDomainSearchService.js';
 
 const ANILIST_GRAPHQL_URL = 'https://graphql.anilist.co';
 const JIKAN_ANIME_URL = 'https://api.jikan.moe/v4/anime';
@@ -95,7 +99,7 @@ const ALL_SOURCE_IDS = CINEMA_API_SOURCES.map((s) => s.id);
 export const DEFAULT_SOURCES_BY_FILTER = {
   all: ['tmdb', 'tvmaze', 'imdb', 'anilist', 'jikan', 'wikidata'],
   movie: ['tmdb', 'imdb', 'wikidata', 'internetArchive'],
-  series: ['tvmaze', 'tmdb', 'imdb', 'wikidata'],
+  series: ['tmdb', 'tvmaze', 'imdb', 'wikidata'],
   anime: ['anilist', 'jikan', 'tmdb'],
 };
 
@@ -1370,13 +1374,27 @@ async function searchInternetArchiveMovies(
 }
 
 function mergeTwoCandidates(primary, incoming) {
+  const incomingIsTmdbPoster =
+    incoming.sourceBadge === 'TMDB' &&
+    Boolean(incoming.coverUrl) &&
+    primary.sourceBadge !== 'TMDB';
   const coverCandidates = Array.from(
-    new Set([
-      ...(primary.coverCandidates || []),
-      primary.coverUrl,
-      ...(incoming.coverCandidates || []),
-      incoming.coverUrl,
-    ].filter(Boolean))
+    new Set(
+      (incomingIsTmdbPoster
+        ? [
+            incoming.coverUrl,
+            ...(incoming.coverCandidates || []),
+            primary.coverUrl,
+            ...(primary.coverCandidates || []),
+          ]
+        : [
+            ...(primary.coverCandidates || []),
+            primary.coverUrl,
+            ...(incoming.coverCandidates || []),
+            incoming.coverUrl,
+          ]
+      ).filter(Boolean)
+    )
   );
   const mergedSources = Array.from(
     new Set([...(primary.mergedSources || [primary.sourceBadge]), ...(incoming.mergedSources || [incoming.sourceBadge])].filter(Boolean))
@@ -1539,6 +1557,7 @@ export async function searchCinemaMedia(
     forceProxy = null,
     isDev = undefined,
     onPartialResults = null,
+    tmdbPriorityGraceMs = 1500,
   } = {}
 ) {
   const cleanQuery = String(query || '').trim();
@@ -1553,10 +1572,11 @@ export async function searchCinemaMedia(
     };
   }
 
-  const activeSources =
+  const rawActiveSources =
     Array.isArray(sources) && sources.length > 0
       ? sources.filter((id) => VALID_SOURCE_IDS.has(id))
       : getDefaultSourcesForFilter(filter);
+  const activeSources = orderCinemaSearchSources(rawActiveSources, filter);
 
   const cacheKey = makeCacheKey(cleanQuery, filter, activeSources);
 
@@ -1613,37 +1633,98 @@ export async function searchCinemaMedia(
     .filter((id) => typeof sourceFetchers[id] === 'function')
     .map((id) => ({ id, promise: sourceFetchers[id]() }));
 
+  const shouldPrioritizeTmdbFirst =
+    filter !== 'anime' && runners.some((r) => r.id === 'tmdb');
+  let tmdbGraceTimer = null;
+
   if (typeof onPartialResults === 'function' && runners.length > 0) {
-    const streamedCollected = [];
+    const streamedBySource = new Map();
     const streamedSources = new Set();
     let remaining = runners.length;
+    let tmdbSettled = !shouldPrioritizeTmdbFirst;
+    let tmdbGraceExpired = false;
+
+    const emitPartialFrame = ({ force = false } = {}) => {
+      if (signal?.aborted) return;
+      if (!force && !tmdbSettled && !tmdbGraceExpired) return;
+
+      const orderedCollected = [];
+      for (const r of runners) {
+        const list = streamedBySource.get(r.id);
+        if (Array.isArray(list) && list.length > 0) {
+          orderedCollected.push(...list);
+        }
+      }
+      if (orderedCollected.length === 0) return;
+
+      const dedupedPartial = deduplicateCinemaResults(filterCinemaByType(orderedCollected));
+      const prioritizedPartial = prioritizeCinemaSearchCandidates(dedupedPartial, cleanQuery, {
+        filter,
+        onlyWithPoster: remaining > 0,
+      });
+      if (prioritizedPartial.length === 0) return;
+
+      onPartialResults({
+        results: prioritizedPartial,
+        usedSources: Array.from(streamedSources),
+        pendingCount: remaining,
+        partial: remaining > 0,
+      });
+    };
+
+    if (shouldPrioritizeTmdbFirst && Number(tmdbPriorityGraceMs) > 0) {
+      tmdbGraceTimer = setTimeout(() => {
+        tmdbGraceTimer = null;
+        tmdbGraceExpired = true;
+        emitPartialFrame({ force: true });
+      }, Number(tmdbPriorityGraceMs));
+      if (typeof tmdbGraceTimer?.unref === 'function') {
+        tmdbGraceTimer.unref();
+      }
+    }
 
     runners.forEach((runner) => {
       runner.promise
         .then((items) => {
           remaining = Math.max(0, remaining - 1);
+          if (runner.id === 'tmdb') {
+            tmdbSettled = true;
+            if (tmdbGraceTimer) {
+              clearTimeout(tmdbGraceTimer);
+              tmdbGraceTimer = null;
+            }
+          }
           if (signal?.aborted) return;
           if (Array.isArray(items) && items.length > 0) {
-            streamedCollected.push(...items);
+            streamedBySource.set(runner.id, items);
             streamedSources.add(runner.id);
-            const partialResults = deduplicateCinemaResults(
-              filterCinemaByType(streamedCollected)
-            );
-            onPartialResults({
-              results: partialResults,
-              usedSources: Array.from(streamedSources),
-              pendingCount: remaining,
-              partial: remaining > 0,
-            });
+          }
+          if (streamedBySource.size > 0) {
+            emitPartialFrame();
           }
         })
         .catch(() => {
           remaining = Math.max(0, remaining - 1);
+          if (runner.id === 'tmdb') {
+            tmdbSettled = true;
+            if (tmdbGraceTimer) {
+              clearTimeout(tmdbGraceTimer);
+              tmdbGraceTimer = null;
+            }
+            if (!signal?.aborted && streamedBySource.size > 0) {
+              emitPartialFrame();
+            }
+          }
         });
     });
   }
 
   const settled = await Promise.allSettled(runners.map((r) => r.promise));
+
+  if (tmdbGraceTimer) {
+    clearTimeout(tmdbGraceTimer);
+    tmdbGraceTimer = null;
+  }
 
   const collected = [];
   const failedSources = [];
@@ -1659,7 +1740,11 @@ export async function searchCinemaMedia(
 
   const filteredByType = filterCinemaByType(collected);
 
-  const deduplicated = deduplicateCinemaResults(filteredByType);
+  const deduplicated = prioritizeCinemaSearchCandidates(
+    deduplicateCinemaResults(filteredByType),
+    cleanQuery,
+    { filter, onlyWithPoster: false }
+  );
   const allFailed = runners.length > 0 && failedSources.length === runners.length;
   const partialFailure = failedSources.length > 0 && failedSources.length < runners.length;
 

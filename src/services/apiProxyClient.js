@@ -1049,6 +1049,246 @@ export async function fetchGoogleBooksViaProxyOrDirect(
 }
 
 /**
+ * Executa consulta de conquistas/jogos Steam EXCLUSIVAMENTE via `/api/steam-achievements`
+ * (secret STEAM_WEB_API_KEY apenas no Cloudflare). Nunca aceita nem armazena chave no cliente.
+ */
+export async function fetchSteamAchievementsViaProxy(
+  params = {},
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = false,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+  } = {}
+) {
+  if (!shouldUseApiProxy({ forceProxy, isDev })) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: null,
+      notConfigured: true,
+      authRequired: false,
+      timedOut: false,
+      data: null,
+    };
+  }
+
+  const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });
+  if (!token) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 401,
+      notConfigured: true,
+      authRequired: true,
+      timedOut: false,
+      data: null,
+    };
+  }
+
+  const cleanParams = buildQueryParams(params, { stripSecrets: true });
+  const qs = cleanParams.toString();
+  const proxyUrl = `/api/steam-achievements${qs ? `?${qs}` : ''}`;
+
+  try {
+    const res = await apiRequest(proxyUrl, {
+      provider: 'steamAchievements',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+    if (status === 503 || status === 404 || contentType.includes('text/html')) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: true,
+        authRequired: false,
+        timedOut: false,
+        data: null,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: false,
+        authRequired: status === 401,
+        timedOut: false,
+        data,
+      };
+    }
+    return {
+      ok: Boolean(data && typeof data === 'object'),
+      res,
+      via: 'proxy',
+      status: status || 200,
+      notConfigured: false,
+      authRequired: false,
+      timedOut: false,
+      data,
+    };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    const timedOut = err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT';
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: err?.status ?? null,
+      notConfigured: err?.status === 503,
+      authRequired: err?.status === 401,
+      timedOut,
+      data: null,
+    };
+  }
+}
+
+/**
+ * Executa consulta RetroAchievements EXCLUSIVAMENTE via `/api/retroachievements`
+ * (secret RETROACHIEVEMENTS_API_KEY apenas no Cloudflare). Nunca envia chave `y` pelo cliente.
+ */
+export async function fetchRetroAchievementsViaProxy(
+  params = {},
+  {
+    signal = undefined,
+    fetchImpl = fetch,
+    timeoutMs = API_TIMEOUT_MS,
+    nowFn = Date.now,
+    dedup = false,
+    accessToken = '',
+    supabaseClient = null,
+    storage = null,
+    forceProxy = null,
+    isDev = isDevRuntime(),
+  } = {}
+) {
+  if (!shouldUseApiProxy({ forceProxy, isDev })) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: null,
+      notConfigured: true,
+      authRequired: false,
+      timedOut: false,
+      data: null,
+    };
+  }
+
+  const token = await getSupabaseAccessToken({ accessToken, supabaseClient, storage });
+  if (!token) {
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: 401,
+      notConfigured: true,
+      authRequired: true,
+      timedOut: false,
+      data: null,
+    };
+  }
+
+  const cleanParams = buildQueryParams(params, { stripSecrets: true });
+  cleanParams.delete('y');
+  cleanParams.delete('Y');
+  const qs = cleanParams.toString();
+  const proxyUrl = `/api/retroachievements${qs ? `?${qs}` : ''}`;
+
+  try {
+    const res = await apiRequest(proxyUrl, {
+      provider: 'retroachievements',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+      signal,
+      fetchImpl,
+      timeoutMs,
+      nowFn,
+      dedup,
+      maxRetries: 0,
+    });
+    const status = Number(res?.status) || 0;
+    const contentType = String(getResponseHeader(res, 'content-type') || '').toLowerCase();
+    if (status === 503 || status === 404 || contentType.includes('text/html')) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: true,
+        authRequired: false,
+        timedOut: false,
+        data: null,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      return {
+        ok: false,
+        res,
+        via: 'proxy',
+        status,
+        notConfigured: false,
+        authRequired: status === 401,
+        timedOut: false,
+        data,
+      };
+    }
+    return {
+      ok: Boolean(data && typeof data === 'object'),
+      res,
+      via: 'proxy',
+      status: status || 200,
+      notConfigured: false,
+      authRequired: false,
+      timedOut: false,
+      data,
+    };
+  } catch (err) {
+    if (err?.name === 'AbortError' || signal?.aborted) {
+      throw err;
+    }
+    const timedOut = err?.name === 'TimeoutError' || err?.code === 'API_TIMEOUT';
+    return {
+      ok: false,
+      res: null,
+      via: 'none',
+      status: err?.status ?? null,
+      notConfigured: err?.status === 503,
+      authRequired: err?.status === 401,
+      timedOut,
+      data: null,
+    };
+  }
+}
+
+/**
  * Consulta `GET /api/status` (autenticado) para saber quais provedores
  * possuem chaves configuradas no servidor Cloudflare (apenas booleanos).
  */
@@ -1068,6 +1308,8 @@ export async function fetchProxyStatus({
     rawg: { configured: false },
     igdb: { configured: false },
     googleBooks: { configured: false },
+    steamAchievements: { configured: false },
+    retroachievements: { configured: false },
   };
 
   if (!shouldUseApiProxy({ forceProxy, isDev })) {
@@ -1149,6 +1391,8 @@ export async function fetchProxyStatus({
         rawg: { configured: Boolean(json.providers?.rawg?.configured) },
         igdb: { configured: Boolean(json.providers?.igdb?.configured) },
         googleBooks: { configured: Boolean(json.providers?.googleBooks?.configured) },
+        steamAchievements: { configured: Boolean(json.providers?.steamAchievements?.configured) },
+        retroachievements: { configured: Boolean(json.providers?.retroachievements?.configured) },
       },
     };
   } catch {
