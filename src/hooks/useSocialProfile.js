@@ -28,6 +28,7 @@ function getDefaultProfile() {
     avatarIcon: '',
     avatarUrl: profile.avatarUrl || '',
     coverUrl: profile.coverUrl || '',
+    collectorTitle: '',
     bio: profile.bio,
     linkLabel: profile.linkLabel,
     linkUrl: profile.linkUrl,
@@ -126,6 +127,10 @@ function normalizeProfileObject(rawProfile, fallback) {
       typeof (parsed.activeTitleBadge ?? parsed.active_title_badge) === 'string'
         ? parsed.activeTitleBadge ?? parsed.active_title_badge
         : base.activeTitleBadge,
+    collectorTitle:
+      typeof (parsed.collectorTitle ?? parsed.collector_title) === 'string'
+        ? String(parsed.collectorTitle ?? parsed.collector_title).trim()
+        : base.collectorTitle,
     onboardingCompleted:
       parsed.onboardingCompleted !== undefined
         ? Boolean(parsed.onboardingCompleted)
