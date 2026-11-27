@@ -297,17 +297,17 @@ export function StarRatingPicker({
                 <div
                   key={def.key}
                   data-testid={`criterion-row-${def.key}`}
-                  className="flex items-center justify-between gap-2 py-0.5"
+                  className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 py-1"
                 >
                   <span
-                    className="min-w-0 flex-1 truncate text-xs font-medium text-ink"
+                    className="min-w-[110px] flex-1 truncate text-xs font-medium text-ink"
                     title={def.label}
                   >
                     <span className="sm:hidden">{def.shortLabel || def.label}</span>
                     <span className="hidden sm:inline">{def.label}</span>
                   </span>
 
-                  <div className="flex shrink-0 items-center gap-1.5">
+                  <div className="flex shrink-0 items-center gap-1">
                     <div
                       className="inline-flex items-center"
                       role="group"
@@ -326,7 +326,8 @@ export function StarRatingPicker({
                         return (
                           <div
                             key={idx}
-                            className="relative inline-flex min-h-[44px] w-7 items-center justify-center sm:w-8"
+                            data-testid={`criterion-star-slot-${def.key}-${idx}`}
+                            className="relative inline-flex min-h-[44px] min-w-[44px] items-center justify-center"
                           >
                             <HalfAwareStarIcon fill={fill} size="xs" />
                             <button
@@ -373,7 +374,7 @@ export function StarRatingPicker({
                       type="button"
                       disabled={!isFilled}
                       onClick={() => handleCriterionInput(def.key, null)}
-                      className="inline-flex min-h-[44px] w-7 items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-app hover:text-ink disabled:opacity-25"
+                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-[6px] text-muted transition-colors hover:bg-app hover:text-ink disabled:opacity-25"
                       aria-label={`Limpar ${def.label}`}
                       title="Deixar sem nota"
                     >

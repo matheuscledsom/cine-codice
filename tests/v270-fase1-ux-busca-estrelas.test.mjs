@@ -378,7 +378,7 @@ describe('OMNIPRISM v2.7.0 — Fase 1.3: Criterios em Mini-Estrelas (0.5 a 5.0) 
     assert.equal(cleared.criteria.filledCount, 2);
   });
 
-  it('substitui sliders range por mini-estrelas compactas com equivalente 0-10 em StarRatingPicker.jsx', () => {
+  it('substitui sliders range por mini-estrelas compactas com equivalente 0-10 e alvo >= 44x44 px em StarRatingPicker.jsx', () => {
     const pickerSrc = readSrc('src/components/StarRatingPicker.jsx');
     assert.equal(/type=["']range["']/i.test(pickerSrc), false, 'Sliders type="range" devem ser removidos');
     assert.match(pickerSrc, /data-testid="criteria-mini-stars-panel"/);
@@ -386,5 +386,11 @@ describe('OMNIPRISM v2.7.0 — Fase 1.3: Criterios em Mini-Estrelas (0.5 a 5.0) 
     assert.match(pickerSrc, /criterion-val10-/);
     assert.match(pickerSrc, /applyCriterionStarChange/);
     assert.match(pickerSrc, /formatCriterionValue10/);
+    const criteriaPart = pickerSrc.split('data-testid="criteria-mini-stars-panel"')[1] || '';
+    assert.match(
+      criteriaPart,
+      /data-testid=\{`criterion-star-slot-\$\{def\.key\}-\$\{idx\}`\}[\s\S]*?min-h-\[44px\] min-w-\[44px\]/
+    );
+    assert.equal(/\bw-7\b|\bsm:w-8\b/.test(criteriaPart), false, 'Mini-estrelas e limpar criterio devem ter alvo >= 44x44 px');
   });
 });
