@@ -127,9 +127,11 @@ export function buildDiagnosticsReportText({
   catalogSummary = null,
   storageSummary = null,
   errorLog = [],
+  failedSyncItems = [],
 } = {}) {
   const cat = catalogSummary || computeCatalogDiagnosticsSummary([]);
   const st = storageSummary || {};
+  const failedList = Array.isArray(failedSyncItems) ? failedSyncItems : [];
   const lines = [
     `OmniPrism — Diagnóstico Local (${new Date().toISOString()})`,
     `Versão: ${release.label || release.version || 'desconhecida'} | Schema IndexedDB: v${schemaVersion}`,
@@ -137,9 +139,16 @@ export function buildDiagnosticsReportText({
     `Domínios: Cinema ${cat.byDomain.cinema} | Leitura ${cat.byDomain.reading} | Games ${cat.byDomain.games} | Música ${cat.byDomain.music}`,
     `Tamanho aproximado do catálogo: ${cat.approxPayloadFormatted}`,
     `Storage: uso ${st.formattedUsage || 'N/D'} / cota ${st.formattedQuota || 'N/D'} | localStorage ${st.formattedLocalStorage || 'N/D'} (${st.localStorageKeys ?? 0} chaves) | persistente: ${st.persisted === true ? 'sim' : st.persisted === false ? 'não' : 'indisponível'}`,
-    '',
-    `--- Log local de erros (${Array.isArray(errorLog) ? errorLog.length : 0}/50) ---`,
-    formatLocalErrorLogForCopy(errorLog),
   ];
+  if (failedList.length > 0) {
+    lines.push('');
+    lines.push(`--- Obras com falha no envio à nuvem (${failedList.length}) ---`);
+    failedList.forEach((f) => {
+      lines.push(`- ${f.title || 'Sem título'}: ${f.reason || 'falha no envio'}`);
+    });
+  }
+  lines.push('');
+  lines.push(`--- Log local de erros (${Array.isArray(errorLog) ? errorLog.length : 0}/50) ---`);
+  lines.push(formatLocalErrorLogForCopy(errorLog));
   return lines.join('\n');
 }

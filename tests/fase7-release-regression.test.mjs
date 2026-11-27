@@ -242,18 +242,18 @@ describe('Fase 7 — Regressão Final v1.1.0 · Lumière', () => {
     }
   });
 
-  it('Versão atual (2.4.0) está consistente em todos os arquivos oficiais mantendo histórico 1.0.0/1.1.0/1.2.0/1.3.0/2.3.3 e protocolo WS', () => {
+  it('Versão atual (2.7.1) está consistente em todos os arquivos oficiais mantendo histórico 1.0.0/1.1.0/1.2.0/1.3.0/2.3.3 e protocolo WS', () => {
     const pkg = JSON.parse(readText('package.json'));
     const lock = JSON.parse(readText('package-lock.json'));
     assert.equal(pkg.name, 'omniprism');
-    assert.equal(pkg.version, '2.4.0');
-    assert.equal(lock.version, '2.4.0');
-    assert.equal(lock.packages?.['']?.version, '2.4.0');
+    assert.equal(pkg.version, '2.7.1');
+    assert.equal(lock.version, '2.7.1');
+    assert.equal(lock.packages?.['']?.version, '2.7.1');
 
-    assert.equal(CODICE_RELEASE.version, '2.4.0');
-    assert.equal(CODICE_RELEASE.label, 'v2.4.0');
+    assert.equal(CODICE_RELEASE.version, '2.7.1');
+    assert.equal(CODICE_RELEASE.label, 'v2.7.1');
     assert.equal(CODICE_RELEASE.label.includes('Lumière'), false);
-    assert.ok(RELEASE_HISTORY.some((r) => r.version === '2.4.0'));
+    assert.ok(RELEASE_HISTORY.some((r) => r.version === '2.7.1'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '2.3.3'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.3.0'));
     assert.ok(RELEASE_HISTORY.some((r) => r.version === '1.2.0'));

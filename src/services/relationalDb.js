@@ -74,6 +74,7 @@ function makeEpisodeReviewCompositeKey(workId, seasonNumber, episodeNumber) {
 }
 
 export const RELATIONAL_SCHEMA_META_KEY = '__omniprism_schema_meta__';
+export const EPOCH_ZERO_ISO = '1970-01-01T00:00:00.000Z';
 
 const VALID_FRANCHISE_TIERS = new Set(['mainline', 'spinoff', 'companion', 'unclassified']);
 
@@ -436,8 +437,11 @@ export function normalizeRelationalWorkRecord(work = {}) {
       !Array.isArray(work.trackRatings)
         ? work.trackRatings
         : {},
-    updatedAt: work.updatedAt || work.updated_at || work.createdAt || new Date().toISOString(),
-    updated_at: work.updatedAt || work.updated_at || work.createdAt || new Date().toISOString(),
+    // Nunca inventa "agora" para obra sem data: Epoch 0 (1970-01-01T00:00:00.000Z)
+    // é ISO válido (Date.parse === 0) e conta sempre como a mais antiga no sync.
+    createdAt: work.createdAt || '',
+    updatedAt: work.updatedAt || work.updated_at || EPOCH_ZERO_ISO,
+    updated_at: work.updatedAt || work.updated_at || EPOCH_ZERO_ISO,
   };
 }
 

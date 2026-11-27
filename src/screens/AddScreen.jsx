@@ -178,6 +178,8 @@ export function AddScreen({
   onOpenImportCatalog,
   requestedSearchQuery = '',
   onConsumeRequestedSearchQuery,
+  isCloudAuthenticated = false,
+  onOpenCloudModal,
 }) {
   const [internalDomain, setInternalDomain] = useState(() => normalizeDomainId(activeDomain));
   useEffect(() => {
@@ -239,6 +241,7 @@ export function AddScreen({
   const [failedSourcesCount, setFailedSourcesCount] = useState(0);
   const [allFailed, setAllFailed] = useState(false);
   const [offlineNotice, setOfflineNotice] = useState(false);
+  const [tmdbAuthRequired, setTmdbAuthRequired] = useState(false);
   const [sourceStatusHint, setSourceStatusHint] = useState('');
   const [gameCardOverrides, setGameCardOverrides] = useState({});
 
@@ -510,13 +513,18 @@ export function AddScreen({
       }
 
       setRecentSearches(recordRecentSearch('cinema', cleanQuery));
+      const cinemaAuthState =
+        isCloudAuthenticated || Boolean(String(tmdbKey || '').trim()) ? 'auth' : 'anon';
 
       if (!skipCache) {
-        const cached = getCachedCinemaSearch(cleanQuery, filter, sources);
+        const cached = getCachedCinemaSearch(cleanQuery, filter, sources, {
+          authState: cinemaAuthState,
+        });
         if (cached) {
           setResults(cached.results);
           setPartialFailure(Boolean(cached.partialFailure));
           setFailedSourcesCount(Number(cached.failedCount) || 0);
+          setTmdbAuthRequired(Boolean(cached.tmdbAuthRequired));
           setAllFailed(false);
           setIsLoading(false);
           setIsStreamingMore(false);
@@ -532,6 +540,7 @@ export function AddScreen({
       setFailedSourcesCount(0);
       setAllFailed(false);
       setOfflineNotice(false);
+      setTmdbAuthRequired(false);
 
       try {
         const response = await searchCinemaMedia(cleanQuery, {
@@ -560,6 +569,7 @@ export function AddScreen({
         setResults(response.results || []);
         setPartialFailure(Boolean(response.partialFailure));
         setFailedSourcesCount(Number(response.failedCount) || 0);
+        setTmdbAuthRequired(Boolean(response.tmdbAuthRequired));
         setAllFailed(Boolean(response.allFailed) && (response.results || []).length === 0);
       } catch (err) {
         if (err?.name === 'AbortError' || controller.signal.aborted) return;
@@ -573,7 +583,7 @@ export function AddScreen({
         }
       }
     },
-    [effectiveDomain, tmdbKey]
+    [effectiveDomain, tmdbKey, isCloudAuthenticated]
   );
 
   useEffect(() => {
@@ -1602,6 +1612,31 @@ export function AddScreen({
           </button>
         </div>
       )}
+
+      {effectiveDomain === 'cinema' &&
+        !isCloudAuthenticated &&
+        !tmdbKey &&
+        searchFilter !== 'anime' &&
+        (tmdbAuthRequired || (query.trim().length >= MIN_SEARCH_QUERY_LENGTH && !isLoading)) && (
+          <div
+            role="status"
+            data-testid="cinema-auth-covers-banner"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-accent/40 bg-card px-3 py-2.5 text-xs text-ink"
+          >
+            <span className="leading-relaxed">
+              Entre na sua conta para carregar capas e pôsteres completos de filmes e séries pelo TMDB.
+            </span>
+            {onOpenCloudModal && (
+              <button
+                type="button"
+                onClick={onOpenCloudModal}
+                className="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-[6px] bg-accent px-3 text-xs font-semibold text-accent-ink hover:opacity-90"
+              >
+                Entrar para carregar capas
+              </button>
+            )}
+          </div>
+        )}
 
       {partialFailure && (
         <div

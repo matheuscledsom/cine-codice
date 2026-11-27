@@ -1,8 +1,15 @@
 import { BookOpen, Clapperboard, Film, Gamepad2, Music, Tv } from 'lucide-react';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { isFlagEnabled } from '../config/flags';
 import { buildGeneratedPosterDataUri } from '../graphics/posterGenerator';
+import {
+  buildRetryCoverUrl,
+  COVER_RETRY_DELAY_MS,
+  MAX_COVER_IMAGE_RETRIES,
+} from '../lib/coverRetry';
 import { getCachedThumbnail, optimizeCoverThumbnail } from '../services/imagePipeline';
+
+export { buildRetryCoverUrl, COVER_RETRY_DELAY_MS, MAX_COVER_IMAGE_RETRIES };
 
 const WORK_ICONS = {
   movie: Film,
@@ -78,18 +85,35 @@ export const CoverImage = memo(function CoverImage({
 
   const sourcesKey = cleanSources.join('|');
   const [activeIndex, setActiveIndex] = useState(0);
+  const [retryAttempt, setRetryAttempt] = useState(0);
   const [loadedSrc, setLoadedSrc] = useState(null);
   const [cachedThumb, setCachedThumb] = useState(null);
+  const retryTimerRef = useRef(null);
 
   useEffect(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     setActiveIndex(0);
+    setRetryAttempt(0);
     setLoadedSrc(null);
     setCachedThumb(null);
   }, [sourcesKey]);
 
+  useEffect(() => {
+    return () => {
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const currentSrc =
     activeIndex < cleanSources.length ? cleanSources[activeIndex] : null;
-  const effectiveSrc = cachedThumb || currentSrc;
+  const effectiveSrc =
+    cachedThumb || (currentSrc ? buildRetryCoverUrl(currentSrc, retryAttempt) : null);
   const isLoaded = Boolean(effectiveSrc && loadedSrc === effectiveSrc);
   const thumbKey = compact ? 'sm' : 'md';
 
@@ -119,6 +143,24 @@ export const CoverImage = memo(function CoverImage({
 
   const handleImageError = () => {
     setLoadedSrc(null);
+    if (cachedThumb) {
+      setCachedThumb(null);
+      return;
+    }
+    if (
+      currentSrc &&
+      !currentSrc.startsWith('data:') &&
+      !currentSrc.startsWith('blob:') &&
+      retryAttempt < MAX_COVER_IMAGE_RETRIES
+    ) {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = setTimeout(() => {
+        retryTimerRef.current = null;
+        setRetryAttempt((prev) => prev + 1);
+      }, COVER_RETRY_DELAY_MS);
+      return;
+    }
+    setRetryAttempt(0);
     setActiveIndex((prev) => prev + 1);
   };
 

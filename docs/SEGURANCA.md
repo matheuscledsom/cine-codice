@@ -68,5 +68,16 @@ Cabeçalhos ativos em `/*`:
 
 ## 6. Rascunhos Locais de RLS no Supabase (Não Aplicados)
 
-- [`supabase/migrations/20261124_rls_catalog_works.sql`](../supabase/migrations/20261124_rls_catalog_works.sql): rascunho revisável para habilitar RLS em `public.catalog_works` (`auth.uid() = user_id` em `SELECT`/`INSERT`/`UPDATE`/`DELETE`) e políticas de pasta por usuário no bucket `covers` (`(storage.foldername(name))[1] = auth.uid()::text`).
-- [`supabase/verify_rls.sql`](../supabase/verify_rls.sql): consultas estritamente somente leitura (`SELECT`) para auditar políticas ativas e verificar eventuais registros sem `user_id` antes e depois de aplicar o rascunho manualmente no SQL Editor do Supabase.
+- [`supabase/migrations/20261124_rls_catalog_works.sql`](../supabase/migrations/20261124_rls_catalog_works.sql): rascunho revisável original para habilitar RLS em `public.catalog_works` (`auth.uid() = user_id` em `SELECT`/`INSERT`/`UPDATE`/`DELETE`) e políticas de pasta por usuário no bucket `covers` (`(storage.foldername(name))[1] = auth.uid()::text`).
+- [`supabase/migrations/20261126_v271_catalog_works_sync_additive.sql`](../supabase/migrations/20261126_v271_catalog_works_sync_additive.sql): migração estritamente **aditiva e idempotente** (sem `DROP`, sem alteração de tipos/constraints e sem criação/remoção de políticas RLS, preservando a política existente `owner_all_catalog`), adicionando apenas `deleted_at timestamptz NULL`, índices `(user_id, updated_at DESC)` e `(user_id, deleted_at)`, `REPLICA IDENTITY FULL` e inclusão condicional em `supabase_realtime`.
+- [`supabase/verify_rls.sql`](../supabase/verify_rls.sql): consultas estritamente somente leitura (`SELECT`) para auditar colunas, índices, RLS, políticas existentes (com alerta para políticas potencialmente mais permissivas que `auth.uid() = user_id`), publicação realtime, bucket `covers` e registros sem `user_id` antes e depois de aplicar a migração manualmente no SQL Editor do Supabase.
+
+---
+
+## 7. Auto-Configuração (`/api/config`) e Política de Sessão (v2.7.1)
+
+- **Endpoint público `/api/config` (`functions/api/config.js`):** devolve **exclusivamente** `{ supabaseUrl, supabaseAnonKey }` lidos de `SUPABASE_URL` e `SUPABASE_ANON_KEY` no Cloudflare Pages, com bloqueio de origem `cross-site` e recusa explícita de chaves privilegiadas (`sb_secret_*` ou JWT com role privilegiada). Ambas as informações são públicas por desenho e protegidas por RLS no Supabase.
+- **Decisão explícita — NÃO espelhar sessão Supabase no IndexedDB:** a sessão de autenticação do Supabase (`omniprism_supabase_auth_v1`) contém `access_token` e `refresh_token`. Conforme a diretriz de segurança do projeto (nenhum token ou credencial de autenticação gravado no IndexedDB ou exportado em backups/snapshots), a sessão permanece **exclusivamente** no storage nativo do SDK Supabase (`localStorage`, com `persistSession: true` e `autoRefreshToken: true`), reforçada por:
+  1. Solicitação best-effort de armazenamento persistente (`navigator.storage.persist()`) no login para reduzir evicção automática do navegador.
+  2. Auto-configuração via `/api/config` (apenas dados públicos), garantindo que o usuário nunca precise redigitar URL/chave após reinstalação ou limpeza.
+  3. Reinscrição automática de `onAuthStateChange` após hidratação de `/api/config`, renovação silenciosa ao retornar ao foco (`visibilitychange`), tolerância offline sem deslogar a interface e aviso claro em português caso a sessão realmente expire.

@@ -1282,6 +1282,8 @@ export function ProfileSettingsDrawer({
                 <DiagnosticsPanel
                   items={items}
                   authenticated={Boolean(cloudState?.authenticated)}
+                  cloudState={cloudState}
+                  onOpenCloudModal={onOpenCloudModal}
                   onOpenReleaseNotes={
                     onOpenReleaseNotes
                       ? () => {

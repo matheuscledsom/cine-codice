@@ -3,10 +3,11 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { OMNIPRISM_VERSION } from './src/config/appVersion.js';
 
 export const PWA_IMAGE_CACHE_BUDGET_MB = 80;
 export const PWA_IMAGE_CACHE_MAX_ENTRIES = 320;
-export const APP_BUILD_VERSION = '2.7.0';
+export const APP_BUILD_VERSION = OMNIPRISM_VERSION;
 
 function resolveGitCommitShort() {
   try {
@@ -81,7 +82,7 @@ export default defineConfig({
         globIgnores: ['**/version.json'],
         runtimeCaching: [
           {
-            urlPattern: /^https:\/\/(image\.tmdb\.org|s4\.anilist\.co|cdn\.myanimelist\.net|static\.tvmaze\.com|m\.media-amazon\.com|commons\.wikimedia\.org)\/.*/i,
+            urlPattern: /^https:\/\/(image\.tmdb\.org|s4\.anilist\.co|img\.anili\.st|cdn\.myanimelist\.net|static\.tvmaze\.com|m\.media-amazon\.com|img\.omdbapi\.com|commons\.wikimedia\.org|upload\.wikimedia\.org|books\.google\.com|books\.googleusercontent\.com|covers\.openlibrary\.org|images\.igdb\.com|media\.rawg\.io|shared\.fastly\.steamstatic\.com|coverartarchive\.org|(?:[a-z0-9-]+\.)?archive\.org|(?:[a-z0-9-]+\.)?mzstatic\.com|[a-z0-9-]+\.supabase\.co)\/.*/i,
             handler: 'CacheFirst',
             options: {
               cacheName: 'cine-codice-posters-lru-80mb',

@@ -104,7 +104,9 @@ export function normalizeSupabaseBaseUrl(rawUrl) {
       parsed.protocol === 'http:' &&
       (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
     if (parsed.protocol !== 'https:' && !isLocalHttp) return '';
-    const cleanPath = parsed.pathname.replace(/\/auth\/v1\/?.*$/i, '').replace(/\/+$/, '');
+    const cleanPath = parsed.pathname
+      .replace(/\/(?:auth|rest)\/v1\/?.*$/i, '')
+      .replace(/\/+$/, '');
     return `${parsed.origin}${cleanPath}`;
   } catch {
     return '';
