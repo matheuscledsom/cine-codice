@@ -15,27 +15,45 @@ export const VERSIONING_RULES = {
     'Grandes atualizações (major) recebem um novo codinome oficial (ex.: Lumière 1.0.0, Méliès 2.0.0).',
 };
 
-export const APP_BUILD_VERSION = '2.7.0';
-export const APP_BUILD_LABEL = 'v2.7.0';
+import { OMNIPRISM_VERSION, OMNIPRISM_VERSION_LABEL } from './appVersion.js';
+
+export const APP_BUILD_VERSION = OMNIPRISM_VERSION;
+export const APP_BUILD_LABEL = OMNIPRISM_VERSION_LABEL;
 
 export const CODICE_RELEASE = {
-  version: '2.4.0',
+  version: OMNIPRISM_VERSION,
   codename: '',
-  label: 'v2.4.0',
-  releaseType: 'minor',
+  label: OMNIPRISM_VERSION_LABEL,
+  releaseType: 'patch',
   date: '2026-11',
   summary:
-    'OmniPrism v2.4.0 ("Refino & Profundidade"): modelo único de avaliação 5 estrelas (0.5 a 5.0) + marca Obra da vida + 5 critérios opcionais por domínio, migrações aditivas com snapshot automático no IndexedDB, busca progressiva 250 ms com streaming por fonte, direção de arte limpa (capas protagonistas, 2 raios, alvos >= 44 px), catalogação enxuta com alerta de duplicatas, escopos de franquia (Linha Principal vs Universo Completo), hierarquia musical SOUND (Banda -> Discografia -> Álbuns/EPs/Singles -> Faixas), Página de Entidade clicável, Curador por domínio e Diagnóstico local.',
+    'OmniPrism v2.7.1 ("Conexão Confiável"): auto-configuração do Supabase via /api/config sem digitar chaves nos aparelhos, sessão persistente com renovação silenciosa e avisos claros, sincronização bidirecional entre PC e celular com fila offline, retry exponencial, tombstones (deleted_at) com modo compatível pré-SQL, resumo e snapshot automático na 1ª conexão, capas resilientes com cache segmentado por autenticação + retry no CoverImage e versão unificada em fonte única.',
 };
 
 export const RELEASE_HISTORY = [
+  {
+    version: OMNIPRISM_VERSION,
+    codename: '',
+    label: OMNIPRISM_VERSION_LABEL,
+    releaseType: 'patch',
+    date: '2026-11',
+    summary: CODICE_RELEASE.summary,
+    highlights: [
+      'Auto-configuração pública do Supabase via /api/config (apenas { supabaseUrl, supabaseAnonKey }, nunca chaves privilegiadas), salva localmente para uso offline, com entrada manual recolhida em Avançado.',
+      'Sessão persistente com reinscrição automática de onAuthStateChange, tolerância offline, renovação silenciosa ao voltar ao foco e avisos claros em português se a sessão expirar.',
+      'Sincronização bidirecional confiável (independente do Realtime) com fila offline persistente, retry exponencial, tombstones via deleted_at com fallback automático pré-SQL, proteção de obras sem updated_at (contam como mais antigas) e resumo + snapshot automático na 1ª conexão de um segundo aparelho.',
+      'Capas confiáveis: estado de autenticação na chave de cache da busca, aviso "Entre para carregar capas" quando deslogado, correção do coverUrl duplicado em useBacklog.js preservando capa manual, retry automático no CoverImage e hosts de capa explícitos no CSP img-src e no Workbox.',
+      'Versão unificada em fonte única (src/config/appVersion.js) refletida em package.json, version.json, backup, Início, Perfil e Diagnóstico.',
+    ],
+  },
   {
     version: '2.4.0',
     codename: '',
     label: 'v2.4.0',
     releaseType: 'minor',
     date: '2026-11',
-    summary: CODICE_RELEASE.summary,
+    summary:
+      'OmniPrism v2.4.0 ("Refino & Profundidade"): modelo único de avaliação 5 estrelas (0.5 a 5.0) + marca Obra da vida + 5 critérios opcionais por domínio, migrações aditivas com snapshot automático no IndexedDB, busca progressiva 250 ms com streaming por fonte, direção de arte limpa (capas protagonistas, 2 raios, alvos >= 44 px), catalogação enxuta com alerta de duplicatas, escopos de franquia (Linha Principal vs Universo Completo), hierarquia musical SOUND (Banda -> Discografia -> Álbuns/EPs/Singles -> Faixas), Página de Entidade clicável, Curador por domínio e Diagnóstico local.',
     highlights: [
       'Avaliação unificada 5 estrelas com meia estrela (0.5 a 5.0, escala interna 0–100), marca opcional "Obra da vida" (compatível com o antigo 11 de Games) e avaliação inteligente opcional por 5 critérios específicos por domínio (20% / 1 estrela cada) com sobrescrita manual livre.',
       'IndexedDB com migrações aditivas versionadas e snapshot automático antes de migrar e antes de restaurar backup no modo Mesclar, Error Boundary global com exportação de backup de emergência, auditoria de segurança (docs/SEGURANCA.md) e rascunhos SQL locais de RLS para revisão.',

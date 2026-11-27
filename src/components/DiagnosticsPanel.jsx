@@ -1,6 +1,7 @@
 import {
   Activity,
   Check,
+  Cloud,
   Copy,
   Database,
   HardDrive,
@@ -22,6 +23,12 @@ import {
   formatLocalErrorLogForCopy,
   getLocalErrorLog,
 } from '../lib/errorLogger';
+import {
+  getPendingSyncCount,
+  getTombstoneSyncMode,
+  readSyncQueue,
+} from '../services/omniSyncService';
+import { getSupabaseConfig } from '../services/supabaseClient';
 import { ApiStatusPanel } from './ApiStatusPanel';
 
 async function copyTextToClipboard(text) {
@@ -47,6 +54,8 @@ async function copyTextToClipboard(text) {
 export function DiagnosticsPanel({
   items = [],
   authenticated = false,
+  cloudState = null,
+  onOpenCloudModal,
   onOpenReleaseNotes,
 }) {
   const [storageInfo, setStorageInfo] = useState(null);
@@ -243,6 +252,65 @@ export function DiagnosticsPanel({
                 : 'Não informado pelo navegador'}
           </strong>
         </p>
+      </section>
+
+      {/* Saúde da Sincronização na Nuvem */}
+      <section className="space-y-2.5 p-4" data-testid="diagnostics-cloud-sync">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink">
+            <Cloud className="h-4 w-4 text-accent" strokeWidth={1.5} aria-hidden="true" />
+            <span>Sincronização &amp; Fila Offline</span>
+          </span>
+          {onOpenCloudModal && (
+            <button
+              type="button"
+              onClick={onOpenCloudModal}
+              className="inline-flex min-h-[44px] items-center rounded-[6px] border border-line bg-app px-3 text-xs font-medium text-ink hover:border-accent"
+            >
+              Abrir Nuvem
+            </button>
+          )}
+        </div>
+        {(() => {
+          const sbCfg = getSupabaseConfig();
+          const syncQueue = readSyncQueue();
+          const pending = cloudState?.pendingCount ?? getPendingSyncCount();
+          const mode = cloudState?.tombstoneMode || getTombstoneSyncMode();
+          const syncError = cloudState?.error || syncQueue.lastError || null;
+          return (
+            <div className="space-y-2 text-xs">
+              <dl className="grid grid-cols-2 gap-2 tabular-nums">
+                <div className="rounded-[6px] border border-line bg-app p-2.5">
+                  <dt className="text-[11px] text-subtle">Configuração Supabase</dt>
+                  <dd className="mt-0.5 font-semibold text-ink">
+                    {sbCfg.hasEnvConfig
+                      ? 'Automática (.env)'
+                      : sbCfg.source === 'server'
+                        ? 'Automática (/api/config)'
+                        : sbCfg.isConfigured
+                          ? 'Manual local'
+                          : 'Não configurada'}
+                  </dd>
+                </div>
+                <div className="rounded-[6px] border border-line bg-app p-2.5">
+                  <dt className="text-[11px] text-subtle">Fila Pendente / Exclusões</dt>
+                  <dd className="mt-0.5 font-semibold text-ink">
+                    {pending} pendência{pending === 1 ? '' : 's'} ·{' '}
+                    {mode === 'soft_delete' ? 'Tombstones ativos' : 'Modo compatível'}
+                  </dd>
+                </div>
+              </dl>
+              {syncError && (
+                <p
+                  role="alert"
+                  className="rounded-[6px] border border-accent/40 bg-app px-3 py-2 text-[11px] leading-relaxed text-accent"
+                >
+                  {syncError}
+                </p>
+              )}
+            </div>
+          );
+        })()}
       </section>
 
       {/* Status das Fontes */}

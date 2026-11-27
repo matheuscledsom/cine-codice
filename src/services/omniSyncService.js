@@ -8,23 +8,40 @@ import {
 } from '../config/domainConfig.js';
 import { normalizeAchievementsModel } from '../lib/gameDepth.js';
 import { normalizeExternalRatings } from '../lib/ratings.js';
-import { getAllRelationalWorks, putRelationalWorks } from './relationalDb.js';
-import { getSupabaseClient, getSupabaseConfig } from './supabaseClient.js';
+import {
+  EPOCH_ZERO_ISO,
+  getAllRelationalWorks,
+  putRelationalWorks,
+} from './relationalDb.js';
+import {
+  getSupabaseClient,
+  getSupabaseConfig,
+  requestPersistentBrowserStorage,
+} from './supabaseClient.js';
 
 export const OMNI_CATALOG_TABLE = 'catalog_works';
 export const OMNI_COVERS_BUCKET = 'covers';
 export const OMNI_CINEMA_DOMAIN = 'cinema';
 export const SYNC_META_STORAGE_KEY = 'omniprism_cloud_sync_meta_v1';
 export const PENDING_DELETES_STORAGE_KEY = 'omniprism_cloud_pending_deletes_v1';
+export const CLOUD_TOMBSTONES_STORAGE_KEY = 'omniprism_cloud_tombstones_v1';
+export const SYNC_QUEUE_STORAGE_KEY = 'omniprism_cloud_sync_queue_v1';
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Se a coluna external_rating no Supabase for numérica em vez de jsonb, ajusta automaticamente
 let externalRatingNumericFallback = false;
+// Se a coluna deleted_at ainda não existir no Supabase (antes de rodar o SQL aditivo), opera em modo compatível
+let deletedAtColumnUnsupported = false;
 
 export function resetSyncRuntimeFlagsForTests() {
   externalRatingNumericFallback = false;
+  deletedAtColumnUnsupported = false;
+}
+
+export function getTombstoneSyncMode() {
+  return deletedAtColumnUnsupported ? 'compat_hard_delete' : 'soft_delete';
 }
 
 function deterministicCloudUuid(seedText) {
@@ -63,10 +80,20 @@ function normalizeHttpUrl(raw) {
   return null;
 }
 
-function parseTimestampMs(isoOrDate) {
+export function parseTimestampMs(isoOrDate) {
   if (!isoOrDate) return 0;
-  const ms = Date.parse(isoOrDate);
-  return Number.isFinite(ms) ? ms : 0;
+  const ms = Date.parse(String(isoOrDate));
+  return Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
+/**
+ * Resolve o timestamp efetivo de atualização de uma obra para resolução de conflitos.
+ * Obra sem `updatedAt`/`updated_at` (ou com Epoch 0) retorna `0` e conta sempre como a mais antiga.
+ */
+export function parseWorkUpdatedMs(work = {}) {
+  if (!work || typeof work !== 'object') return 0;
+  const raw = work.updatedAt ?? work.updated_at ?? null;
+  return parseTimestampMs(raw);
 }
 
 export function buildFranchiseKey(work = {}) {
@@ -192,9 +219,12 @@ export function filterWorksByDomain(works = [], domain = 'cinema') {
 export function mapLocalWorkToCatalogRow(
   work = {},
   userId,
-  { numericExternalRating = externalRatingNumericFallback } = {}
+  {
+    numericExternalRating = externalRatingNumericFallback,
+    includeDeletedAt = false,
+    deletedAt = null,
+  } = {}
 ) {
-  const nowIso = new Date().toISOString();
   const cloudId = toCloudWorkId(work.cloudId || work.id);
   const domain = inferDomainFromWork(work);
   const mediaType = normalizeWorkTypeForDomain(work.workType || work.mediaType, domain);
@@ -262,7 +292,11 @@ export function mapLocalWorkToCatalogRow(
       : {};
   const trackCount = Number(work.trackCount) > 0 ? Math.round(Number(work.trackCount)) : null;
 
-  return {
+  // Nunca inventa "agora" para obra sem data: preserva Epoch 0 para nunca vencer edição datada
+  const resolvedUpdatedAt = work.updatedAt || work.updated_at || EPOCH_ZERO_ISO;
+  const resolvedCreatedAt = work.createdAt || work.updatedAt || work.updated_at || EPOCH_ZERO_ISO;
+
+  const row = {
     id: cloudId,
     user_id: userId,
     domain,
@@ -370,8 +404,14 @@ export function mapLocalWorkToCatalogRow(
       excludeFromDiscography: Boolean(
         work.excludeFromDiscography ?? work.progress_data?.excludeFromDiscography
       ),
-      igdbId: Number(work.igdbId || work.ids?.igdb) > 0 ? Math.floor(Number(work.igdbId || work.ids?.igdb)) : null,
-      rawgId: Number(work.rawgId || work.ids?.rawg) > 0 ? Math.floor(Number(work.rawgId || work.ids?.rawg)) : null,
+      igdbId:
+        Number(work.igdbId || work.ids?.igdb) > 0
+          ? Math.floor(Number(work.igdbId || work.ids?.igdb))
+          : null,
+      rawgId:
+        Number(work.rawgId || work.ids?.rawg) > 0
+          ? Math.floor(Number(work.rawgId || work.ids?.rawg))
+          : null,
       originalPlatforms,
       campaignTimeHours:
         Number(work.campaignTimeHours) > 0
@@ -430,9 +470,15 @@ export function mapLocalWorkToCatalogRow(
     favorite_quote_or_scene:
       String(work.favoriteScene || '').trim().slice(0, 200) || null,
     personal_notes: String(work.notes || ''),
-    created_at: work.createdAt || nowIso,
-    updated_at: work.updatedAt || nowIso,
+    created_at: resolvedCreatedAt,
+    updated_at: resolvedUpdatedAt,
   };
+
+  if (includeDeletedAt) {
+    row.deleted_at = deletedAt ?? work.deletedAt ?? work.deleted_at ?? null;
+  }
+
+  return row;
 }
 
 export function mapCatalogRowToLocalWork(row = {}) {
@@ -453,6 +499,7 @@ export function mapCatalogRowToLocalWork(row = {}) {
   const synopsis = String(row.synopsis || '').trim();
   const rankNum = Number(row.favorite_rank);
   const localId = String(pd.localId || row.id || '');
+  const preservedUpdatedAt = row.updated_at || '';
 
   return {
     id: localId,
@@ -479,7 +526,9 @@ export function mapCatalogRowToLocalWork(row = {}) {
         : null,
     chaptersRead: Math.max(0, Math.round(Number(pd.chapters_read ?? pd.chaptersRead) || 0)),
     isbnOrDoi: String(pd.isbn_or_doi ?? pd.isbnOrDoi ?? extIds.isbn ?? extIds.doi ?? '').trim(),
-    bookFormat: String(pd.book_format ?? pd.bookFormat ?? (domain === 'reading' ? 'Físico' : '')).trim(),
+    bookFormat: String(
+      pd.book_format ?? pd.bookFormat ?? (domain === 'reading' ? 'Físico' : '')
+    ).trim(),
     // Games (preserva plataformas reais e edição sem inventar PC)
     platform: String(pd.platform ?? '').trim(),
     platforms: Array.isArray(pd.platforms)
@@ -497,7 +546,10 @@ export function mapCatalogRowToLocalWork(row = {}) {
       (pd.game_rating_11 ?? pd.gameRating11) !== undefined &&
       (pd.game_rating_11 ?? pd.gameRating11) !== '' &&
       Number.isFinite(Number(pd.game_rating_11 ?? pd.gameRating11))
-        ? Math.max(0, Math.min(11, Math.round(Number(pd.game_rating_11 ?? pd.gameRating11) * 10) / 10))
+        ? Math.max(
+            0,
+            Math.min(11, Math.round(Number(pd.game_rating_11 ?? pd.gameRating11) * 10) / 10)
+          )
         : null,
     masterpieceJustification: String(
       pd.masterpiece_justification ?? pd.masterpieceJustification ?? ''
@@ -519,7 +571,10 @@ export function mapCatalogRowToLocalWork(row = {}) {
       (pd.track_rating_10 ?? pd.trackRating10) !== undefined &&
       (pd.track_rating_10 ?? pd.trackRating10) !== '' &&
       Number.isFinite(Number(pd.track_rating_10 ?? pd.trackRating10))
-        ? Math.max(0, Math.min(10, Math.round(Number(pd.track_rating_10 ?? pd.trackRating10) * 10) / 10))
+        ? Math.max(
+            0,
+            Math.min(10, Math.round(Number(pd.track_rating_10 ?? pd.trackRating10) * 10) / 10)
+          )
         : null,
     favoriteTrack: String(pd.favorite_track ?? pd.favoriteTrack ?? '').trim(),
     subgenre: String(pd.subgenre ?? '').trim(),
@@ -578,7 +633,8 @@ export function mapCatalogRowToLocalWork(row = {}) {
       row.rating === null || row.rating === undefined || row.rating === ''
         ? null
         : Math.max(0, Math.min(100, Math.round(Number(row.rating)))),
-    ratingSource: pd.ratingSource ?? (row.rating !== null && row.rating !== undefined ? 'manual' : null),
+    ratingSource:
+      pd.ratingSource ?? (row.rating !== null && row.rating !== undefined ? 'manual' : null),
     reviewCriteria: pd.reviewCriteria ?? null,
     reviewCriteria5: pd.reviewCriteria5 ?? null,
     ratingManualOverride: Boolean(pd.ratingManualOverride),
@@ -596,8 +652,10 @@ export function mapCatalogRowToLocalWork(row = {}) {
     releasedEpisodesSource: String(pd.releasedEpisodesSource || '').trim() || null,
     releasedEpisodesFetchedAt: pd.releasedEpisodesFetchedAt || null,
     excludeFromDiscography: Boolean(pd.excludeFromDiscography),
-    igdbId: Number(pd.igdbId || extIds.igdb) > 0 ? Math.floor(Number(pd.igdbId || extIds.igdb)) : null,
-    rawgId: Number(pd.rawgId || extIds.rawg) > 0 ? Math.floor(Number(pd.rawgId || extIds.rawg)) : null,
+    igdbId:
+      Number(pd.igdbId || extIds.igdb) > 0 ? Math.floor(Number(pd.igdbId || extIds.igdb)) : null,
+    rawgId:
+      Number(pd.rawgId || extIds.rawg) > 0 ? Math.floor(Number(pd.rawgId || extIds.rawg)) : null,
     campaignTimeHours:
       Number(pd.campaignTimeHours) > 0
         ? Math.round(Number(pd.campaignTimeHours) * 10) / 10
@@ -646,7 +704,9 @@ export function mapCatalogRowToLocalWork(row = {}) {
       ...(extIds.itunesTrack ? { itunesTrack: extIds.itunesTrack } : {}),
       ...(extIds.itunesArtist ? { itunesArtist: extIds.itunesArtist } : {}),
       ...(extIds.musicbrainz ? { musicbrainz: extIds.musicbrainz } : {}),
-      ...(extIds.musicbrainzRecording ? { musicbrainzRecording: extIds.musicbrainzRecording } : {}),
+      ...(extIds.musicbrainzRecording
+        ? { musicbrainzRecording: extIds.musicbrainzRecording }
+        : {}),
       ...(extIds.musicbrainzArtist ? { musicbrainzArtist: extIds.musicbrainzArtist } : {}),
     },
     isManual: Boolean(extIds.source === 'manual' || pd.isManual),
@@ -686,8 +746,10 @@ export function mapCatalogRowToLocalWork(row = {}) {
     favoriteRank: Number.isInteger(rankNum) && rankNum >= 1 && rankNum <= 4 ? rankNum : null,
     favoriteScene: String(row.favorite_quote_or_scene || '').trim().slice(0, 200),
     notes: String(row.personal_notes || ''),
-    createdAt: row.created_at || new Date().toISOString(),
-    updatedAt: row.updated_at || row.created_at || new Date().toISOString(),
+    createdAt: row.created_at || '',
+    updatedAt: preservedUpdatedAt,
+    updated_at: preservedUpdatedAt,
+    deletedAt: row.deleted_at || null,
   };
 }
 
@@ -713,19 +775,85 @@ function getWorkIdentityKeys(work = {}) {
   return keys;
 }
 
+function worksDifferSignificantly(a = {}, b = {}) {
+  return (
+    String(a.status || '') !== String(b.status || '') ||
+    (a.rating ?? null) !== (b.rating ?? null) ||
+    String(a.notes || '') !== String(b.notes || '') ||
+    Number(a.currentEpisode || 0) !== Number(b.currentEpisode || 0) ||
+    Number(a.pagesRead || 0) !== Number(b.pagesRead || 0) ||
+    Number(a.hoursPlayed || 0) !== Number(b.hoursPlayed || 0) ||
+    Boolean(a.isFavorite) !== Boolean(b.isFavorite)
+  );
+}
+
 /**
- * Mescla obras locais e remotas usando `updatedAt` mais recente.
+ * Mescla obras locais e remotas usando `updated_at` mais recente + tombstones (`deleted_at`).
+ *
+ * Garantias:
+ * - Obra sem `updated_at` (ou Epoch 0) tem timestamp 0 e NUNCA vence uma versão datada da nuvem.
+ * - Tombstone remoto (`deleted_at >= local.updatedAt`) remove do catálogo ativo sem ressuscitar.
+ * - Tombstone local (`deletedAt >= remote.updatedAt`) suprime obra e agenda envio de soft-delete.
+ * - Edição mais recente após uma exclusão (`updatedAt > deletedAt`) vence a exclusão e reativa a obra.
  */
 export function mergeWorksByUpdatedAt(
   localWorks = [],
   remoteWorks = [],
-  { pendingDeleteIds = [] } = {}
+  { pendingDeleteIds = [], localTombstones = null } = {}
 ) {
-  const deletedSet = new Set((pendingDeleteIds || []).map((id) => toCloudWorkId(id).toLowerCase()));
+  // Normaliza mapa de tombstones locais (combinando lista legada + tombstones com timestamp)
+  const tombstoneMap = new Map();
+  const fallbackNowIso = new Date().toISOString();
+
+  if (localTombstones && typeof localTombstones === 'object') {
+    const entries =
+      localTombstones instanceof Map
+        ? Array.from(localTombstones.values())
+        : Array.isArray(localTombstones)
+          ? localTombstones
+          : Object.values(localTombstones);
+    for (const entry of entries) {
+      if (!entry) continue;
+      const cid = toCloudWorkId(entry.cloudId || entry.id).toLowerCase();
+      if (!cid) continue;
+      const deletedAt = entry.deletedAt || entry.deleted_at || fallbackNowIso;
+      const prev = tombstoneMap.get(cid);
+      if (!prev || parseTimestampMs(deletedAt) >= parseTimestampMs(prev.deletedAt)) {
+        tombstoneMap.set(cid, {
+          id: String(entry.id || cid),
+          cloudId: cid,
+          deletedAt,
+          synced: Boolean(entry.synced),
+        });
+      }
+    }
+  }
+
+  for (const rawId of pendingDeleteIds || []) {
+    if (!rawId) continue;
+    const cid = toCloudWorkId(rawId).toLowerCase();
+    if (!tombstoneMap.has(cid)) {
+      tombstoneMap.set(cid, {
+        id: String(rawId),
+        cloudId: cid,
+        deletedAt: fallbackNowIso,
+        synced: false,
+      });
+    }
+  }
+
   const mergedMap = new Map();
   const keyIndex = new Map();
+  const localOriginKeys = new Set();
+  const remoteOriginKeys = new Set();
   const worksToPush = [];
+  const remoteTombstonesApplied = [];
+  const cancelledTombstoneCloudIds = [];
   let pulledCount = 0;
+  let localWinsCount = 0;
+  let remoteWinsCount = 0;
+  let conflictProtectedCount = 0;
+  let tombstoneDeletesCount = 0;
 
   const findExistingKey = (work) => {
     for (const k of getWorkIdentityKeys(work)) {
@@ -741,28 +869,113 @@ export function mergeWorksByUpdatedAt(
     }
   };
 
+  const unregisterWork = (canonicalId) => {
+    const prev = mergedMap.get(canonicalId);
+    if (!prev) return;
+    mergedMap.delete(canonicalId);
+    for (const [k, v] of Array.from(keyIndex.entries())) {
+      if (v === canonicalId) keyIndex.delete(k);
+    }
+  };
+
+  // 1. Carrega obras locais respeitando tombstones locais (exceto se obra local foi editada depois)
   for (const local of Array.isArray(localWorks) ? localWorks : []) {
     if (!local || !local.id) continue;
     const cloudKey = toCloudWorkId(local.cloudId || local.id).toLowerCase();
-    if (deletedSet.has(cloudKey)) continue;
+    const localTombstone = tombstoneMap.get(cloudKey);
+    if (localTombstone) {
+      const localMs = parseWorkUpdatedMs(local);
+      const delMs = parseTimestampMs(localTombstone.deletedAt);
+      if (delMs >= localMs) {
+        continue;
+      }
+      tombstoneMap.delete(cloudKey);
+      cancelledTombstoneCloudIds.push(cloudKey);
+    }
     registerWork(cloudKey, local);
+    localOriginKeys.add(cloudKey);
   }
 
+  // Separa linhas remotas ativas vs tombstones remotos (`deleted_at` preenchido)
+  const activeRemoteList = [];
+  const remoteTombstoneList = [];
   for (const remote of Array.isArray(remoteWorks) ? remoteWorks : []) {
     if (!remote || (!remote.id && !remote.cloudId)) continue;
+    if (remote.deletedAt || remote.deleted_at) {
+      remoteTombstoneList.push(remote);
+    } else {
+      activeRemoteList.push(remote);
+    }
+  }
+
+  // 2. Aplica tombstones remotos (soft deletes vindos de outro aparelho)
+  const remoteDeletedByCloud = new Map();
+  for (const remoteTomb of remoteTombstoneList) {
+    const remoteCloudKey = toCloudWorkId(remoteTomb.cloudId || remoteTomb.id).toLowerCase();
+    const remoteDelIso = remoteTomb.deletedAt || remoteTomb.deleted_at;
+    const remoteDelMs = parseTimestampMs(remoteDelIso);
+    remoteDeletedByCloud.set(remoteCloudKey, remoteDelIso);
+
+    const matchedKey = findExistingKey(remoteTomb);
+    if (matchedKey) {
+      const existing = mergedMap.get(matchedKey);
+      const localMs = parseWorkUpdatedMs(existing);
+      if (remoteDelMs >= localMs) {
+        unregisterWork(matchedKey);
+        tombstoneDeletesCount += 1;
+        remoteTombstonesApplied.push({
+          id: existing.id || remoteTomb.id || remoteCloudKey,
+          cloudId: remoteCloudKey,
+          deletedAt: remoteDelIso,
+          synced: true,
+        });
+      } else {
+        // Edição local é estritamente mais nova do que a exclusão remota -> preserva local
+        localWinsCount += 1;
+        conflictProtectedCount += 1;
+      }
+    } else {
+      remoteTombstonesApplied.push({
+        id: remoteTomb.id || remoteCloudKey,
+        cloudId: remoteCloudKey,
+        deletedAt: remoteDelIso,
+        synced: true,
+      });
+    }
+  }
+
+  // 3. Mescla obras remotas ativas
+  for (const remote of activeRemoteList) {
     const remoteCloudKey = toCloudWorkId(remote.cloudId || remote.id).toLowerCase();
-    if (deletedSet.has(remoteCloudKey)) continue;
+    const remoteMs = parseWorkUpdatedMs(remote);
+
+    const localTombstone = tombstoneMap.get(remoteCloudKey);
+    if (localTombstone) {
+      const delMs = parseTimestampMs(localTombstone.deletedAt);
+      if (delMs >= remoteMs) {
+        // Exclusão local vence a obra remota antiga (e será enviada ao Supabase)
+        tombstoneDeletesCount += 1;
+        continue;
+      }
+      // Obra remota foi editada DEPOIS da exclusão local -> cancela tombstone local e puxa obra
+      tombstoneMap.delete(remoteCloudKey);
+      cancelledTombstoneCloudIds.push(remoteCloudKey);
+    }
 
     const matchedKey = findExistingKey(remote);
     if (!matchedKey) {
-      registerWork(remoteCloudKey, remote);
+      const cleanRemote = { ...remote };
+      delete cleanRemote.deletedAt;
+      registerWork(remoteCloudKey, cleanRemote);
+      remoteOriginKeys.add(remoteCloudKey);
       pulledCount += 1;
       continue;
     }
 
+    remoteOriginKeys.add(matchedKey);
     const existing = mergedMap.get(matchedKey);
-    const localMs = parseTimestampMs(existing?.updatedAt || existing?.createdAt);
-    const remoteMs = parseTimestampMs(remote?.updatedAt || remote?.createdAt);
+    const localMs = parseWorkUpdatedMs(existing);
+    const differs = worksDifferSignificantly(existing, remote);
 
     if (remoteMs > localMs) {
       const winner = {
@@ -776,10 +989,20 @@ export function mergeWorksByUpdatedAt(
             }
           : {}),
       };
+      delete winner.deletedAt;
       registerWork(matchedKey, winner);
       pulledCount += 1;
-    } else if (remoteMs === localMs) {
-      // Em empate exato, preserva capa do Supabase Storage se existir
+      remoteWinsCount += 1;
+      if (differs || localMs > 0) {
+        conflictProtectedCount += 1;
+      }
+    } else if (localMs > remoteMs) {
+      localWinsCount += 1;
+      if (differs || remoteMs > 0) {
+        conflictProtectedCount += 1;
+      }
+    } else {
+      // Empate exato de timestamp: preserva capa do Supabase Storage se existir
       const preferRemoteCover =
         typeof remote.coverUrl === 'string' &&
         remote.coverUrl.includes('/storage/v1/object/') &&
@@ -794,64 +1017,115 @@ export function mergeWorksByUpdatedAt(
     }
   }
 
-  // Determina quais obras locais precisam subir para a nuvem
+  // 4. Determina quais obras locais precisam subir para a nuvem
   const remoteByCloud = new Map();
-  for (const remote of Array.isArray(remoteWorks) ? remoteWorks : []) {
+  for (const remote of activeRemoteList) {
     const k = toCloudWorkId(remote.cloudId || remote.id).toLowerCase();
     remoteByCloud.set(k, remote);
   }
 
   const mergedWorks = Array.from(mergedMap.values()).sort(
-    (a, b) => parseTimestampMs(b.updatedAt) - parseTimestampMs(a.updatedAt)
+    (a, b) => parseWorkUpdatedMs(b) - parseWorkUpdatedMs(a)
   );
 
   for (const item of mergedWorks) {
     const cloudKey = toCloudWorkId(item.cloudId || item.id).toLowerCase();
     const remoteMatch =
       remoteByCloud.get(cloudKey) ||
-      (Array.isArray(remoteWorks)
-        ? remoteWorks.find((r) =>
-            getWorkIdentityKeys(r).some((k) => getWorkIdentityKeys(item).includes(k))
-          )
-        : null);
+      activeRemoteList.find((r) =>
+        getWorkIdentityKeys(r).some((k) => getWorkIdentityKeys(item).includes(k))
+      );
+
     if (!remoteMatch) {
+      // Se havia tombstone remoto, mas local era mais novo -> reativa na nuvem
       worksToPush.push(item);
       continue;
     }
-    const itemMs = parseTimestampMs(item.updatedAt || item.createdAt);
-    const remoteMs = parseTimestampMs(remoteMatch.updatedAt || remoteMatch.createdAt);
+
+    const itemMs = parseWorkUpdatedMs(item);
+    const remoteMs = parseWorkUpdatedMs(remoteMatch);
     if (itemMs > remoteMs) {
       worksToPush.push(item);
     }
+  }
+
+  // 5. Calcula tombstones locais ainda não sincronizados que precisam ser enviados à nuvem
+  const tombstonesToFlush = Array.from(tombstoneMap.values()).filter((entry) => {
+    if (entry.synced) return false;
+    // Se já existe tombstone remoto com data >= local, não precisa reenviar
+    const remoteDelIso = remoteDeletedByCloud.get(entry.cloudId);
+    if (remoteDelIso && parseTimestampMs(remoteDelIso) >= parseTimestampMs(entry.deletedAt)) {
+      return false;
+    }
+    return true;
+  });
+
+  // Estatísticas para resumo de 1ª conexão ("X só aqui · Y só na nuvem · Z conflitos protegidos")
+  let localOnlyCount = 0;
+  let remoteOnlyCount = 0;
+  for (const key of mergedMap.keys()) {
+    const inLocal = localOriginKeys.has(key);
+    const inRemote = remoteOriginKeys.has(key);
+    if (inLocal && !inRemote) localOnlyCount += 1;
+    if (inRemote && !inLocal) remoteOnlyCount += 1;
   }
 
   return {
     mergedWorks,
     worksToPush,
     pulledCount,
+    remoteTombstonesApplied,
+    tombstonesToFlush,
+    cancelledTombstoneCloudIds,
+    stats: {
+      localOnlyCount,
+      remoteOnlyCount,
+      conflictProtectedCount,
+      localWinsCount,
+      remoteWinsCount,
+      tombstoneDeletesCount,
+    },
   };
+}
+
+export function formatFirstSyncSummary(stats = {}) {
+  const localOnly = Math.max(0, Number(stats.localOnlyCount) || 0);
+  const remoteOnly = Math.max(0, Number(stats.remoteOnlyCount) || 0);
+  const conflicts = Math.max(0, Number(stats.conflictProtectedCount) || 0);
+  const localWord = localOnly === 1 ? 'obra só aqui' : 'obras só aqui';
+  const conflictWord = conflicts === 1 ? 'conflito protegido' : 'conflitos protegidos';
+  return `${localOnly} ${localWord} · ${remoteOnly} só na nuvem · ${conflicts} ${conflictWord}`;
 }
 
 export function readSyncMeta(storage = null) {
   const store = storage || (typeof localStorage !== 'undefined' ? localStorage : null);
+  const empty = {
+    lastSyncAt: null,
+    lastUserId: null,
+    initialPushDone: false,
+    lastPreSyncSnapshotId: null,
+    tombstoneMode: getTombstoneSyncMode(),
+  };
   if (!store || typeof store.getItem !== 'function') {
-    return { lastSyncAt: null, lastUserId: null, initialPushDone: false };
+    return empty;
   }
   try {
     const raw = store.getItem(SYNC_META_STORAGE_KEY);
-    if (!raw) return { lastSyncAt: null, lastUserId: null, initialPushDone: false };
+    if (!raw) return empty;
     const parsed = JSON.parse(raw);
     return {
       lastSyncAt: parsed?.lastSyncAt || null,
       lastUserId: parsed?.lastUserId || null,
       initialPushDone: Boolean(parsed?.initialPushDone),
+      lastPreSyncSnapshotId: parsed?.lastPreSyncSnapshotId || null,
+      tombstoneMode: parsed?.tombstoneMode || getTombstoneSyncMode(),
     };
   } catch {
-    return { lastSyncAt: null, lastUserId: null, initialPushDone: false };
+    return empty;
   }
 }
 
-function writeSyncMeta(patch = {}, storage = null) {
+export function writeSyncMeta(patch = {}, storage = null) {
   const store = storage || (typeof localStorage !== 'undefined' ? localStorage : null);
   if (!store || typeof store.setItem !== 'function') return;
   try {
@@ -862,16 +1136,110 @@ function writeSyncMeta(patch = {}, storage = null) {
   }
 }
 
+export function readCloudTombstones(storage = null) {
+  const store = storage || (typeof localStorage !== 'undefined' ? localStorage : null);
+  if (!store || typeof store.getItem !== 'function') return {};
+  try {
+    const raw = store.getItem(CLOUD_TOMBSTONES_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out = {};
+    for (const [k, val] of Object.entries(parsed)) {
+      if (!val || typeof val !== 'object') continue;
+      const cid = toCloudWorkId(val.cloudId || k).toLowerCase();
+      out[cid] = {
+        id: String(val.id || cid),
+        cloudId: cid,
+        deletedAt: String(val.deletedAt || new Date().toISOString()),
+        synced: Boolean(val.synced),
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeCloudTombstones(mapObj = {}, storage = null) {
+  const store = storage || (typeof localStorage !== 'undefined' ? localStorage : null);
+  if (!store || typeof store.setItem !== 'function') return;
+  try {
+    store.setItem(CLOUD_TOMBSTONES_STORAGE_KEY, JSON.stringify(mapObj));
+  } catch {
+    // Silencioso
+  }
+}
+
+export function recordCloudTombstones(entries = [], storage = null) {
+  const current = readCloudTombstones(storage);
+  const list = Array.isArray(entries) ? entries : [entries];
+  const nowIso = new Date().toISOString();
+  for (const item of list) {
+    if (!item) continue;
+    const rawId = typeof item === 'string' ? item : item.cloudId || item.id;
+    if (!rawId) continue;
+    const cid = toCloudWorkId(rawId).toLowerCase();
+    const deletedAt =
+      typeof item === 'object' && item.deletedAt ? String(item.deletedAt) : nowIso;
+    const synced = typeof item === 'object' ? Boolean(item.synced) : false;
+    const prev = current[cid];
+    if (!prev || parseTimestampMs(deletedAt) >= parseTimestampMs(prev.deletedAt)) {
+      current[cid] = {
+        id: typeof item === 'object' && item.id ? String(item.id) : String(rawId),
+        cloudId: cid,
+        deletedAt,
+        synced: prev && parseTimestampMs(prev.deletedAt) === parseTimestampMs(deletedAt)
+          ? prev.synced || synced
+          : synced,
+      };
+    }
+  }
+  writeCloudTombstones(current, storage);
+  return current;
+}
+
+export function markCloudTombstonesSynced(cloudIds = [], storage = null) {
+  const current = readCloudTombstones(storage);
+  for (const rawId of Array.isArray(cloudIds) ? cloudIds : [cloudIds]) {
+    if (!rawId) continue;
+    const cid = toCloudWorkId(rawId).toLowerCase();
+    if (current[cid]) {
+      current[cid] = { ...current[cid], synced: true };
+    }
+  }
+  writeCloudTombstones(current, storage);
+  return current;
+}
+
+export function clearCloudTombstone(workId, storage = null) {
+  if (!workId) return;
+  const cid = toCloudWorkId(workId).toLowerCase();
+  const current = readCloudTombstones(storage);
+  if (cid in current) {
+    delete current[cid];
+    writeCloudTombstones(current, storage);
+  }
+}
+
 export function readPendingCloudDeletes(storage = null) {
   const store = storage || (typeof localStorage !== 'undefined' ? localStorage : null);
-  if (!store || typeof store.getItem !== 'function') return [];
-  try {
-    const raw = store.getItem(PENDING_DELETES_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
-  } catch {
-    return [];
+  const legacyList = [];
+  if (store && typeof store.getItem === 'function') {
+    try {
+      const raw = store.getItem(PENDING_DELETES_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) {
+        legacyList.push(...parsed.map(String).filter(Boolean));
+      }
+    } catch {
+      // Ignora JSON inválido
+    }
   }
+  const tombstones = readCloudTombstones(storage);
+  const unsyncedFromTombstones = Object.values(tombstones)
+    .filter((t) => !t.synced)
+    .map((t) => t.cloudId);
+  return Array.from(new Set([...legacyList, ...unsyncedFromTombstones]));
 }
 
 function writePendingCloudDeletes(ids = [], storage = null) {
@@ -885,17 +1253,201 @@ function writePendingCloudDeletes(ids = [], storage = null) {
   }
 }
 
-export function queuePendingCloudDelete(workId, storage = null) {
+export function queuePendingCloudDelete(workId, storage = null, { deletedAt = null } = {}) {
   if (!workId) return;
+  const cid = toCloudWorkId(workId);
   const current = readPendingCloudDeletes(storage);
-  writePendingCloudDeletes([...current, toCloudWorkId(workId)], storage);
+  writePendingCloudDeletes([...current, cid], storage);
+  recordCloudTombstones(
+    [{ id: String(workId), cloudId: cid, deletedAt: deletedAt || new Date().toISOString(), synced: false }],
+    storage
+  );
 }
 
 export function cancelPendingCloudDelete(workId, storage = null) {
   if (!workId) return;
   const target = toCloudWorkId(workId);
-  const next = readPendingCloudDeletes(storage).filter((id) => id !== target && id !== String(workId));
+  const next = readPendingCloudDeletes(storage).filter(
+    (id) => id !== target && id !== String(workId)
+  );
   writePendingCloudDeletes(next, storage);
+  clearCloudTombstone(workId, storage);
+}
+
+// ============================================================================
+// Fila persistente de mutações offline + retry exponencial
+// ============================================================================
+
+export function readSyncQueue(storage = null) {
+  const store = storage || (typeof localStorage !== 'undefined' ? localStorage : null);
+  const empty = {
+    pendingUpsertIds: [],
+    retryCount: 0,
+    nextRetryAt: null,
+    lastError: null,
+    lastErrorAt: null,
+  };
+  if (!store || typeof store.getItem !== 'function') return empty;
+  try {
+    const raw = store.getItem(SYNC_QUEUE_STORAGE_KEY);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw);
+    return {
+      pendingUpsertIds: Array.isArray(parsed?.pendingUpsertIds)
+        ? Array.from(new Set(parsed.pendingUpsertIds.map(String).filter(Boolean)))
+        : [],
+      retryCount: Math.max(0, Number(parsed?.retryCount) || 0),
+      nextRetryAt: parsed?.nextRetryAt || null,
+      lastError: parsed?.lastError ? String(parsed.lastError) : null,
+      lastErrorAt: parsed?.lastErrorAt || null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function writeSyncQueue(nextState, storage = null) {
+  const store = storage || (typeof localStorage !== 'undefined' ? localStorage : null);
+  if (!store || typeof store.setItem !== 'function') return;
+  try {
+    store.setItem(SYNC_QUEUE_STORAGE_KEY, JSON.stringify(nextState));
+  } catch {
+    // Silencioso
+  }
+}
+
+export function enqueuePendingWorkUpserts(workIds = [], storage = null) {
+  const ids = (Array.isArray(workIds) ? workIds : [workIds]).map(String).filter(Boolean);
+  if (ids.length === 0) return readSyncQueue(storage);
+  const current = readSyncQueue(storage);
+  const next = {
+    ...current,
+    pendingUpsertIds: Array.from(new Set([...current.pendingUpsertIds, ...ids])),
+  };
+  writeSyncQueue(next, storage);
+  return next;
+}
+
+export function clearPendingWorkUpserts(workIds = [], storage = null) {
+  const current = readSyncQueue(storage);
+  const removeSet = new Set((Array.isArray(workIds) ? workIds : [workIds]).map(String));
+  const next = {
+    ...current,
+    pendingUpsertIds:
+      workIds === null
+        ? []
+        : current.pendingUpsertIds.filter((id) => !removeSet.has(id)),
+  };
+  writeSyncQueue(next, storage);
+  return next;
+}
+
+export function computeRetryBackoffMs(retryCount = 0) {
+  const steps = [2000, 5000, 15000, 45000, 60000];
+  const idx = Math.max(0, Math.min(steps.length - 1, Math.floor(Number(retryCount) || 0)));
+  return steps[idx];
+}
+
+export function recordSyncFailure(errorMessage, storage = null) {
+  const current = readSyncQueue(storage);
+  const nextRetryCount = current.retryCount + 1;
+  const backoffMs = computeRetryBackoffMs(current.retryCount);
+  const next = {
+    ...current,
+    retryCount: nextRetryCount,
+    nextRetryAt: new Date(Date.now() + backoffMs).toISOString(),
+    lastError: String(errorMessage || 'Falha ao sincronizar com a nuvem.'),
+    lastErrorAt: new Date().toISOString(),
+  };
+  writeSyncQueue(next, storage);
+  return { queue: next, backoffMs };
+}
+
+export function clearSyncFailure(storage = null) {
+  const current = readSyncQueue(storage);
+  const next = {
+    ...current,
+    retryCount: 0,
+    nextRetryAt: null,
+    lastError: null,
+    lastErrorAt: null,
+  };
+  writeSyncQueue(next, storage);
+  return next;
+}
+
+export function getPendingSyncCount(storage = null) {
+  const queue = readSyncQueue(storage);
+  const pendingDeletes = readPendingCloudDeletes(storage);
+  return queue.pendingUpsertIds.length + pendingDeletes.length;
+}
+
+export function formatFriendlySyncError(rawError) {
+  const raw = String(rawError?.message || rawError || '').trim();
+  const lower = raw.toLowerCase();
+  if (!raw) {
+    return {
+      message:
+        'Não foi possível sincronizar agora. Seus dados continuam salvos neste aparelho — toque em "Sincronizar agora" para tentar novamente.',
+      action: 'retry',
+      sessionExpired: false,
+    };
+  }
+  if (
+    lower.includes('jwt') ||
+    lower.includes('refresh token') ||
+    lower.includes('invalid_grant') ||
+    lower.includes('session_not_found') ||
+    lower.includes('not authenticated') ||
+    lower.includes('401')
+  ) {
+    return {
+      message:
+        'Sua sessão expirou. Entre novamente na sua conta para retomar a sincronização — seus dados locais continuam seguros.',
+      action: 'relogin',
+      sessionExpired: true,
+    };
+  }
+  if (
+    lower.includes('42501') ||
+    lower.includes('row-level security') ||
+    lower.includes('permission denied')
+  ) {
+    return {
+      message:
+        'O Supabase bloqueou a gravação por política de segurança (RLS). Aplique a migração SQL aditiva e tente sincronizar novamente.',
+      action: 'retry',
+      sessionExpired: false,
+    };
+  }
+  if (lower.includes('42p01') || lower.includes('does not exist')) {
+    return {
+      message:
+        'A tabela public.catalog_works ainda não foi preparada no Supabase. Aplique a migração SQL aditiva e tente novamente.',
+      action: 'retry',
+      sessionExpired: false,
+    };
+  }
+  if (
+    lower.includes('failed to fetch') ||
+    lower.includes('networkerror') ||
+    lower.includes('network') ||
+    lower.includes('timeout') ||
+    lower.includes('abort') ||
+    lower.includes('offline')
+  ) {
+    return {
+      message:
+        'Sem resposta da nuvem no momento. Suas alterações ficaram na fila local e serão enviadas automaticamente quando a conexão voltar.',
+      action: 'retry',
+      sessionExpired: false,
+    };
+  }
+  return {
+    message: `Não foi possível sincronizar agora (${raw}). Seus dados continuam salvos localmente — tente novamente.`,
+    action: 'retry',
+    sessionExpired: false,
+  };
 }
 
 function isOnlineBrowser() {
@@ -913,6 +1465,16 @@ function isExternalRatingTypeError(error) {
   );
 }
 
+export function isDeletedAtColumnMissingError(error) {
+  const msg = String(error?.message || error?.details || error?.hint || '');
+  const code = String(error?.code || '');
+  if (!msg && !code) return false;
+  if (code === '42703' || code === 'PGRST204') {
+    return /deleted_at/i.test(msg) || code === 'PGRST204';
+  }
+  return /deleted_at/i.test(msg) && /(does not exist|schema cache|unknown column|could not find)/i.test(msg);
+}
+
 async function upsertCatalogRows(client, works = [], userId) {
   if (!client || !userId || !Array.isArray(works) || works.length === 0) {
     return { ok: true, count: 0 };
@@ -923,20 +1485,32 @@ async function upsertCatalogRows(client, works = [], userId) {
 
   for (let i = 0; i < works.length; i += chunkSize) {
     const slice = works.slice(i, i + chunkSize);
-    let rows = slice.map((w) =>
-      mapLocalWorkToCatalogRow(w, userId, {
-        numericExternalRating: externalRatingNumericFallback,
-      })
-    );
+    const buildRows = () =>
+      slice.map((w) =>
+        mapLocalWorkToCatalogRow(w, userId, {
+          numericExternalRating: externalRatingNumericFallback,
+          includeDeletedAt: !deletedAtColumnUnsupported,
+          deletedAt: null,
+        })
+      );
+
+    let rows = buildRows();
     let { error } = await client
       .from(OMNI_CATALOG_TABLE)
       .upsert(rows, { onConflict: 'id' });
 
+    if (error && !deletedAtColumnUnsupported && isDeletedAtColumnMissingError(error)) {
+      deletedAtColumnUnsupported = true;
+      rows = buildRows();
+      const retry = await client
+        .from(OMNI_CATALOG_TABLE)
+        .upsert(rows, { onConflict: 'id' });
+      error = retry.error;
+    }
+
     if (error && !externalRatingNumericFallback && isExternalRatingTypeError(error)) {
       externalRatingNumericFallback = true;
-      rows = slice.map((w) =>
-        mapLocalWorkToCatalogRow(w, userId, { numericExternalRating: true })
-      );
+      rows = buildRows();
       const retry = await client
         .from(OMNI_CATALOG_TABLE)
         .upsert(rows, { onConflict: 'id' });
@@ -944,10 +1518,13 @@ async function upsertCatalogRows(client, works = [], userId) {
     }
 
     if (error) {
+      const friendly = formatFriendlySyncError(error);
       return {
         ok: false,
         count: totalUpserted,
-        error: error.message || 'Falha ao enviar obras para o Supabase.',
+        error: friendly.message,
+        rawError: error.message || '',
+        sessionExpired: friendly.sessionExpired,
       };
     }
     totalUpserted += rows.length;
@@ -956,48 +1533,176 @@ async function upsertCatalogRows(client, works = [], userId) {
   return { ok: true, count: totalUpserted };
 }
 
-export async function getActiveSupabaseSession({ client = null } = {}) {
-  const sb = client || getSupabaseClient();
+/**
+ * Envia exclusões (soft-delete via `deleted_at` quando a coluna existe; fallback automático
+ * para hard `DELETE` em bancos ainda sem a migração aditiva ou em mocks legados).
+ */
+async function applyCloudDeletes(
+  client,
+  userId,
+  tombstoneEntries = [],
+  { domainFilter = null } = {}
+) {
+  const entries = (Array.isArray(tombstoneEntries) ? tombstoneEntries : []).filter(
+    (e) => e && e.cloudId
+  );
+  if (!client || !userId || entries.length === 0) {
+    return { ok: true, count: 0, mode: getTombstoneSyncMode() };
+  }
+
+  const cloudIds = Array.from(new Set(entries.map((e) => toCloudWorkId(e.cloudId))));
+  const latestDeletedAt =
+    entries
+      .map((e) => e.deletedAt)
+      .filter(Boolean)
+      .sort()
+      .slice(-1)[0] || new Date().toISOString();
+
+  const tableRef = client.from(OMNI_CATALOG_TABLE);
+  const canTrySoftDelete =
+    !deletedAtColumnUnsupported && typeof tableRef?.update === 'function';
+
+  if (canTrySoftDelete) {
+    let softQuery = tableRef
+      .update({
+        deleted_at: latestDeletedAt,
+        updated_at: latestDeletedAt,
+      })
+      .eq('user_id', userId);
+    if (domainFilter && typeof softQuery.eq === 'function') {
+      softQuery = softQuery.eq('domain', normalizeDomainId(domainFilter));
+    }
+    const { error: softErr } = await softQuery.in('id', cloudIds);
+    if (!softErr) {
+      return { ok: true, count: cloudIds.length, mode: 'soft_delete' };
+    }
+    if (!isDeletedAtColumnMissingError(softErr)) {
+      const friendly = formatFriendlySyncError(softErr);
+      return {
+        ok: false,
+        count: 0,
+        error: friendly.message,
+        rawError: softErr.message || '',
+        sessionExpired: friendly.sessionExpired,
+      };
+    }
+    // Coluna deleted_at ainda não foi aplicada no Supabase -> fallback transparente
+    deletedAtColumnUnsupported = true;
+  }
+
+  let delQuery = client
+    .from(OMNI_CATALOG_TABLE)
+    .delete()
+    .eq('user_id', userId);
+  if (domainFilter && typeof delQuery.eq === 'function') {
+    delQuery = delQuery.eq('domain', normalizeDomainId(domainFilter));
+  }
+  const { error: delErr } = await delQuery.in('id', cloudIds);
+  if (delErr) {
+    const friendly = formatFriendlySyncError(delErr);
+    return {
+      ok: false,
+      count: 0,
+      error: friendly.message,
+      rawError: delErr.message || '',
+      sessionExpired: friendly.sessionExpired,
+    };
+  }
+  return { ok: true, count: cloudIds.length, mode: 'compat_hard_delete' };
+}
+
+export async function getActiveSupabaseSession({ client = null, storage = null } = {}) {
+  const sb = client || getSupabaseClient({ storage });
   if (!sb) {
-    return { ok: false, configured: false, session: null, user: null };
+    return { ok: false, configured: false, session: null, user: null, sessionExpired: false };
   }
   try {
     const { data, error } = await sb.auth.getSession();
     if (error) {
+      const friendly = formatFriendlySyncError(error);
       return {
         ok: false,
         configured: true,
         session: null,
         user: null,
-        error: error.message,
+        sessionExpired: friendly.sessionExpired,
+        error: friendly.message,
       };
     }
+    const session = data?.session || null;
+    const user = session?.user || null;
+
+    // Se online e o token está prestes a expirar (< 90s), renova silenciosamente
+    if (
+      session &&
+      isOnlineBrowser() &&
+      typeof sb.auth?.refreshSession === 'function' &&
+      Number.isFinite(Number(session.expires_at))
+    ) {
+      const expiresAtMs = Number(session.expires_at) * 1000;
+      if (expiresAtMs - Date.now() < 90_000) {
+        try {
+          const refreshed = await sb.auth.refreshSession();
+          if (refreshed?.data?.session?.user) {
+            return {
+              ok: true,
+              configured: true,
+              session: refreshed.data.session,
+              user: refreshed.data.session.user,
+              refreshed: true,
+              sessionExpired: false,
+            };
+          }
+          if (refreshed?.error) {
+            const friendly = formatFriendlySyncError(refreshed.error);
+            if (friendly.sessionExpired) {
+              return {
+                ok: false,
+                configured: true,
+                session: null,
+                user: null,
+                sessionExpired: true,
+                error: friendly.message,
+              };
+            }
+          }
+        } catch {
+          // Falha transitória de rede durante refresh: mantém sessão em cache se ainda existir
+        }
+      }
+    }
+
     return {
       ok: true,
       configured: true,
-      session: data?.session || null,
-      user: data?.session?.user || null,
+      session,
+      user,
+      sessionExpired: false,
     };
   } catch (err) {
+    const friendly = formatFriendlySyncError(err);
     return {
       ok: false,
       configured: true,
       session: null,
       user: null,
-      error: err?.message || 'Erro ao verificar sessão Supabase.',
+      offline: !isOnlineBrowser(),
+      sessionExpired: friendly.sessionExpired,
+      error: friendly.message,
     };
   }
 }
 
 export async function signInWithEmailPassword(
   { email, password },
-  { client = null } = {}
+  { client = null, storage = null } = {}
 ) {
-  const sb = client || getSupabaseClient();
+  const sb = client || getSupabaseClient({ storage });
   if (!sb) {
     return {
       ok: false,
-      error: 'Configure a URL e a chave pública do Supabase primeiro.',
+      error:
+        'A conexão com a nuvem ainda não está pronta. Verifique sua internet ou configure manualmente em Opções avançadas.',
     };
   }
   const cleanEmail = String(email || '').trim();
@@ -1017,9 +1722,13 @@ export async function signInWithEmailPassword(
       const msg = String(error.message || '');
       const friendly = /invalid login credentials/i.test(msg)
         ? 'E-mail ou senha inválidos.'
-        : msg || 'Não foi possível entrar na conta.';
+        : /email not confirmed/i.test(msg)
+          ? 'Confirme seu e-mail antes de entrar na conta.'
+          : msg || 'Não foi possível entrar na conta.';
       return { ok: false, error: friendly };
     }
+    // Solicita persistência do navegador sem duplicar refresh token no IndexedDB
+    requestPersistentBrowserStorage().catch(() => {});
     return {
       ok: true,
       session: data?.session || null,
@@ -1033,8 +1742,8 @@ export async function signInWithEmailPassword(
   }
 }
 
-export async function signOutFromCloud({ client = null } = {}) {
-  const sb = client || getSupabaseClient();
+export async function signOutFromCloud({ client = null, storage = null } = {}) {
+  const sb = client || getSupabaseClient({ storage });
   if (!sb) return { ok: true };
   try {
     await sb.auth.signOut({ scope: 'local' });
@@ -1044,8 +1753,8 @@ export async function signOutFromCloud({ client = null } = {}) {
   }
 }
 
-export function subscribeToAuthChanges(callback, { client = null } = {}) {
-  const sb = client || getSupabaseClient();
+export function subscribeToAuthChanges(callback, { client = null, storage = null } = {}) {
+  const sb = client || getSupabaseClient({ storage });
   if (!sb || typeof sb.auth?.onAuthStateChange !== 'function') {
     return () => {};
   }
@@ -1062,12 +1771,105 @@ export function subscribeToAuthChanges(callback, { client = null } = {}) {
 }
 
 /**
- * Sincronização bidirecional resiliente (Local-First):
- * 1) Envia exclusões pendentes;
- * 2) Baixa `catalog_works` com `domain = 'cinema'`;
- * 3) Mescla com o IndexedDB local (`works`) pelo `updated_at` mais recente;
- * 4) Faz push das obras locais novas ou mais recentes (upload inicial / incremental);
- * 5) Persiste o resultado no IndexedDB local.
+ * Prévia SOMENTE LEITURA antes da primeira sincronização de um segundo aparelho:
+ * calcula `"X obras só aqui · Y só na nuvem · Z conflitos protegidos"` sem alterar
+ * nada localmente nem na nuvem.
+ */
+export async function previewCloudSyncWithSupabase({
+  client = null,
+  localWorksOverride = null,
+  domainFilter = null,
+  storage = null,
+  idbFactory = null,
+} = {}) {
+  const cfg = getSupabaseConfig({ storage });
+  const sb = client || getSupabaseClient({ storage });
+  if (!sb || (!client && !cfg.isConfigured)) {
+    return { ok: false, unconfigured: true };
+  }
+  if (!isOnlineBrowser()) {
+    return { ok: false, offline: true };
+  }
+
+  const sessionRes = await getActiveSupabaseSession({ client: sb, storage });
+  const user = sessionRes.user;
+  if (!user?.id) {
+    return {
+      ok: false,
+      unauthenticated: true,
+      sessionExpired: Boolean(sessionRes.sessionExpired),
+      error: sessionRes.error || null,
+    };
+  }
+
+  try {
+    let pullQuery = sb
+      .from(OMNI_CATALOG_TABLE)
+      .select('*')
+      .eq('user_id', user.id);
+    if (domainFilter) {
+      pullQuery = pullQuery.eq('domain', normalizeDomainId(domainFilter));
+    }
+    const { data: remoteRows, error: pullError } = await pullQuery;
+    if (pullError) {
+      const friendly = formatFriendlySyncError(pullError);
+      return {
+        ok: false,
+        error: friendly.message,
+        sessionExpired: friendly.sessionExpired,
+      };
+    }
+
+    const remoteWorks = (Array.isArray(remoteRows) ? remoteRows : []).map(
+      mapCatalogRowToLocalWork
+    );
+    const activeRemoteCount = remoteWorks.filter((w) => !w.deletedAt).length;
+
+    const idbWorks = await getAllRelationalWorks({ idbFactory });
+    const localTombstones = readCloudTombstones(storage);
+    const pendingDeletes = readPendingCloudDeletes(storage);
+
+    const baseLocalWorks =
+      Array.isArray(localWorksOverride) && localWorksOverride.length > 0
+        ? mergeWorksByUpdatedAt(idbWorks, localWorksOverride, {
+            pendingDeleteIds: pendingDeletes,
+            localTombstones,
+          }).mergedWorks
+        : idbWorks;
+
+    const merged = mergeWorksByUpdatedAt(baseLocalWorks, remoteWorks, {
+      pendingDeleteIds: pendingDeletes,
+      localTombstones,
+    });
+
+    return {
+      ok: true,
+      user,
+      localCount: baseLocalWorks.length,
+      remoteCount: activeRemoteCount,
+      mergedCount: merged.mergedWorks.length,
+      stats: merged.stats,
+      summaryText: formatFirstSyncSummary(merged.stats),
+      needsConfirmation: baseLocalWorks.length > 0 && activeRemoteCount > 0,
+    };
+  } catch (err) {
+    const friendly = formatFriendlySyncError(err);
+    return {
+      ok: false,
+      offline: !isOnlineBrowser(),
+      error: friendly.message,
+      sessionExpired: friendly.sessionExpired,
+    };
+  }
+}
+
+/**
+ * Sincronização bidirecional resiliente (Local-First, independente de Realtime):
+ * 1) Baixa `catalog_works` (todos os 4 domínios, incluindo `deleted_at` se existir);
+ * 2) Mescla com o IndexedDB local respeitando `updated_at` (sem inventar data) e tombstones;
+ * 3) Envia tombstones locais (soft-delete via `deleted_at` ou compatível antes do SQL);
+ * 4) Faz push das obras locais novas ou mais recentes;
+ * 5) Persiste o resultado no IndexedDB local e limpa a fila pendente.
  */
 export async function syncCatalogWithSupabase({
   client = null,
@@ -1086,39 +1888,20 @@ export async function syncCatalogWithSupabase({
     return { ok: false, offline: true, mode: 'offline' };
   }
 
-  const sessionRes = await getActiveSupabaseSession({ client: sb });
+  const sessionRes = await getActiveSupabaseSession({ client: sb, storage });
   const user = sessionRes.user;
   if (!user?.id) {
-    return { ok: false, unauthenticated: true, mode: 'local' };
+    return {
+      ok: false,
+      unauthenticated: true,
+      sessionExpired: Boolean(sessionRes.sessionExpired),
+      mode: 'local',
+      error: sessionRes.error || null,
+    };
   }
 
   try {
-    // 1. Flush de exclusões pendentes offline (guarda lista para filtrar IndexedDB local)
-    const pendingDeletes = readPendingCloudDeletes(storage);
-    const flushedDeleteIds = [];
-    let deletedCount = 0;
-    if (pendingDeletes.length > 0) {
-      let delQuery = sb
-        .from(OMNI_CATALOG_TABLE)
-        .delete()
-        .eq('user_id', user.id);
-      if (domainFilter) {
-        delQuery = delQuery.eq('domain', normalizeDomainId(domainFilter));
-      }
-      const { error: delErr } = await delQuery.in('id', pendingDeletes);
-
-      if (!delErr) {
-        deletedCount = pendingDeletes.length;
-        flushedDeleteIds.push(...pendingDeletes);
-        writePendingCloudDeletes([], storage);
-      }
-    }
-
-    const activeDeletedIds = Array.from(
-      new Set([...flushedDeleteIds, ...readPendingCloudDeletes(storage)])
-    );
-
-    // 2. Pull remoto dos 4 domínios (ou filtrado se domainFilter for passado)
+    // 1. Pull remoto primeiro (permite comparar timestamps contra tombstones locais!)
     let pullQuery = sb
       .from(OMNI_CATALOG_TABLE)
       .select('*')
@@ -1129,41 +1912,102 @@ export async function syncCatalogWithSupabase({
     const { data: remoteRows, error: pullError } = await pullQuery;
 
     if (pullError) {
+      const friendly = formatFriendlySyncError(pullError);
+      recordSyncFailure(friendly.message, storage);
       return {
         ok: false,
         mode: 'error',
-        error: pullError.message || 'Falha ao consultar obras no Supabase.',
+        sessionExpired: friendly.sessionExpired,
+        error: friendly.message,
       };
     }
 
-    const remoteWorks = (Array.isArray(remoteRows) ? remoteRows : []).map(
-      mapCatalogRowToLocalWork
-    );
+    const safeRemoteRows = Array.isArray(remoteRows) ? remoteRows : [];
+    // Se a coluna deleted_at apareceu no schema remoto, habilita soft-delete automaticamente
+    if (
+      deletedAtColumnUnsupported &&
+      safeRemoteRows.length > 0 &&
+      Object.prototype.hasOwnProperty.call(safeRemoteRows[0], 'deleted_at')
+    ) {
+      deletedAtColumnUnsupported = false;
+    }
 
-    // 3. Lê IndexedDB local (`works`) + estado em memória mais recente
+    const remoteWorks = safeRemoteRows.map(mapCatalogRowToLocalWork);
+    const localTombstones = readCloudTombstones(storage);
+    const pendingDeletes = readPendingCloudDeletes(storage);
+
+    // 2. Lê IndexedDB local (`works`) + estado em memória mais recente
     const idbWorks = await getAllRelationalWorks({ idbFactory });
     const baseLocalWorks =
       Array.isArray(localWorksOverride) && localWorksOverride.length > 0
         ? mergeWorksByUpdatedAt(idbWorks, localWorksOverride, {
-            pendingDeleteIds: activeDeletedIds,
+            pendingDeleteIds: pendingDeletes,
+            localTombstones,
           }).mergedWorks
         : idbWorks;
 
-    // 4. Mescla bidirecional pelo updated_at mais recente
-    const { mergedWorks, worksToPush, pulledCount } = mergeWorksByUpdatedAt(
-      baseLocalWorks,
-      remoteWorks,
-      { pendingDeleteIds: activeDeletedIds }
-    );
+    // 3. Mescla bidirecional pelo updated_at mais recente + tombstones
+    const {
+      mergedWorks,
+      worksToPush,
+      pulledCount,
+      remoteTombstonesApplied,
+      tombstonesToFlush,
+      cancelledTombstoneCloudIds,
+      stats,
+    } = mergeWorksByUpdatedAt(baseLocalWorks, remoteWorks, {
+      pendingDeleteIds: pendingDeletes,
+      localTombstones,
+    });
+
+    // Cancela tombstones locais superados por edição remota mais nova
+    for (const cancelledId of cancelledTombstoneCloudIds) {
+      cancelPendingCloudDelete(cancelledId, storage);
+    }
+
+    // Registra tombstones vindos de outros aparelhos (sem purga automática)
+    if (remoteTombstonesApplied.length > 0) {
+      recordCloudTombstones(remoteTombstonesApplied, storage);
+    }
+
+    // 4. Envia tombstones locais pendentes (soft-delete via deleted_at ou fallback compat)
+    let deletedCount = 0;
+    if (tombstonesToFlush.length > 0) {
+      const delRes = await applyCloudDeletes(sb, user.id, tombstonesToFlush, {
+        domainFilter,
+      });
+      if (!delRes.ok) {
+        recordSyncFailure(delRes.error, storage);
+        return {
+          ok: false,
+          mode: 'error',
+          sessionExpired: Boolean(delRes.sessionExpired),
+          error: delRes.error,
+        };
+      }
+      deletedCount = delRes.count;
+      const flushedIds = tombstonesToFlush.map((t) => t.cloudId);
+      markCloudTombstonesSynced(flushedIds, storage);
+      const remainingPending = readPendingCloudDeletes(storage).filter(
+        (id) => !flushedIds.includes(toCloudWorkId(id).toLowerCase())
+      );
+      writePendingCloudDeletes(remainingPending, storage);
+    }
 
     // 5. Upload inicial / incremental para public.catalog_works
     let pushedCount = 0;
     if (worksToPush.length > 0) {
       const pushRes = await upsertCatalogRows(sb, worksToPush, user.id);
       if (!pushRes.ok) {
+        enqueuePendingWorkUpserts(
+          worksToPush.map((w) => w.id),
+          storage
+        );
+        recordSyncFailure(pushRes.error, storage);
         return {
           ok: false,
           mode: 'error',
+          sessionExpired: Boolean(pushRes.sessionExpired),
           error: pushRes.error,
         };
       }
@@ -1173,12 +2017,18 @@ export async function syncCatalogWithSupabase({
     // 6. Persiste resultado mesclado no IndexedDB local
     await putRelationalWorks(mergedWorks, { idbFactory, replace: true });
 
+    // Limpa fila e falhas acumuladas após sincronização completa bem-sucedida
+    clearPendingWorkUpserts(null, storage);
+    clearSyncFailure(storage);
+
     const syncedAt = new Date().toISOString();
+    const tombstoneMode = getTombstoneSyncMode();
     writeSyncMeta(
       {
         lastSyncAt: syncedAt,
         lastUserId: user.id,
         initialPushDone: true,
+        tombstoneMode,
       },
       storage
     );
@@ -1186,19 +2036,25 @@ export async function syncCatalogWithSupabase({
     return {
       ok: true,
       mode: 'supabase',
+      tombstoneMode,
       user,
       works: mergedWorks,
       pushedCount,
       pulledCount,
       deletedCount,
+      stats,
+      summaryText: formatFirstSyncSummary(stats),
       syncedAt,
     };
   } catch (err) {
+    const friendly = formatFriendlySyncError(err);
+    recordSyncFailure(friendly.message, storage);
     return {
       ok: false,
       offline: !isOnlineBrowser(),
       mode: isOnlineBrowser() ? 'error' : 'offline',
-      error: err?.message || 'Erro ao sincronizar catálogo com o Supabase.',
+      sessionExpired: friendly.sessionExpired,
+      error: friendly.message,
     };
   }
 }
@@ -1208,57 +2064,140 @@ export async function pushWorksToCloud(
   { client = null, storage = null } = {}
 ) {
   const list = Array.isArray(works) ? works.filter((w) => w && w.id) : [];
-  if (list.length === 0 || !isOnlineBrowser()) return { ok: false, skipped: true };
+  if (list.length === 0) return { ok: true, count: 0, skipped: true };
+
+  // Enfileira antes de tentar enviar para sobreviver a recarregamento ou queda de rede
+  enqueuePendingWorkUpserts(
+    list.map((w) => w.id),
+    storage
+  );
+
+  if (!isOnlineBrowser()) {
+    return {
+      ok: false,
+      offline: true,
+      queued: list.length,
+      error:
+        'Você está offline. Suas alterações ficaram na fila e serão enviadas automaticamente ao reconectar.',
+    };
+  }
 
   const sb = client || getSupabaseClient({ storage });
-  if (!sb) return { ok: false, skipped: true };
+  if (!sb) return { ok: false, skipped: true, queued: list.length };
 
-  const sessionRes = await getActiveSupabaseSession({ client: sb });
-  if (!sessionRes.user?.id) return { ok: false, skipped: true };
+  const sessionRes = await getActiveSupabaseSession({ client: sb, storage });
+  if (!sessionRes.user?.id) {
+    return {
+      ok: false,
+      unauthenticated: true,
+      sessionExpired: Boolean(sessionRes.sessionExpired),
+      queued: list.length,
+      error: sessionRes.error || null,
+    };
+  }
 
   try {
-    return await upsertCatalogRows(sb, list, sessionRes.user.id);
-  } catch {
-    return { ok: false, offline: !isOnlineBrowser() };
+    const res = await upsertCatalogRows(sb, list, sessionRes.user.id);
+    if (res.ok) {
+      clearPendingWorkUpserts(
+        list.map((w) => w.id),
+        storage
+      );
+      if (getPendingSyncCount(storage) === 0) {
+        clearSyncFailure(storage);
+      }
+      return { ...res, tombstoneMode: getTombstoneSyncMode() };
+    }
+    recordSyncFailure(res.error, storage);
+    return { ...res, queued: list.length };
+  } catch (err) {
+    const friendly = formatFriendlySyncError(err);
+    recordSyncFailure(friendly.message, storage);
+    return {
+      ok: false,
+      offline: !isOnlineBrowser(),
+      queued: list.length,
+      sessionExpired: friendly.sessionExpired,
+      error: friendly.message,
+    };
   }
 }
 
 export async function deleteWorksFromCloud(
   workIds = [],
-  { client = null, storage = null } = {}
+  { client = null, storage = null, deletedAt = null } = {}
 ) {
   const ids = (Array.isArray(workIds) ? workIds : []).filter(Boolean);
   if (ids.length === 0) return { ok: true, count: 0 };
 
-  ids.forEach((id) => queuePendingCloudDelete(id, storage));
+  const delIso = deletedAt || new Date().toISOString();
+  ids.forEach((id) => queuePendingCloudDelete(id, storage, { deletedAt: delIso }));
 
-  if (!isOnlineBrowser()) return { ok: false, offline: true, queued: ids.length };
+  if (!isOnlineBrowser()) {
+    return {
+      ok: false,
+      offline: true,
+      queued: ids.length,
+      error: 'Exclusão salva offline e enfileirada para sincronizar ao reconectar.',
+    };
+  }
   const sb = client || getSupabaseClient({ storage });
   if (!sb) return { ok: false, queued: ids.length };
 
-  const sessionRes = await getActiveSupabaseSession({ client: sb });
-  if (!sessionRes.user?.id) return { ok: false, queued: ids.length };
+  const sessionRes = await getActiveSupabaseSession({ client: sb, storage });
+  if (!sessionRes.user?.id) {
+    return {
+      ok: false,
+      unauthenticated: true,
+      sessionExpired: Boolean(sessionRes.sessionExpired),
+      queued: ids.length,
+      error: sessionRes.error || null,
+    };
+  }
 
-  const cloudIds = ids.map((id) => toCloudWorkId(id));
+  const entries = ids.map((id) => ({
+    id: String(id),
+    cloudId: toCloudWorkId(id).toLowerCase(),
+    deletedAt: delIso,
+  }));
+
   try {
-    const { error } = await sb
-      .from(OMNI_CATALOG_TABLE)
-      .delete()
-      .eq('user_id', sessionRes.user.id)
-      .in('id', cloudIds);
-    if (!error) {
-      cloudIds.forEach((cid) => cancelPendingCloudDelete(cid, storage));
-      return { ok: true, count: cloudIds.length };
+    const delRes = await applyCloudDeletes(sb, sessionRes.user.id, entries);
+    if (delRes.ok) {
+      const flushedIds = entries.map((e) => e.cloudId);
+      markCloudTombstonesSynced(flushedIds, storage);
+      const remainingPending = readPendingCloudDeletes(storage).filter(
+        (id) => !flushedIds.includes(toCloudWorkId(id).toLowerCase())
+      );
+      writePendingCloudDeletes(remainingPending, storage);
+      if (getPendingSyncCount(storage) === 0) {
+        clearSyncFailure(storage);
+      }
+      return { ok: true, count: delRes.count, tombstoneMode: delRes.mode };
     }
-    return { ok: false, error: error.message };
-  } catch {
-    return { ok: false, offline: true };
+    recordSyncFailure(delRes.error, storage);
+    return {
+      ok: false,
+      queued: ids.length,
+      sessionExpired: Boolean(delRes.sessionExpired),
+      error: delRes.error,
+    };
+  } catch (err) {
+    const friendly = formatFriendlySyncError(err);
+    recordSyncFailure(friendly.message, storage);
+    return {
+      ok: false,
+      offline: !isOnlineBrowser(),
+      queued: ids.length,
+      sessionExpired: friendly.sessionExpired,
+      error: friendly.message,
+    };
   }
 }
 
 /**
- * Assinatura Realtime em `public.catalog_works` para atualizar o IndexedDB
- * e a interface em tempo real quando outro dispositivo alterar uma obra.
+ * Assinatura Realtime (EXTRA OPCIONAL — o sync não depende dela) em `public.catalog_works`
+ * para acelerar atualizações quando outro dispositivo alterar ou marcar `deleted_at` numa obra.
  */
 export function subscribeToCatalogRealtime(
   { userId, onRemoteWorksMerged, getCurrentWorks },
@@ -1270,7 +2209,7 @@ export function subscribeToCatalogRealtime(
   }
 
   const channel = sb
-    .channel(`omniprism-catalog-cinema-${userId}`)
+    .channel(`omniprism-catalog-all-${userId}`)
     .on(
       'postgres_changes',
       {
@@ -1290,6 +2229,10 @@ export function subscribeToCatalogRealtime(
           if (eventType === 'DELETE') {
             const deletedCloudId = String(payload?.old?.id || '').toLowerCase();
             if (!deletedCloudId) return;
+            recordCloudTombstones(
+              [{ id: deletedCloudId, cloudId: deletedCloudId, deletedAt: new Date().toISOString(), synced: true }],
+              storage
+            );
             const nextWorks = baseWorks.filter(
               (w) => toCloudWorkId(w.cloudId || w.id).toLowerCase() !== deletedCloudId
             );
@@ -1305,13 +2248,24 @@ export function subscribeToCatalogRealtime(
           if (!row || !OMNIPRISM_DOMAIN_IDS.includes(rowDomain)) return;
 
           const incomingWork = mapCatalogRowToLocalWork(row);
-          const { mergedWorks } = mergeWorksByUpdatedAt(baseWorks, [incomingWork], {
-            pendingDeleteIds: readPendingCloudDeletes(storage),
-          });
+          const { mergedWorks, remoteTombstonesApplied } = mergeWorksByUpdatedAt(
+            baseWorks,
+            [incomingWork],
+            {
+              pendingDeleteIds: readPendingCloudDeletes(storage),
+              localTombstones: readCloudTombstones(storage),
+            }
+          );
+          if (remoteTombstonesApplied.length > 0) {
+            recordCloudTombstones(remoteTombstonesApplied, storage);
+          }
           await putRelationalWorks(mergedWorks, { idbFactory, replace: true });
-          onRemoteWorksMerged?.(mergedWorks, { eventType, work: incomingWork });
+          onRemoteWorksMerged?.(mergedWorks, {
+            eventType: incomingWork.deletedAt ? 'SOFT_DELETE' : eventType,
+            work: incomingWork,
+          });
         } catch {
-          // Resiliente a payloads parciais no canal realtime
+          // Resiliente a payloads parciais no canal realtime (o pull periódico garante consistência)
         }
       }
     )
@@ -1385,7 +2339,7 @@ export async function cacheCoverImageToSupabaseStorage(
     return { ok: false, skipped: true, fallback: true, url: cleanUrl };
   }
 
-  const sessionRes = await getActiveSupabaseSession({ client: sb });
+  const sessionRes = await getActiveSupabaseSession({ client: sb, storage });
   const userId = sessionRes.user?.id;
   if (!userId) {
     return { ok: false, unauthenticated: true, fallback: true, url: cleanUrl };

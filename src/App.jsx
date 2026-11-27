@@ -55,26 +55,38 @@ import {
   syncActiveWorkspaceToBackend,
   updateActiveProfileInBackend,
 } from './services/codiceBackend';
+import { recordLocalError } from './lib/errorLogger';
 import {
   CODICE_DB_STORAGE_KEY,
   buildCodiceDatabase,
   createUuid,
+  hydrateAppSnapshotFromDatabase,
   persistCodiceDatabase,
 } from './services/codiceDatabase';
 import {
   cacheCoverImageToSupabaseStorage,
   cancelPendingCloudDelete,
+  computeRetryBackoffMs,
   deleteWorksFromCloud,
+  enqueuePendingWorkUpserts,
   getActiveSupabaseSession,
+  getPendingSyncCount,
+  getTombstoneSyncMode,
+  previewCloudSyncWithSupabase,
   pushWorksToCloud,
   readSyncMeta,
+  readSyncQueue,
   signInWithEmailPassword,
   signOutFromCloud,
   subscribeToAuthChanges,
   subscribeToCatalogRealtime,
   syncCatalogWithSupabase,
+  writeSyncMeta,
 } from './services/omniSyncService';
-import { getSupabaseConfig } from './services/supabaseClient';
+import {
+  getSupabaseConfig,
+  hydrateSupabaseConfigFromServer,
+} from './services/supabaseClient';
 import { evaluateReaderTitles } from './services/readerTitlesEngine';
 import {
   advanceEpisodeProgress,
@@ -255,15 +267,26 @@ export function App() {
   const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
   const [pwaRemoteVersion, setPwaRemoteVersion] = useState('');
   const [pwaCheckState, setPwaCheckState] = useState('idle'); // 'idle' | 'checking' | 'up_to_date' | 'update_available' | 'error'
-  const [cloudSyncState, setCloudSyncState] = useState(() => ({
-    configured: getSupabaseConfig().isConfigured,
-    authenticated: false,
-    user: null,
-    syncing: false,
-    offline: typeof navigator !== 'undefined' ? navigator.onLine === false : false,
-    lastSyncAt: readSyncMeta().lastSyncAt,
-    error: null,
-  }));
+  const [cloudConfigVersion, setCloudConfigVersion] = useState(0);
+  const [pullRefreshHint, setPullRefreshHint] = useState(''); // '' | 'pull' | 'release' | 'syncing'
+  const [cloudSyncState, setCloudSyncState] = useState(() => {
+    const syncMeta = readSyncMeta();
+    const syncQueue = readSyncQueue();
+    return {
+      configured: getSupabaseConfig().isConfigured,
+      authenticated: false,
+      user: null,
+      syncing: false,
+      offline: typeof navigator !== 'undefined' ? navigator.onLine === false : false,
+      lastSyncAt: syncMeta.lastSyncAt,
+      pendingCount: getPendingSyncCount(),
+      sessionExpired: false,
+      tombstoneMode: syncMeta.tombstoneMode || getTombstoneSyncMode(),
+      firstSyncPreview: null,
+      preSyncSnapshotId: syncMeta.lastPreSyncSnapshotId || null,
+      error: syncQueue.lastError || null,
+    };
+  });
   const [migrationState, setMigrationState] = useState(initBootMigrationState);
   const bootMigrationPromiseRef = useRef(null);
   const [requestedCollectionId, setRequestedCollectionId] = useState(null);
@@ -434,6 +457,13 @@ export function App() {
   const cloudApplyingRemoteRef = useRef(false);
   const lastPushedMapRef = useRef(new Map());
   const initialSyncDoneForUserRef = useRef(null);
+  const syncRetryTimerRef = useRef(null);
+  const lastFocusSyncAtRef = useRef(0);
+  const pullTouchStartYRef = useRef(null);
+  const cloudSyncStateRef = useRef(cloudSyncState);
+  cloudSyncStateRef.current = cloudSyncState;
+
+  const scheduleCloudRetryRef = useRef(null);
 
   const attachRealtimeForUser = useCallback(
     (userId) => {
@@ -456,6 +486,8 @@ export function App() {
           setCloudSyncState((prev) => ({
             ...prev,
             lastSyncAt: new Date().toISOString(),
+            pendingCount: getPendingSyncCount(),
+            tombstoneMode: getTombstoneSyncMode(),
             error: null,
           }));
         },
@@ -476,6 +508,7 @@ export function App() {
           configured: false,
           syncing: false,
           offline: offlineNow,
+          pendingCount: getPendingSyncCount(),
         }));
         return { ok: false, unconfigured: true };
       }
@@ -486,8 +519,14 @@ export function App() {
           configured: true,
           syncing: false,
           offline: true,
+          pendingCount: getPendingSyncCount(),
         }));
         return { ok: false, offline: true };
+      }
+
+      if (syncRetryTimerRef.current) {
+        clearTimeout(syncRetryTimerRef.current);
+        syncRetryTimerRef.current = null;
       }
 
       setCloudSyncState((prev) => ({
@@ -503,6 +542,9 @@ export function App() {
       });
 
       if (res.ok) {
+        if (res.user?.id) {
+          initialSyncDoneForUserRef.current = res.user.id;
+        }
         const nextMap = new Map();
         (res.works || []).forEach((w) => {
           if (w?.id) nextMap.set(String(w.id), w.updatedAt || '');
@@ -510,44 +552,146 @@ export function App() {
         lastPushedMapRef.current = nextMap;
         cloudApplyingRemoteRef.current = true;
         replaceWorkspaceData({ items: res.works || [] });
-        setCloudSyncState({
+        setCloudSyncState((prev) => ({
+          ...prev,
           configured: true,
           authenticated: true,
           user: res.user || null,
           syncing: false,
           offline: false,
+          sessionExpired: false,
           lastSyncAt: res.syncedAt,
+          pendingCount: getPendingSyncCount(),
+          tombstoneMode: res.tombstoneMode || getTombstoneSyncMode(),
+          firstSyncPreview: null,
           error: null,
-        });
+        }));
         if (!silent) {
           showToast({
-            message: `Catálogo sincronizado com Supabase (${(res.works || []).length} obras).`,
+            message: `Catálogo sincronizado com a nuvem (${(res.works || []).length} obras).`,
             type: 'success',
           });
         }
         return res;
       }
 
+      if (res.error) {
+        recordLocalError('cloud-sync', res.error);
+      }
+
+      const nextPending = getPendingSyncCount();
+      const sessionExpired = Boolean(res.sessionExpired);
       setCloudSyncState((prev) => ({
         ...prev,
         configured: true,
         syncing: false,
         offline: Boolean(res.offline),
-        authenticated: res.unauthenticated ? false : prev.authenticated,
-        user: res.unauthenticated ? null : prev.user,
+        authenticated: res.unauthenticated || sessionExpired ? false : prev.authenticated,
+        user: res.unauthenticated || sessionExpired ? null : prev.user,
+        sessionExpired,
+        pendingCount: nextPending,
+        tombstoneMode: getTombstoneSyncMode(),
         error:
-          res.offline || res.unauthenticated || res.unconfigured
+          res.offline || res.unconfigured
             ? null
-            : res.error || null,
+            : res.error ||
+              (sessionExpired
+                ? 'Sua sessão expirou. Entre novamente para retomar a sincronização — seus dados locais estão seguros.'
+                : null),
       }));
+
+      if (!silent && res.error) {
+        showToast({ message: res.error, type: 'error' });
+      }
+
+      if (!res.offline && !res.unauthenticated && !sessionExpired && !res.unconfigured) {
+        scheduleCloudRetryRef.current?.();
+      }
       return res;
     },
     [replaceWorkspaceData, showToast]
   );
 
+  scheduleCloudRetryRef.current = () => {
+    if (syncRetryTimerRef.current) return;
+    const queue = readSyncQueue();
+    const delayMs = computeRetryBackoffMs(Math.max(0, queue.retryCount - 1));
+    syncRetryTimerRef.current = setTimeout(() => {
+      syncRetryTimerRef.current = null;
+      if (
+        cloudSyncStateRef.current.authenticated &&
+        !cloudSyncStateRef.current.offline &&
+        !cloudSyncStateRef.current.firstSyncPreview
+      ) {
+        runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch((err) => {
+          recordLocalError('cloud-sync-retry', err);
+        });
+      }
+    }, delayMs);
+  };
+
+  // Auto-configuração pública do Supabase via `/api/config` no primeiro acesso
   useEffect(() => {
     if (migrationState.locked) return undefined;
     let active = true;
+    hydrateSupabaseConfigFromServer()
+      .then((res) => {
+        if (!active) return;
+        const cfg = getSupabaseConfig();
+        setCloudSyncState((prev) => ({
+          ...prev,
+          configured: cfg.isConfigured,
+        }));
+        if (res?.changed || cfg.isConfigured) {
+          setCloudConfigVersion((v) => v + 1);
+        }
+      })
+      .catch((err) => {
+        recordLocalError('cloud-config', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, [migrationState.locked]);
+
+  useEffect(() => {
+    if (migrationState.locked) return undefined;
+    let active = true;
+
+    const triggerSafeBootSync = async (userId) => {
+      if (!userId || !active) return;
+      const offlineNow =
+        typeof navigator !== 'undefined' && navigator.onLine === false;
+      if (offlineNow) return;
+
+      const meta = readSyncMeta();
+      const isFirstDeviceLink = meta.lastUserId !== userId || !meta.initialPushDone;
+      if (isFirstDeviceLink && itemsRef.current.length > 0) {
+        const preview = await previewCloudSyncWithSupabase({
+          localWorksOverride: itemsRef.current,
+        });
+        if (!active) return;
+        if (preview.ok && preview.needsConfirmation) {
+          setCloudSyncState((prev) => ({
+            ...prev,
+            firstSyncPreview: preview,
+            syncing: false,
+          }));
+          return;
+        }
+      }
+
+      if (initialSyncDoneForUserRef.current !== userId) {
+        const syncRes = await runCloudSyncNow({
+          localWorksOverride: itemsRef.current,
+          silent: true,
+        });
+        if (!active) return;
+        if (syncRes?.ok) {
+          initialSyncDoneForUserRef.current = userId;
+        }
+      }
+    };
 
     const bootstrapCloudAuth = async () => {
       const cfg = getSupabaseConfig();
@@ -562,6 +706,7 @@ export function App() {
             authenticated: false,
             user: null,
             offline: offlineNow,
+            pendingCount: getPendingSyncCount(),
           }));
         }
         return;
@@ -571,42 +716,67 @@ export function App() {
       if (!active) return;
 
       const user = sessionRes.user || null;
+      const syncMeta = readSyncMeta();
+      const expiredFlag = Boolean(
+        sessionRes.sessionExpired ||
+          (!user && !offlineNow && syncMeta.lastUserId && sessionRes.error)
+      );
+
       setCloudSyncState((prev) => ({
         ...prev,
         configured: true,
         authenticated: Boolean(user),
         user,
         offline: offlineNow,
+        sessionExpired: expiredFlag,
+        pendingCount: getPendingSyncCount(),
+        error: expiredFlag
+          ? sessionRes.error ||
+            'Sua sessão expirou. Entre novamente para retomar a sincronização — seus dados locais estão seguros.'
+          : prev.error,
       }));
 
       if (user?.id) {
         attachRealtimeForUser(user.id);
-        if (initialSyncDoneForUserRef.current !== user.id) {
-          initialSyncDoneForUserRef.current = user.id;
-          runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch(
-            () => {}
-          );
-        }
+        triggerSafeBootSync(user.id).catch((err) => {
+          recordLocalError('cloud-boot-sync', err);
+        });
       }
     };
 
     bootstrapCloudAuth();
 
-    const unsubAuth = subscribeToAuthChanges((_event, session) => {
+    const unsubAuth = subscribeToAuthChanges((event, session) => {
       if (!active) return;
       const user = session?.user || null;
+      const offlineNow =
+        typeof navigator !== 'undefined' && navigator.onLine === false;
+
+      if (!user && offlineNow && cloudSyncStateRef.current.authenticated) {
+        // Não derruba a interface offline por falha transitória de renovação sem rede
+        setCloudSyncState((prev) => ({ ...prev, offline: true }));
+        return;
+      }
+
       setCloudSyncState((prev) => ({
         ...prev,
+        configured: getSupabaseConfig().isConfigured,
         authenticated: Boolean(user),
         user,
+        sessionExpired:
+          !user && event === 'TOKEN_REFRESHED'
+            ? true
+            : Boolean(user)
+              ? false
+              : prev.sessionExpired,
       }));
+
       if (user?.id) {
         attachRealtimeForUser(user.id);
         if (initialSyncDoneForUserRef.current !== user.id) {
-          initialSyncDoneForUserRef.current = user.id;
-          runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch(
-            () => {}
-          );
+          triggerSafeBootSync(user.id).catch((err) => {
+            recordLocalError('cloud-auth-sync', err);
+          });
         }
       } else {
         initialSyncDoneForUserRef.current = null;
@@ -619,24 +789,54 @@ export function App() {
 
     const onOnline = () => {
       setCloudSyncState((prev) => ({ ...prev, offline: false }));
-      if (initialSyncDoneForUserRef.current) {
-        runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch(
-          () => {}
-        );
+      hydrateSupabaseConfigFromServer()
+        .then((res) => {
+          if (res?.changed) setCloudConfigVersion((v) => v + 1);
+        })
+        .catch(() => {});
+      if (cloudSyncStateRef.current.authenticated && !cloudSyncStateRef.current.firstSyncPreview) {
+        runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch((err) => {
+          recordLocalError('cloud-online-sync', err);
+        });
       }
     };
     const onOffline = () => {
-      setCloudSyncState((prev) => ({ ...prev, offline: true, syncing: false }));
+      setCloudSyncState((prev) => ({
+        ...prev,
+        offline: true,
+        syncing: false,
+        pendingCount: getPendingSyncCount(),
+      }));
+    };
+
+    const onFocusOrVisible = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (!cloudSyncStateRef.current.authenticated || cloudSyncStateRef.current.offline) return;
+      if (cloudSyncStateRef.current.firstSyncPreview || cloudSyncStateRef.current.syncing) return;
+      const now = Date.now();
+      if (now - lastFocusSyncAtRef.current < 20_000) return;
+      lastFocusSyncAtRef.current = now;
+      runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch((err) => {
+        recordLocalError('cloud-focus-sync', err);
+      });
     };
 
     if (typeof window !== 'undefined') {
       window.addEventListener('online', onOnline);
       window.addEventListener('offline', onOffline);
+      window.addEventListener('focus', onFocusOrVisible);
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onFocusOrVisible);
     }
 
     return () => {
       active = false;
       unsubAuth();
+      if (syncRetryTimerRef.current) {
+        clearTimeout(syncRetryTimerRef.current);
+        syncRetryTimerRef.current = null;
+      }
       if (realtimeUnsubRef.current) {
         realtimeUnsubRef.current();
         realtimeUnsubRef.current = null;
@@ -644,21 +844,25 @@ export function App() {
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', onOnline);
         window.removeEventListener('offline', onOffline);
+        window.removeEventListener('focus', onFocusOrVisible);
+      }
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onFocusOrVisible);
       }
     };
-  }, [migrationState.locked, attachRealtimeForUser, runCloudSyncNow]);
+  }, [migrationState.locked, cloudConfigVersion, attachRealtimeForUser, runCloudSyncNow]);
 
   useEffect(() => {
-    if (
-      migrationState.locked ||
-      !cloudSyncState.authenticated ||
-      cloudSyncState.offline
-    ) {
+    if (migrationState.locked) {
       return undefined;
     }
 
     if (cloudApplyingRemoteRef.current) {
       cloudApplyingRemoteRef.current = false;
+      return undefined;
+    }
+
+    if (!cloudSyncState.authenticated || cloudSyncState.firstSyncPreview) {
       return undefined;
     }
 
@@ -668,6 +872,17 @@ export function App() {
     });
 
     if (changedWorks.length === 0) return undefined;
+
+    // Enfileira imediatamente para sobreviver a offline ou fechamento da aba antes do debounce
+    enqueuePendingWorkUpserts(changedWorks.map((w) => w.id));
+    setCloudSyncState((prev) => ({
+      ...prev,
+      pendingCount: getPendingSyncCount(),
+    }));
+
+    if (cloudSyncState.offline) {
+      return undefined;
+    }
 
     const timer = setTimeout(() => {
       pushWorksToCloud(changedWorks)
@@ -679,11 +894,36 @@ export function App() {
             setCloudSyncState((prev) => ({
               ...prev,
               lastSyncAt: new Date().toISOString(),
+              pendingCount: getPendingSyncCount(),
+              tombstoneMode: res.tombstoneMode || prev.tombstoneMode,
               error: null,
             }));
+          } else if (res && !res.skipped) {
+            if (res.error) recordLocalError('cloud-push', res.error);
+            setCloudSyncState((prev) => ({
+              ...prev,
+              offline: Boolean(res.offline),
+              sessionExpired: Boolean(res.sessionExpired),
+              authenticated: res.sessionExpired ? false : prev.authenticated,
+              user: res.sessionExpired ? null : prev.user,
+              pendingCount: getPendingSyncCount(),
+              error: res.error || prev.error,
+            }));
+            if (!res.offline && !res.sessionExpired && !res.unauthenticated) {
+              scheduleCloudRetryRef.current?.();
+            }
           }
         })
-        .catch(() => {});
+        .catch((err) => {
+          const msg = err?.message || 'Falha inesperada ao enviar alterações para a nuvem.';
+          recordLocalError('cloud-push', msg);
+          setCloudSyncState((prev) => ({
+            ...prev,
+            pendingCount: getPendingSyncCount(),
+            error: msg,
+          }));
+          scheduleCloudRetryRef.current?.();
+        });
     }, 650);
 
     return () => clearTimeout(timer);
@@ -692,7 +932,39 @@ export function App() {
     migrationState.locked,
     cloudSyncState.authenticated,
     cloudSyncState.offline,
+    cloudSyncState.firstSyncPreview,
   ]);
+
+  const createPreSyncAutoSnapshot = useCallback(async () => {
+    try {
+      const currentEvals = await getAllEpisodeEvaluations().catch(() => []);
+      const snapRes = await saveAutoSnapshot(
+        {
+          items: itemsRef.current,
+          profile,
+          posts,
+          streak: streakData,
+          readingSessions,
+          collections,
+          episodeEvaluations: currentEvals,
+        },
+        {
+          reason: 'pre-cloud-first-sync',
+          label: 'Snapshot automático antes da 1ª sincronização na nuvem',
+          force: true,
+        }
+      );
+      const snapId = snapRes?.snapshot?.id || null;
+      if (snapId) {
+        writeSyncMeta({ lastPreSyncSnapshotId: snapId });
+        setCloudSyncState((prev) => ({ ...prev, preSyncSnapshotId: snapId }));
+      }
+      return snapId;
+    } catch (err) {
+      recordLocalError('cloud-presync-snapshot', err);
+      return null;
+    }
+  }, [profile, posts, streakData, readingSessions, collections]);
 
   const handleCloudSignIn = useCallback(
     async ({ email, password }) => {
@@ -702,7 +974,6 @@ export function App() {
       }
       const user = authRes.user;
       if (user?.id) {
-        initialSyncDoneForUserRef.current = user.id;
         attachRealtimeForUser(user.id);
       }
       setCloudSyncState((prev) => ({
@@ -710,16 +981,70 @@ export function App() {
         configured: true,
         authenticated: Boolean(user),
         user,
+        sessionExpired: false,
         error: null,
       }));
-      await runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: false });
+
+      const meta = readSyncMeta();
+      const isFirstDeviceLink = !user?.id || meta.lastUserId !== user.id || !meta.initialPushDone;
+
+      if (isFirstDeviceLink && itemsRef.current.length > 0) {
+        const preview = await previewCloudSyncWithSupabase({
+          localWorksOverride: itemsRef.current,
+        });
+        if (preview.ok && preview.needsConfirmation) {
+          setCloudSyncState((prev) => ({
+            ...prev,
+            firstSyncPreview: preview,
+            syncing: false,
+          }));
+          return { ok: true, user, awaitingConfirmation: true };
+        }
+        // 1º aparelho com nuvem vazia: ainda assim cria snapshot automático antes do 1º push
+        await createPreSyncAutoSnapshot();
+      }
+
+      const syncRes = await runCloudSyncNow({
+        localWorksOverride: itemsRef.current,
+        silent: false,
+      });
+      if (syncRes?.ok && user?.id) {
+        initialSyncDoneForUserRef.current = user.id;
+      }
       return { ok: true, user };
     },
-    [attachRealtimeForUser, runCloudSyncNow]
+    [attachRealtimeForUser, createPreSyncAutoSnapshot, runCloudSyncNow]
   );
+
+  const handleConfirmFirstSync = useCallback(async () => {
+    await createPreSyncAutoSnapshot();
+    const res = await runCloudSyncNow({
+      localWorksOverride: itemsRef.current,
+      silent: false,
+    });
+    if (res?.ok && res.user?.id) {
+      initialSyncDoneForUserRef.current = res.user.id;
+    }
+    return res;
+  }, [createPreSyncAutoSnapshot, runCloudSyncNow]);
+
+  const handleCancelFirstSync = useCallback(() => {
+    setCloudSyncState((prev) => ({
+      ...prev,
+      firstSyncPreview: null,
+    }));
+    showToast({
+      message: 'Mesclagem adiada. Seus dados continuam intactos neste aparelho.',
+      type: 'info',
+    });
+  }, [showToast]);
 
   const handleCloudSignOut = useCallback(async () => {
     initialSyncDoneForUserRef.current = null;
+    if (syncRetryTimerRef.current) {
+      clearTimeout(syncRetryTimerRef.current);
+      syncRetryTimerRef.current = null;
+    }
     if (realtimeUnsubRef.current) {
       realtimeUnsubRef.current();
       realtimeUnsubRef.current = null;
@@ -731,6 +1056,8 @@ export function App() {
       authenticated: false,
       user: null,
       syncing: false,
+      sessionExpired: false,
+      firstSyncPreview: null,
       error: null,
     }));
     showToast({
@@ -745,17 +1072,9 @@ export function App() {
       ...prev,
       configured: cfg.isConfigured,
     }));
-    if (cfg.isConfigured) {
-      const sessionRes = await getActiveSupabaseSession();
-      if (sessionRes.user?.id) {
-        initialSyncDoneForUserRef.current = sessionRes.user.id;
-        attachRealtimeForUser(sessionRes.user.id);
-        runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: true }).catch(
-          () => {}
-        );
-      }
-    }
-  }, [attachRealtimeForUser, runCloudSyncNow]);
+    // Re-anexa listener onAuthStateChange com o novo cliente Supabase
+    setCloudConfigVersion((v) => v + 1);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1144,7 +1463,29 @@ export function App() {
     (ids = []) => {
       const snap = batchRemoveItems(ids);
       if (Array.isArray(ids) && ids.length > 0) {
-        deleteWorksFromCloud(ids).catch(() => {});
+        deleteWorksFromCloud(ids)
+          .then((res) => {
+            setCloudSyncState((prev) => ({
+              ...prev,
+              pendingCount: getPendingSyncCount(),
+              tombstoneMode: res?.tombstoneMode || prev.tombstoneMode,
+              error: res?.ok || res?.offline ? prev.error : res?.error || prev.error,
+            }));
+            if (res && !res.ok && !res.offline && !res.unauthenticated) {
+              if (res.error) recordLocalError('cloud-delete', res.error);
+              scheduleCloudRetryRef.current?.();
+            }
+          })
+          .catch((err) => {
+            const msg = err?.message || 'Falha ao enviar exclusão para a nuvem.';
+            recordLocalError('cloud-delete', msg);
+            setCloudSyncState((prev) => ({
+              ...prev,
+              pendingCount: getPendingSyncCount(),
+              error: msg,
+            }));
+            scheduleCloudRetryRef.current?.();
+          });
       }
       return snap;
     },
@@ -1154,12 +1495,37 @@ export function App() {
   const handleRestoreRemovedWithCloud = useCallback(
     (snap) => {
       restoreRemovedItems(snap);
-      const restoredWorks = snap?.removedItems || [];
+      const nowIso = new Date().toISOString();
+      const restoredWorks = (snap?.removedItems || []).map((w) => ({
+        ...w,
+        updatedAt: nowIso,
+        updated_at: nowIso,
+      }));
       restoredWorks.forEach((w) => {
         if (w?.id) cancelPendingCloudDelete(w.id);
       });
       if (restoredWorks.length > 0) {
-        pushWorksToCloud(restoredWorks).catch(() => {});
+        pushWorksToCloud(restoredWorks)
+          .then((res) => {
+            setCloudSyncState((prev) => ({
+              ...prev,
+              pendingCount: getPendingSyncCount(),
+              error: res?.ok ? null : res?.error || prev.error,
+            }));
+            if (res && !res.ok && !res.offline && !res.skipped) {
+              if (res.error) recordLocalError('cloud-restore-push', res.error);
+              scheduleCloudRetryRef.current?.();
+            }
+          })
+          .catch((err) => {
+            const msg = err?.message || 'Falha ao reenviar obra restaurada para a nuvem.';
+            recordLocalError('cloud-restore-push', msg);
+            setCloudSyncState((prev) => ({
+              ...prev,
+              pendingCount: getPendingSyncCount(),
+              error: msg,
+            }));
+          });
       }
     },
     [restoreRemovedItems]
@@ -1339,6 +1705,32 @@ export function App() {
       restoreStreakBackup,
       showToast,
     ]
+  );
+
+  const handleRestorePreSyncSnapshot = useCallback(
+    async (snapshotId) => {
+      if (!snapshotId) return;
+      try {
+        const allSnaps = await listAutoSnapshots();
+        const target = allSnaps.find((s) => s.id === snapshotId);
+        if (!target?.payload) {
+          showToast({
+            message: 'Snapshot não encontrado neste aparelho.',
+            type: 'error',
+          });
+          return;
+        }
+        const hydrated = hydrateAppSnapshotFromDatabase(target.payload);
+        await handleApplyRestoreSnapshot(hydrated, 'replace', null, { includeDeleted: true });
+      } catch (err) {
+        recordLocalError('cloud-restore-snapshot', err);
+        showToast({
+          message: 'Não foi possível restaurar o snapshot agora.',
+          type: 'error',
+        });
+      }
+    },
+    [handleApplyRestoreSnapshot, showToast]
   );
 
   const mirrorRecoveryDoneRef = useRef(false);
@@ -1880,11 +2272,13 @@ export function App() {
             onClick={() => setCloudModalOpen(true)}
             aria-label="Status de sincronização na nuvem OmniPrism"
             className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors ${
-              cloudSyncState.authenticated
-                ? cloudSyncState.offline
-                  ? 'border-line bg-card text-muted hover:border-accent'
-                  : 'border-accent/45 bg-accent/10 text-ink hover:border-accent'
-                : 'border-line bg-card text-muted hover:border-accent hover:text-ink'
+              cloudSyncState.sessionExpired || cloudSyncState.error || cloudSyncState.firstSyncPreview
+                ? 'border-accent bg-accent/10 text-ink hover:border-accent'
+                : cloudSyncState.authenticated
+                  ? cloudSyncState.offline
+                    ? 'border-line bg-card text-muted hover:border-accent'
+                    : 'border-accent/45 bg-accent/10 text-ink hover:border-accent'
+                  : 'border-line bg-card text-muted hover:border-accent hover:text-ink'
             }`}
           >
             {cloudSyncState.syncing ? (
@@ -1892,16 +2286,43 @@ export function App() {
                 <RefreshCw className="h-3.5 w-3.5 animate-spin text-accent" strokeWidth={1.5} />
                 <span>Sincronizando...</span>
               </>
+            ) : cloudSyncState.firstSyncPreview ? (
+              <>
+                <Cloud className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                <span>Confirmar 1ª sincronização</span>
+              </>
+            ) : cloudSyncState.sessionExpired ? (
+              <>
+                <AlertTriangle className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                <span>Sessão Expirada</span>
+              </>
             ) : cloudSyncState.authenticated ? (
               cloudSyncState.offline ? (
                 <>
                   <WifiOff className="h-3.5 w-3.5 text-muted" strokeWidth={1.5} />
-                  <span>Offline (Salvo local)</span>
+                  <span>
+                    {cloudSyncState.pendingCount > 0
+                      ? `Offline (${cloudSyncState.pendingCount})`
+                      : 'Offline (Salvo local)'}
+                  </span>
+                </>
+              ) : cloudSyncState.error ? (
+                <>
+                  <AlertTriangle className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
+                  <span>
+                    {cloudSyncState.pendingCount > 0
+                      ? `Pendente (${cloudSyncState.pendingCount})`
+                      : 'Erro no sync'}
+                  </span>
                 </>
               ) : (
                 <>
                   <Cloud className="h-3.5 w-3.5 text-accent" strokeWidth={1.5} />
-                  <span>Sincronizado Supabase</span>
+                  <span>
+                    {cloudSyncState.pendingCount > 0
+                      ? `Na fila (${cloudSyncState.pendingCount})`
+                      : 'Sincronizado Supabase'}
+                  </span>
                 </>
               )
             ) : (
@@ -1950,8 +2371,63 @@ export function App() {
         <main
           id="main-content"
           tabIndex={-1}
+          onTouchStart={(e) => {
+            if (
+              !cloudSyncState.authenticated ||
+              cloudSyncState.offline ||
+              cloudSyncState.syncing ||
+              cloudSyncState.firstSyncPreview
+            ) {
+              pullTouchStartYRef.current = null;
+              return;
+            }
+            if (typeof window !== 'undefined' && window.scrollY <= 2 && e.touches?.length === 1) {
+              pullTouchStartYRef.current = e.touches[0].clientY;
+            } else {
+              pullTouchStartYRef.current = null;
+            }
+          }}
+          onTouchMove={(e) => {
+            if (pullTouchStartYRef.current === null || !e.touches?.length) return;
+            const delta = e.touches[0].clientY - pullTouchStartYRef.current;
+            if (delta < 18) {
+              if (pullRefreshHint) setPullRefreshHint('');
+              return;
+            }
+            setPullRefreshHint(delta >= 72 ? 'release' : 'pull');
+          }}
+          onTouchEnd={() => {
+            const shouldTrigger = pullRefreshHint === 'release';
+            pullTouchStartYRef.current = null;
+            if (shouldTrigger) {
+              setPullRefreshHint('syncing');
+              runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: false }).finally(() => {
+                setPullRefreshHint('');
+              });
+            } else if (pullRefreshHint) {
+              setPullRefreshHint('');
+            }
+          }}
           className="px-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] sm:px-6 pt-[max(1rem,env(safe-area-inset-top))] pb-[calc(6rem+env(safe-area-inset-bottom))] focus:outline-none"
         >
+          {pullRefreshHint && (
+            <div
+              role="status"
+              className="mb-3 flex items-center justify-center gap-2 rounded-[6px] border border-line bg-card px-3 py-1.5 text-[11px] font-medium text-muted"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 text-accent ${pullRefreshHint === 'syncing' ? 'animate-spin' : ''}`}
+                strokeWidth={1.5}
+              />
+              <span>
+                {pullRefreshHint === 'release'
+                  ? 'Solte para sincronizar com a nuvem'
+                  : pullRefreshHint === 'syncing'
+                    ? 'Sincronizando catálogo...'
+                    : 'Puxe para atualizar da nuvem'}
+              </span>
+            </div>
+          )}
           {(storageError?.warning || secondaryStorageWarning) && (
             <div
               role="alert"
@@ -2093,6 +2569,8 @@ export function App() {
                   onOpenImportCatalog={() => setImportCatalogOpen(true)}
                   requestedSearchQuery={requestedAddQuery}
                   onConsumeRequestedSearchQuery={() => setRequestedAddQuery('')}
+                  isCloudAuthenticated={Boolean(cloudSyncState.authenticated)}
+                  onOpenCloudModal={() => setCloudModalOpen(true)}
                 />
               )}
               {activeTab === 'list' && (
@@ -2422,6 +2900,9 @@ export function App() {
                 runCloudSyncNow({ localWorksOverride: itemsRef.current, silent: false })
               }
               onConfigChanged={handleCloudConfigChanged}
+              onConfirmFirstSync={handleConfirmFirstSync}
+              onCancelFirstSync={handleCancelFirstSync}
+              onRestorePreSyncSnapshot={handleRestorePreSyncSnapshot}
             />
           )}
 

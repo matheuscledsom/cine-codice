@@ -29,6 +29,7 @@ import {
   fetchOmdbViaProxyOrDirect,
   fetchTmdbViaProxyOrDirect,
 } from './apiProxyClient.js';
+import { hasStoredSupabaseSessionToken } from './supabaseClient.js';
 import {
   API_TIMEOUT_MS,
   BACKDROP_RETRY_COOLDOWN_MS,
@@ -313,13 +314,52 @@ export function clearCinemaSearchCache() {
   }
 }
 
-function makeCacheKey(query, filter, sources) {
-  const srcToken = Array.isArray(sources) && sources.length ? [...sources].sort().join(',') : 'default';
-  return `${filter || 'all'}:${srcToken}:${String(query || '').trim().toLowerCase()}`;
+export function buildTmdbImageUrl(rawPath, size = 'w500') {
+  const clean = String(rawPath || '').trim();
+  if (!clean) return null;
+  if (/^https?:\/\//i.test(clean)) {
+    return clean.replace(/^http:\/\//i, 'https://');
+  }
+  const normalizedPath = clean.startsWith('/') ? clean : `/${clean}`;
+  return `https://image.tmdb.org/t/p/${size}${normalizedPath}`;
 }
 
-export function getCachedCinemaSearch(query, filter = 'all', sources = null) {
-  const key = makeCacheKey(query, filter, sources);
+export function resolveCinemaSearchAuthState({
+  tmdbApiKey = undefined,
+  accessToken = '',
+  supabaseClient = null,
+  storage = null,
+} = {}) {
+  if (String(accessToken || '').trim()) return 'auth';
+  const explicitKey =
+    tmdbApiKey === null ? '' : sanitizeApiKey(tmdbApiKey) || loadTmdbApiKey();
+  if (explicitKey) return 'auth';
+  if (supabaseClient) return 'auth';
+  if (hasStoredSupabaseSessionToken(storage)) return 'auth';
+  return 'anon';
+}
+
+export function buildCinemaSearchCacheKey(query, filter, sources, authState = 'anon') {
+  const srcToken =
+    Array.isArray(sources) && sources.length ? [...sources].sort().join(',') : 'default';
+  const authToken = authState === 'auth' ? 'auth' : 'anon';
+  return `${authToken}:${filter || 'all'}:${srcToken}:${String(query || '').trim().toLowerCase()}`;
+}
+
+function makeCacheKey(query, filter, sources, authState = 'anon') {
+  return buildCinemaSearchCacheKey(query, filter, sources, authState);
+}
+
+export function getCachedCinemaSearch(query, filter = 'all', sources = null, options = {}) {
+  const authState =
+    options?.authState ||
+    resolveCinemaSearchAuthState({
+      tmdbApiKey: options?.tmdbApiKey,
+      accessToken: options?.accessToken,
+      supabaseClient: options?.supabaseClient,
+      storage: options?.storage,
+    });
+  const key = makeCacheKey(query, filter, sources, authState);
   const memHit = memoryCache.get(key);
   if (memHit && Date.now() - Number(memHit.timestamp || 0) < MEMORY_CACHE_TTL_MS) {
     return memHit;
@@ -350,8 +390,9 @@ function persistMemoryCacheToLocalStorage() {
   }
 }
 
-function setCachedCinemaSearch(query, filter, sources, payload) {
-  const key = makeCacheKey(query, filter, sources);
+function setCachedCinemaSearch(query, filter, sources, payload, options = {}) {
+  const authState = options?.authState || 'anon';
+  const key = makeCacheKey(query, filter, sources, authState);
   if (memoryCache.has(key)) memoryCache.delete(key);
   while (memoryCache.size >= CACHE_MAX_ENTRIES) {
     const oldest = memoryCache.keys().next().value;
@@ -904,6 +945,7 @@ async function searchTmdb(
     supabaseClient = null,
     forceProxy = null,
     isDev = undefined,
+    onStatus = null,
   } = {}
 ) {
   const key = apiKey === null ? '' : sanitizeApiKey(apiKey) || loadTmdbApiKey();
@@ -933,9 +975,17 @@ async function searchTmdb(
       ...(isDev !== undefined ? { isDev } : {}),
     }
   );
-  if (outcome.missingKey || !outcome.res) return [];
+  if (outcome.missingKey || !outcome.res) {
+    onStatus?.({
+      authRequired: !outcome.proxyAttempted || outcome.proxyStatus === 401,
+      via: outcome.via || 'none',
+      status: outcome.proxyStatus ?? null,
+    });
+    return [];
+  }
   const res = outcome.res;
   if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+  onStatus?.({ authRequired: false, via: outcome.via || 'proxy', status: res.status });
   const json = await res.json();
   const list = Array.isArray(json?.results) ? json.results : [];
 
@@ -961,8 +1011,8 @@ async function searchTmdb(
       const rawGenres = (Array.isArray(r.genre_ids) ? r.genre_ids : [])
         .map((gid) => TMDB_GENRE_MAP[gid])
         .filter(Boolean);
-      const coverUrl = r.poster_path ? `https://image.tmdb.org/t/p/w500${r.poster_path}` : null;
-      const backdropUrl = r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null;
+      const coverUrl = buildTmdbImageUrl(r.poster_path, 'w500');
+      const backdropUrl = buildTmdbImageUrl(r.backdrop_path, 'w1280');
       const tmdbRating = buildTmdbRating(r.vote_average, r.vote_count);
 
       return applyCanonicalIdsToWork({
@@ -1297,6 +1347,12 @@ async function searchWikidataCinema(
     const durRaw = ent.claims?.P2047?.[0]?.mainsnak?.datavalue?.value?.amount;
     const durationMinutes = durRaw ? Math.round(Number(String(durRaw).replace(/^\+/, ''))) : null;
     const imdbId = ent.claims?.P345?.[0]?.mainsnak?.datavalue?.value || '';
+    const wikidataImageFile = String(ent.claims?.P18?.[0]?.mainsnak?.datavalue?.value || '').trim();
+    const wikidataCoverUrl = wikidataImageFile
+      ? `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(
+          wikidataImageFile.replace(/\s+/g, '_')
+        )}?width=500`
+      : null;
 
     out.push({
       id: `wd-${cand.id}`,
@@ -1310,8 +1366,8 @@ async function searchWikidataCinema(
       totalSeconds: workType === 'movie' && durationMinutes > 0 ? durationMinutes * 60 : null,
       synopsis: descPt || descEn,
       genres: [],
-      coverUrl: null,
-      coverCandidates: [],
+      coverUrl: wikidataCoverUrl,
+      coverCandidates: [wikidataCoverUrl].filter(Boolean),
       sourceBadge: 'Wikidata',
       mergedSources: ['Wikidata'],
       monogram: buildMonogram(titlePt),
@@ -1578,10 +1634,15 @@ export async function searchCinemaMedia(
       : getDefaultSourcesForFilter(filter);
   const activeSources = orderCinemaSearchSources(rawActiveSources, filter);
 
-  const cacheKey = makeCacheKey(cleanQuery, filter, activeSources);
+  const authState = resolveCinemaSearchAuthState({
+    tmdbApiKey,
+    accessToken,
+    supabaseClient,
+  });
+  const cacheKey = makeCacheKey(cleanQuery, filter, activeSources, authState);
 
   if (!skipCache) {
-    const memCached = getCachedCinemaSearch(cleanQuery, filter, activeSources);
+    const memCached = getCachedCinemaSearch(cleanQuery, filter, activeSources, { authState });
     if (memCached) {
       return { ...memCached, fromCache: true };
     }
@@ -1593,12 +1654,15 @@ export async function searchCinemaMedia(
         failedCount: idbCached.failedCount || 0,
         partialFailure: Boolean(idbCached.partialFailure),
         allFailed: false,
+        tmdbAuthRequired: Boolean(idbCached.tmdbAuthRequired),
+        authState,
       };
-      setCachedCinemaSearch(cleanQuery, filter, activeSources, payload);
+      setCachedCinemaSearch(cleanQuery, filter, activeSources, payload, { authState });
       return { ...payload, fromCache: true };
     }
   }
 
+  let tmdbAuthRequired = false;
   const sourceFetchers = {
     anilist: () => searchAniList(cleanQuery, { signal, fetchImpl, timeoutMs }),
     jikan: () => searchJikan(cleanQuery, { signal, fetchImpl, timeoutMs }),
@@ -1614,6 +1678,11 @@ export async function searchCinemaMedia(
         supabaseClient,
         forceProxy,
         isDev,
+        onStatus: (st) => {
+          if (st?.authRequired) {
+            tmdbAuthRequired = true;
+          }
+        },
       }),
     imdb: () => searchImdbSuggestion(cleanQuery, { signal, fetchImpl, timeoutMs }),
     wikidata: () => searchWikidataCinema(cleanQuery, { signal, fetchImpl, timeoutMs }),
@@ -1754,11 +1823,13 @@ export async function searchCinemaMedia(
     failedCount: failedSources.length,
     partialFailure,
     allFailed,
+    tmdbAuthRequired: Boolean(tmdbAuthRequired && filter !== 'anime'),
+    authState,
     fromCache: false,
   };
 
   if (!allFailed && deduplicated.length > 0) {
-    setCachedCinemaSearch(cleanQuery, filter, activeSources, responsePayload);
+    setCachedCinemaSearch(cleanQuery, filter, activeSources, responsePayload, { authState });
     setIdbCachedSearch(cacheKey, responsePayload).catch(() => {});
   }
 

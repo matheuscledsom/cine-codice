@@ -2,40 +2,40 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getAllEpisodeEvaluations,
   importEpisodeEvaluations,
-} from '../api/cacheDb';
+} from '../api/cacheDb.js';
 import {
   saveAutoSnapshot,
   verifyAutoSnapshotIntegrity,
-} from '../services/backupEngine';
+} from '../services/backupEngine.js';
 import {
   getAllRelationalWorks,
   migrateLegacyToRelationalDb,
   putRelationalSessions,
   putRelationalWorks,
   runRelationalSchemaMigrations,
-} from '../services/relationalDb';
+} from '../services/relationalDb.js';
 import {
   domainConfig,
   inferDomainFromWork,
   normalizeCinemaStatus,
   normalizeGameEditionType,
   normalizeWorkTypeForDomain,
-} from '../config/domainConfig';
-import { normalizeAchievementsModel } from '../lib/gameDepth';
+} from '../config/domainConfig.js';
+import { normalizeAchievementsModel } from '../lib/gameDepth.js';
 import {
   isCompressedManualCoverDataUrl,
   saveManualCoverInIdb,
-} from '../lib/manualCovers';
-import { initialItems } from '../data/mockData';
-import { applyCanonicalIdsToWork } from '../lib/idBridge';
-import { classifyLegacyRatingSource } from '../lib/migrations';
+} from '../lib/manualCovers.js';
+import { initialItems } from '../data/mockData.js';
+import { applyCanonicalIdsToWork } from '../lib/idBridge.js';
+import { classifyLegacyRatingSource } from '../lib/migrations.js';
 import {
   calculateCriteriaRating,
   isFiveCriteriaRecord,
   resolveLifeWorkFlag,
-} from '../lib/ratingModel';
-import { normalizeExternalRatings } from '../lib/ratings';
-import { safeSetLocalStorageJson } from '../lib/storagePersistence';
+} from '../lib/ratingModel.js';
+import { normalizeExternalRatings } from '../lib/ratings.js';
+import { safeSetLocalStorageJson } from '../lib/storagePersistence.js';
 import {
   clearLocalDeletedIds,
   exportSignedBackupPayload,
@@ -43,7 +43,7 @@ import {
   readLocalDeletedIds,
   recordLocalDeletedIds,
   recordBackupExportTimestamp,
-} from '../services/backupEngine';
+} from '../services/backupEngine.js';
 import {
   buildCodiceDatabase,
   createUuid,
@@ -52,7 +52,7 @@ import {
   loadStoredCodiceDatabase,
   parseAndValidateBackupText,
   triggerFileDownload,
-} from '../services/codiceDatabase';
+} from '../services/codiceDatabase.js';
 import {
   calculateSmartRating,
   calculateWorkProgress,
@@ -61,7 +61,7 @@ import {
   isEpisodicWork,
   normalizeTagsList,
   syncCinemaEpisodeFields,
-} from '../utils/backlogHelpers';
+} from '../utils/backlogHelpers.js';
 import {
   COLLECTIONS_STORAGE_KEY,
   createCustomCollection,
@@ -70,7 +70,7 @@ import {
   reorderWorkInCollection,
   saveCollections,
   toggleWorkInCollection,
-} from '../utils/collections';
+} from '../utils/collections.js';
 
 const STORAGE_KEY = domainConfig.storageKey;
 const SESSIONS_STORAGE_KEY = 'cine_codice_watch_sessions_v1';
@@ -113,12 +113,11 @@ function normalizeTrackRating10(value) {
   return Math.round(clamped * 10) / 10;
 }
 
-function normalizeItem(rawItem, spectatorDna = null) {
+export function normalizeItem(rawItem, spectatorDna = null) {
   const status = normalizeCinemaStatus(rawItem.status || domainConfig.ui.add.defaultNewStatus);
   const isCompleted = status === 'completed';
   const domain = inferDomainFromWork(rawItem);
   const workType = normalizeWorkTypeForDomain(rawItem.workType || rawItem.mediaType, domain);
-  const nowIso = new Date().toISOString();
   const today = getTodayLocalISO();
 
   const completedDate = isCompleted ? rawItem.completedDate || today : null;
@@ -270,12 +269,11 @@ function normalizeItem(rawItem, spectatorDna = null) {
     format: rawItem.format || domainConfig.mediaFormats[0],
     audioFormat: rawItem.audioFormat || domainConfig.audioFormatTags[0],
     animeFormat: rawItem.animeFormat || (workType === 'anime' ? 'TV' : ''),
-    coverUrl: rawItem.coverUrl || null,
     backdropUrl: rawItem.backdropUrl || null,
     coverSources: Array.isArray(rawItem.coverSources)
       ? rawItem.coverSources.filter(Boolean)
-      : rawItem.coverUrl
-        ? [rawItem.coverUrl]
+      : rawItem.coverUrl || manualCoverDataUrl
+        ? [rawItem.coverUrl || manualCoverDataUrl]
         : [],
     genres: Array.isArray(rawItem.genres) ? rawItem.genres : [],
     primaryGenre:
@@ -421,9 +419,9 @@ function normalizeItem(rawItem, spectatorDna = null) {
     isFavorite: Boolean(rawItem.isFavorite),
     isWishlist: Boolean(rawItem.isWishlist),
     inBacklog: rawItem.inBacklog !== undefined ? Boolean(rawItem.inBacklog) : true,
-    createdAt: rawItem.createdAt || nowIso,
-    updatedAt: rawItem.updatedAt || rawItem.updated_at || nowIso,
-    updated_at: rawItem.updatedAt || rawItem.updated_at || nowIso,
+    createdAt: rawItem.createdAt || '',
+    updatedAt: rawItem.updatedAt || rawItem.updated_at || '',
+    updated_at: rawItem.updatedAt || rawItem.updated_at || '',
   };
 
   normalized.progress = calculateWorkProgress(normalized);
@@ -818,7 +816,7 @@ export function useBacklog(spectatorDna = null, { migrationLocked = false } = {}
           delete cleanUpdates.preserveUpdatedAt;
 
           const nextUpdatedAt = preserveUpdatedAt
-            ? item.updatedAt || item.updated_at || nowIso
+            ? item.updatedAt || item.updated_at || ''
             : cleanUpdates.updatedAt || cleanUpdates.updated_at || nowIso;
 
           let merged = normalizeItem(
